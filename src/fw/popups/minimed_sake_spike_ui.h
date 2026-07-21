@@ -22,6 +22,7 @@ typedef enum {
   MinimedSakeStageEncrypted,
   MinimedSakeStageSubscribed,
   MinimedSakeStageWrote,
+  MinimedSakeStageHandshakeComplete,
   MinimedSakeStageDisconnected,
 } MinimedSakeStage;
 

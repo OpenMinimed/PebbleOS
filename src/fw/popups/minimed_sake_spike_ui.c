@@ -62,6 +62,7 @@ static const char *prv_stage_text(MinimedSakeStage stage) {
     case MinimedSakeStageEncrypted:    return "paired/encrypted";
     case MinimedSakeStageSubscribed:   return "subscribed";
     case MinimedSakeStageWrote:        return "PUMP WROTE!";
+    case MinimedSakeStageHandshakeComplete: return "HANDSHAKE OK!";
     case MinimedSakeStageDisconnected: return "disconnected";
     default:                           return "?";
   }
@@ -79,7 +80,7 @@ void minimed_sake_log(const char *msg) {
 
 void minimed_sake_spike_report(MinimedSakeStage stage) {
   minimed_sake_log(prv_stage_text(stage));
-  if (stage == MinimedSakeStageWrote) {
+  if (stage == MinimedSakeStageWrote || stage == MinimedSakeStageHandshakeComplete) {
     launcher_task_add_callback(prv_vibe_double_cb, NULL);
   } else if (stage == MinimedSakeStageConnected || stage == MinimedSakeStageSubscribed) {
     launcher_task_add_callback(prv_vibe_short_cb, NULL);

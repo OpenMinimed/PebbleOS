@@ -23,3 +23,8 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len);
 //! on the SAKE Port, emit the 20-zero-byte wake-up frame that makes it send
 //! its first handshake write.
 void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, bool notify);
+
+//! Decrypt a pump->watch payload with the post-handshake session cipher (client direction).
+//! Returns false if the handshake isn't complete or the MAC fails. `out` needs >= `n` bytes;
+//! the plaintext length (n-3) is written to `*out_len`.
+bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len);

@@ -17,6 +17,7 @@
 #include "nimble_type_conversions.h"
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
+#include "minimed_sake_read.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
 #endif
@@ -174,6 +175,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
   s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+  minimed_sake_read_stop();  // stop CGM polling; the link is gone
   {
     char line[32];
     snprintf(line, sizeof(line), "disc reason=0x%02x", (uint8_t)event->disconnect.reason);
@@ -326,6 +328,15 @@ static void prv_handle_subscription_event(struct ble_gap_event *event) {
 }
 
 static void prv_handle_notification_rx_event(struct ble_gap_event *event) {
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // In spike mode the pump's CGM notifications/indications land here (watch = GATT client). Let the
+  // SAKE read layer consume the ones it owns before the normal Pebble routing sees them.
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike &&
+      minimed_sake_read_handle_notify(event->notify_rx.attr_handle, event->notify_rx.om->om_data,
+                                      event->notify_rx.om->om_len)) {
+    return;
+  }
+#endif
   struct ble_gap_conn_desc desc;
   if (ble_gap_conn_find(event->notify_rx.conn_handle, &desc) != 0) {
     PBL_LOG_ERR("prv_handle_notification_rx_event: Failed to find connection descriptor");

@@ -8,10 +8,13 @@
 
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+#include "host/ble_hs_hci.h"
 #include "host/ble_uuid.h"
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 
+#include "minimed_sake_crypto.h"
+#include "minimed_sake_read.h"
 #include "popups/minimed_sake_spike_ui.h"
 #include <system/logging.h>
 
@@ -30,9 +33,42 @@ static const ble_uuid128_t s_sake_port_chr_uuid =
 
 static uint16_t s_sake_port_val_handle;
 
-// The wake-up notification is deferred onto the BT task via this callout (see handle_subscribe).
-static struct ble_npl_callout s_wakeup_co;
-static uint16_t s_wakeup_conn;
+// Server replies (and the initial wake-up) are always notified from a callout on the BT task,
+// never synchronously inside the GATT write/subscribe callback: sending before the peer's
+// write-response goes out makes the pump miss it and drop the link (disc 0x13).
+static struct ble_npl_callout s_notify_co;
+static uint16_t s_notify_conn;
+static uint8_t s_notify_buf[SAKE_MESSAGE_SIZE];
+
+// SAKE server-role handshake state. The crypto + state machine live in minimed_sake_crypto.c and
+// are byte-verified on the host against OpenMinimed's captured 780G trace (tools/minimed_sake_hosttest).
+// KEYDB_PUMP_EXTRACTED: the 780G-model-static key database (same bytes the working Android bridge
+// uses at runtime via org.openminimed.sake.Constants).
+static const uint8_t s_pump_keydb_bytes[] = {
+    0xf7, 0x59, 0x95, 0xe7, 0x04, 0x01, 0x01, 0x1b, 0xc1, 0xbf, 0x7c, 0xbf,
+    0x36, 0xfa, 0x1e, 0x23, 0x67, 0xd7, 0x95, 0xff, 0x09, 0x21, 0x19, 0x03,
+    0xda, 0x6a, 0xfb, 0xe9, 0x86, 0xb6, 0x50, 0xf1, 0x41, 0x79, 0xc0, 0xe6,
+    0x85, 0x2e, 0x0c, 0xe3, 0x93, 0x78, 0x10, 0x78, 0xff, 0xc6, 0xf5, 0x19,
+    0x19, 0xe2, 0xea, 0xef, 0xbd, 0xe6, 0x9b, 0x8e, 0xca, 0x21, 0xe4, 0x1a,
+    0xb5, 0x9b, 0x88, 0x1a, 0x0b, 0xea, 0x02, 0x86, 0xea, 0x91, 0xdc, 0x75,
+    0x82, 0xa8, 0x6a, 0x71, 0x4e, 0x17, 0x37, 0xf5, 0x58, 0xf0, 0xd6, 0x6d,
+    0xc1, 0x89, 0x5c,
+};
+static sake_keydb s_keydb;
+static bool s_keydb_ok;
+static sake_server s_server;
+
+static void prv_rng(void *ud, uint8_t *out, size_t n) {
+  (void)ud;
+  ble_hs_hci_rand(out, (int)n);  // the NimBLE host's CSPRNG (also used for SM pairing randoms)
+}
+
+static void prv_defer_notify(uint16_t conn, const uint8_t payload[SAKE_MESSAGE_SIZE],
+                             uint32_t delay_ms) {
+  s_notify_conn = conn;
+  memcpy(s_notify_buf, payload, SAKE_MESSAGE_SIZE);
+  ble_npl_callout_reset(&s_notify_co, ble_npl_time_ms_to_ticks32(delay_ms));
+}
 
 // Medtronic's custom Device Information service on the VENDOR base:
 // 00000900-0000-1000-0000-009132591325. The pump matches this during discovery and refuses to
@@ -76,10 +112,33 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
   }
   PBL_LOG_INFO("SAKE: pump WRITE conn=%d len=%u%s [%02x %02x %02x %02x]", conn_handle, len,
                all_zero ? " (all-zero)" : "", buf[0], buf[1], buf[2], buf[3]);
-  minimed_sake_spike_report(MinimedSakeStageWrote);
   char line[32];
+  if (all_zero) {
+    // The first (stage 0) write is the milestone that proved Spike 1; keep its distinct report.
+    minimed_sake_spike_report(MinimedSakeStageWrote);
+  }
   snprintf(line, sizeof(line), "wrote %u:%02x %02x %02x %02x", len, buf[0], buf[1], buf[2], buf[3]);
   minimed_sake_log(line);
+
+  if (!s_keydb_ok) {
+    return 0;  // no key DB -> stay inert (Spike 1 behaviour: log the write, don't handshake)
+  }
+
+  // Advance the handshake. The wake-up (20 zeros on subscribe) is NOT fed here -- only pump writes.
+  uint8_t reply[SAKE_MESSAGE_SIZE];
+  sake_result r = sake_server_handshake(&s_server, buf, reply);
+  int stage = s_server.stage;
+  if (r == SAKE_RESULT_MSG) {
+    prv_defer_notify(conn_handle, reply, 30);
+    snprintf(line, sizeof(line), "sent reply (st%d)", stage);
+    minimed_sake_log(line);
+  } else if (r == SAKE_RESULT_DONE) {
+    minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
+    minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
+  } else {
+    snprintf(line, sizeof(line), "sake ERR (st%d)", stage);
+    minimed_sake_log(line);
+  }
   return 0;
 }
 
@@ -164,17 +223,16 @@ static const struct ble_gatt_svc_def s_sake_svcs[] = {
     },
 };
 
-// Runs on the BT host task ~120ms after the subscribe (deferred via callout).
-static void prv_send_wakeup(struct ble_npl_event *ev) {
-  uint8_t wakeup[SAKE_MESSAGE_SIZE] = {0};
-  struct os_mbuf *om = ble_hs_mbuf_from_flat(wakeup, sizeof(wakeup));
+// Runs on the BT host task; sends whatever prv_defer_notify staged (wake-up or a handshake reply).
+static void prv_notify_cb(struct ble_npl_event *ev) {
+  struct os_mbuf *om = ble_hs_mbuf_from_flat(s_notify_buf, sizeof(s_notify_buf));
   if (!om) {
-    minimed_sake_log("wakeup mbuf fail");
+    minimed_sake_log("notify mbuf fail");
     return;
   }
-  int rc = ble_gatts_notify_custom(s_wakeup_conn, s_sake_port_val_handle, om);
-  char line[32];
-  snprintf(line, sizeof(line), "wakeup notify rc=0x%04x", (uint16_t)rc);
+  int rc = ble_gatts_notify_custom(s_notify_conn, s_sake_port_val_handle, om);
+  char line[24];
+  snprintf(line, sizeof(line), "notify rc=0x%04x", (uint16_t)rc);
   minimed_sake_log(line);
 }
 
@@ -184,11 +242,28 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
   }
 
   minimed_sake_spike_report(MinimedSakeStageSubscribed);
+  // Start a fresh handshake for this subscription -- the pump restarts from stage 0 on every
+  // pairing attempt, so re-init the server (and draw new server key material) each time.
+  if (s_keydb_ok) {
+    sake_server_init(&s_server, &s_keydb, SAKE_DEV_MOBILE_APPLICATION, prv_rng, NULL);
+  }
   // Defer the 20-zero wake-up ~120ms. Sending it synchronously here is too early -- it can go out
   // before the CCCD write-response, so the pump never registers notifications, waits, then drops
   // (disc reason 0x13). The working Android bridge likewise posts it to a worker thread.
-  s_wakeup_conn = conn_handle;
-  ble_npl_callout_reset(&s_wakeup_co, ble_npl_time_ms_to_ticks32(120));
+  uint8_t wakeup[SAKE_MESSAGE_SIZE] = {0};
+  prv_defer_notify(conn_handle, wakeup, 120);
+}
+
+bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len) {
+  if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
+    return false;
+  }
+  size_t out_n = 0;
+  if (!sake_decrypt_from_pump(&s_server, in, n, out, &out_n)) {
+    return false;
+  }
+  *out_len = (uint16_t)out_n;
+  return true;
 }
 
 uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
@@ -209,7 +284,15 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
 }
 
 int minimed_sake_service_init(void) {
-  ble_npl_callout_init(&s_wakeup_co, nimble_port_get_dflt_eventq(), prv_send_wakeup, NULL);
+  ble_npl_callout_init(&s_notify_co, nimble_port_get_dflt_eventq(), prv_notify_cb, NULL);
+  minimed_sake_read_init();
+
+  s_keydb_ok = sake_keydb_parse(&s_keydb, s_pump_keydb_bytes, sizeof(s_pump_keydb_bytes));
+  if (s_keydb_ok) {
+    sake_server_init(&s_server, &s_keydb, SAKE_DEV_MOBILE_APPLICATION, prv_rng, NULL);
+  } else {
+    PBL_LOG_ERR("SAKE: key DB parse failed (CRC/length) -- handshake disabled");
+  }
 
   int rc = ble_gatts_count_cfg(s_sake_svcs);
   if (rc != 0) {
