@@ -30,6 +30,9 @@ static const uint32_t s_bt_stack_start_stop_timeout_ms = 10000;
 extern void pebble_pairing_service_init(void);
 extern void ppog_reversed_service_init(void);
 extern void nimble_discover_init(void);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+extern int minimed_sake_service_init(void);
+#endif
 
 #if NIMBLE_CFG_CONTROLLER
 static TaskHandle_t s_ll_task_handle;
@@ -150,6 +153,10 @@ bool bt_driver_start(BTDriverConfig *config) {
 
 #ifdef CONFIG_GH3X2X_TUNING_SERVICE_ENABLED
   gh3x2x_tuning_service_init();
+#endif
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  minimed_sake_service_init();
 #endif
 
   ble_hs_sched_start();

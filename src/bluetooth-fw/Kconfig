@@ -35,4 +35,13 @@ config GH3X2X_TUNING_SERVICE_ENABLED
       Build the GH3X2X heart-rate sensor tuning GATT service, used to
       tune the sensor over BLE. Off by default.
 
+config MINIMED_SAKE_SPIKE
+    bool "MiniMed SAKE topology spike"
+    help
+      Bench spike: advertise as a Medtronic pump peripheral (SAKE service
+      0xfe82, name "Mobile PB"), host the SAKE Port GATT characteristic, and
+      log the pump connecting, bonding and starting its SAKE handshake. For
+      hardware bring-up only; hijacks BLE advertising, so the normal phone
+      link is unavailable while enabled. Off by default.
+
 endmenu

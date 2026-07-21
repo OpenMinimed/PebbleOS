@@ -84,6 +84,14 @@
       "md_fn": "timeline_past_get_app_info"
     },
     {
+      "id": -200,
+      "enum": "MINIMED_SAKE",
+      "md_fn": "minimed_sake_app_get_info",
+      "ifdefs": [
+        "CONFIG_MINIMED_SAKE_SPIKE"
+      ]
+    },
+    {
       "id": -12,
       "enum": "BOUNCING_BOX_DEMO",
       "md_fn": "bouncing_box_demo_get_app_info",

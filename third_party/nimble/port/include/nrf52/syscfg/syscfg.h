@@ -2193,7 +2193,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_IO_CAP
-#define MYNEWT_VAL_BLE_SM_IO_CAP (BLE_HS_IO_DISPLAY_YESNO)
+/* MiniMed SAKE spike: pump pairs Just Works / NoInputNoOutput (was DISPLAY_YESNO). */
+#define MYNEWT_VAL_BLE_SM_IO_CAP (BLE_HS_IO_NO_INPUT_OUTPUT)
 #endif
 
 #ifndef MYNEWT_VAL_BLE_SM_KEYPRESS
@@ -2202,7 +2203,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_LEGACY
-#define MYNEWT_VAL_BLE_SM_LEGACY (0)
+/* MiniMed SAKE spike: pump only does legacy pairing, not LE Secure Connections. */
+#define MYNEWT_VAL_BLE_SM_LEGACY (1)
 #endif
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
@@ -2216,7 +2218,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_MITM
-#define MYNEWT_VAL_BLE_SM_MITM (1)
+/* MiniMed SAKE spike: NoInputNoOutput can't do MITM; pump falls back to Just Works. */
+#define MYNEWT_VAL_BLE_SM_MITM (0)
 #endif
 
 #ifndef MYNEWT_VAL_BLE_SM_OOB_DATA_FLAG
@@ -2239,7 +2242,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_SC_ONLY
-#define MYNEWT_VAL_BLE_SM_SC_ONLY (1)
+/* MiniMed SAKE spike: must accept the pump's legacy Just Works pairing. */
+#define MYNEWT_VAL_BLE_SM_SC_ONLY (0)
 #endif
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */
