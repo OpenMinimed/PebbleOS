@@ -58,6 +58,12 @@ static sake_keydb s_keydb;
 static bool s_keydb_ok;
 static sake_server s_server;
 
+// True once a SAKE handshake has completed, i.e. the pump holds a bond (LTK + our IRK) to this
+// watch. Selects the FE81 (reconnect) advert instead of FE82 (first-pair). RAM only: lost on
+// reboot, cleared by "forget pump" in the spike app. Written on the BT host task, read on the BT
+// task and the app task -- a bool, torn reads impossible.
+static bool s_pump_paired;
+
 static void prv_rng(void *ud, uint8_t *out, size_t n) {
   (void)ud;
   ble_hs_hci_rand(out, (int)n);  // the NimBLE host's CSPRNG (also used for SM pairing randoms)
@@ -133,6 +139,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     snprintf(line, sizeof(line), "sent reply (st%d)", stage);
     minimed_sake_log(line);
   } else if (r == SAKE_RESULT_DONE) {
+    s_pump_paired = true;  // pump is bonded now -> advertise FE81 (reconnect) from here on
     minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
   } else {
@@ -268,7 +275,8 @@ bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t 
 
 uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
   // Flags: LE General Discoverable + BR/EDR not supported.
-  // Complete 16-bit Service Class UUID list: 0xfe82 (SAKE, pairing).
+  // Complete 16-bit Service Class UUID list: 0xfe82 (SAKE, first-pair) or 0xfe81 (reconnect --
+  // what an already-bonded pump scans for; it ignores the rest of the payload then).
   // Manufacturer data: Medtronic company 0x01f9, payload = 0x00 + "Mobile PB" + 0x00.
   // Matches the working Android bridge; the pump reads the name from mfr data, not the GAP name.
   static const uint8_t adv[] = {
@@ -280,7 +288,22 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
     return 0;
   }
   memcpy(buf, adv, sizeof(adv));
+  if (s_pump_paired) {
+    buf[5] = 0x81;  // service class low byte: 0xfe82 -> 0xfe81
+  }
   return sizeof(adv);
+}
+
+bool minimed_sake_pump_paired(void) { return s_pump_paired; }
+
+void minimed_sake_forget_pump(void) {
+  s_pump_paired = false;
+  minimed_sake_log("forget pump -> FE82");
+  // Re-advertise first-pair immediately; in NORMAL mode the next SPIKE toggle picks it up anyway
+  // (and force_readvertise would needlessly drop the phone link).
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    minimed_sake_force_readvertise();
+  }
 }
 
 int minimed_sake_service_init(void) {

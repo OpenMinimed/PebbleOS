@@ -92,7 +92,7 @@ bool bt_driver_advert_set_advertising_data(const BLEAdData *ad_data) {
       PBL_LOG_ERR("SAKE: failed to set Medtronic advert (0x%04x)", (uint16_t)rc);
       return false;
     }
-    minimed_sake_log("adv data: spike");
+    minimed_sake_log(minimed_sake_pump_paired() ? "adv data: FE81" : "adv data: FE82");
     return true;
   }
 #endif
@@ -470,14 +470,13 @@ static int prv_handle_gap_event(struct ble_gap_event *event, void *arg) {
 bool bt_driver_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_interval_ms) {
   int rc;
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
-  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+  bool spike_mode = minimed_sake_get_mode() == MinimedSakeModeSpike;
+  unsigned spike_orig_max_ms = (unsigned)max_interval_ms;
+  if (spike_mode) {
     // The pump ignores adverts slower than ~150ms, but the reconnection job uses ~1s. Force a fast
     // interval, and re-assert the Medtronic payload here (the reconnection job may reuse cached
     // Pebble advert data without calling set_advertising_data), so SPIKE always advertises fast and
     // as "Mobile PB" no matter who enabled advertising.
-    char line[32];
-    snprintf(line, sizeof(line), "adv EN %u->140ms fast", (unsigned)max_interval_ms);
-    minimed_sake_log(line);
     min_interval_ms = 100;
     max_interval_ms = 140;
     uint8_t sake_adv[31];
@@ -499,9 +498,38 @@ bool bt_driver_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_
     return false;
   }
 
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (spike_mode) {
+    // The pump only *reconnects* to a peripheral advertising a Resolvable Private Address
+    // (Documentation/bluetooth.md; first-pair works with a public address too, which is why the
+    // earlier spikes worked). Advertise an RPA in SPIKE mode always, matching the Android bridge.
+    // The controller derives RPAs from the persisted identity root key (nimble_store gen-key),
+    // which pairing distributes to the pump now that BLE_SM_OUR_KEY_DIST includes the ID keys.
+    // Infer the RPA flavor from which identity exists: this watch has a static-random identity
+    // and no public one, so hardcoding RPA_PUBLIC_DEFAULT fails ENOADDR = no advertising (v15 bug).
+    uint8_t rpa_addr_type;
+    if (ble_hs_id_infer_auto(1, &rpa_addr_type) == 0) {
+      own_addr_type = rpa_addr_type;
+    } else {
+      minimed_sake_log("no RPA identity!");  // keep the non-RPA type: first-pair still works
+    }
+    char line[32];
+    snprintf(line, sizeof(line), "adv EN FE8%c t%u %u->140ms",
+             minimed_sake_pump_paired() ? '1' : '2', own_addr_type, spike_orig_max_ms);
+    minimed_sake_log(line);
+  }
+#endif
+
   rc = ble_gap_adv_start(own_addr_type, NULL, BLE_HS_FOREVER, &advp, prv_handle_gap_event, NULL);
   if (rc != 0) {
     PBL_LOG_ERR("Failed to start advertising (0x%04x)", (uint16_t)rc);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+    if (spike_mode) {
+      char line[32];
+      snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);  // v15 failed here invisibly -- always surface this on-watch
+    }
+#endif
     return false;
   }
 

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 //! Core state + on-watch log for the MiniMed SAKE spike. The BLE work runs in the firmware
@@ -46,3 +47,12 @@ const char *minimed_sake_get_log(void);
 //! Implemented in the BT layer (advert.c): drop the active pump/phone link if any, so advertising
 //! restarts under the current mode. Declared here so the core toggle can call it.
 void minimed_sake_force_readvertise(void);
+
+//! Implemented in the BT layer (minimed_sake_service.c): whether a SAKE handshake has completed,
+//! i.e. the pump is bonded and the spike advertises FE81 (reconnect) instead of FE82 (first-pair).
+bool minimed_sake_pump_paired(void);
+
+//! Implemented in the BT layer (minimed_sake_service.c): clear the pump-paired state and go back
+//! to FE82 (first-pair) advertising -- for when the "Mobile PB" device was removed on the pump.
+//! Called from the spike app's DOWN handler.
+void minimed_sake_forget_pump(void);

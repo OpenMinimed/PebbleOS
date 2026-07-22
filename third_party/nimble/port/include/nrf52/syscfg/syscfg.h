@@ -2228,7 +2228,9 @@
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_OUR_KEY_DIST
-#define MYNEWT_VAL_BLE_SM_OUR_KEY_DIST (1)
+/* MiniMed SAKE spike: distribute our IRK + identity address (bit 1) too, not just the LTK. The
+ * pump only reconnects to a Resolvable Private Address, which it can resolve only with our IRK. */
+#define MYNEWT_VAL_BLE_SM_OUR_KEY_DIST (3)
 #endif
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */
