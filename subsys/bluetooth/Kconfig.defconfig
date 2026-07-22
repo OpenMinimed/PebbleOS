@@ -40,7 +40,10 @@ config NIMBLE_BLE_SM_MITM
 config NIMBLE_BLE_SM_LVL
     default 4
 
+# The pump only reconnects to a Resolvable Private Address, which it can resolve only with our
+# IRK, so the MiniMed build distributes the IRK and identity address (bit 1) too.
 config NIMBLE_BLE_SM_OUR_KEY_DIST
+    default 3 if MINIMED_SAKE_SPIKE
     default 1
 
 config NIMBLE_BLE_SM_THEIR_KEY_DIST

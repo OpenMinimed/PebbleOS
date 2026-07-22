@@ -27,8 +27,9 @@ typedef struct {
 } MinimedSakeAppData;
 
 static void prv_refresh(MinimedSakeAppData *data) {
-  const char *mode =
-      (minimed_sake_get_mode() == MinimedSakeModeSpike) ? "MODE: SPIKE" : "MODE: NORMAL";
+  const char *mode = (minimed_sake_get_mode() == MinimedSakeModeSpike)
+                         ? (minimed_sake_pump_paired() ? "MODE: SPIKE (FE81)" : "MODE: SPIKE (FE82)")
+                         : "MODE: NORMAL";
   snprintf(data->buf, sizeof(data->buf), "%s\n%s", mode, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
@@ -46,8 +47,16 @@ static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   prv_refresh(app_state_get_user_data());
 }
 
+// DOWN forgets the pump pairing (back to FE82 first-pair advertising) -- for when the "Mobile PB"
+// device has been removed on the pump and reconnect can never succeed.
+static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
+  minimed_sake_forget_pump();
+  prv_refresh(app_state_get_user_data());
+}
+
 static void prv_click_config(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_click);
+  window_single_click_subscribe(BUTTON_ID_DOWN, prv_down_click);
 }
 
 static void prv_window_load(Window *window) {
