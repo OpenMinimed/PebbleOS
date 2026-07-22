@@ -17,7 +17,8 @@ endchoice
 config NIMBLE_BLE_HS_AUTO_START
     default n
 
-# LE Secure Connections only, with MITM protection: mode 1 level 4.
+# LE Secure Connections only, with MITM protection: mode 1 level 4. The MiniMed pump only does
+# legacy Just Works pairing, so the MiniMed build accepts that instead.
 config NIMBLE_BLE_SM_BONDING
     default y
 
@@ -25,12 +26,15 @@ config NIMBLE_BLE_SM_SC
     default y
 
 config NIMBLE_BLE_SM_SC_ONLY
+    default n if MINIMED_SAKE_SPIKE
     default y
 
 config NIMBLE_BLE_SM_LEGACY
+    default y if MINIMED_SAKE_SPIKE
     default n
 
 config NIMBLE_BLE_SM_MITM
+    default n if MINIMED_SAKE_SPIKE
     default y
 
 config NIMBLE_BLE_SM_LVL
@@ -43,6 +47,7 @@ config NIMBLE_BLE_SM_THEIR_KEY_DIST
     default 3
 
 choice NIMBLE_BLE_SM_IO_CAP_CHOICE
+    default NIMBLE_BLE_SM_IO_CAP_NO_INPUT_OUTPUT if MINIMED_SAKE_SPIKE
     default NIMBLE_BLE_SM_IO_CAP_DISPLAY_YESNO
 endchoice
 

@@ -31,6 +31,9 @@ extern void pebble_pairing_service_init(void);
 extern void ppog_reversed_service_init(void);
 extern void nimble_discover_init(void);
 extern void nimble_gattc_op_queue_init(void);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+extern int minimed_sake_service_init(void);
+#endif
 
 #if NIMBLE_CFG_CONTROLLER
 static struct pbl_thread *s_ll_task_handle;
@@ -178,6 +181,10 @@ bool pbl_bt_start(struct pbl_bt_config *config) {
 
 #ifdef CONFIG_BT_GH3X2X_TUNING_SERVICE
   gh3x2x_tuning_service_init();
+#endif
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  minimed_sake_service_init();
 #endif
 
   ble_hs_sched_start();

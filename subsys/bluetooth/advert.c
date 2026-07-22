@@ -19,12 +19,39 @@
 #include <os/os_mbuf.h>
 #include <system/passert.h>
 
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#include "minimed_sake_read.h"
+#include "minimed_sake_service.h"
+#include "popups/minimed_sake_spike_ui.h"
+#endif
+
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
 static const ble_uuid16_t s_device_name_chr_uuid = BLE_UUID16_INIT(0x2A00);
 static char s_device_name[PBL_BT_DEVICE_NAME_BUFFER_SIZE];
 static bool s_pairing_in_progress;
 static uint16_t s_pairing_conn_handle;
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+static uint16_t s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+
+// Drop the active link (if any) so the connection manager re-advertises under the current mode.
+// ble_gap_terminate takes the ble_hs lock internally, so this is safe to call from the app task.
+void minimed_sake_force_readvertise(void) {
+  if (s_sake_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+    // Active link: terminate it. The disconnect makes the connection manager re-advertise, and the
+    // advertising_enable clamp below makes that fast + Medtronic in SPIKE mode.
+    ble_gap_terminate(s_sake_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    return;
+  }
+  // No active link (e.g. phone Bluetooth already off): nothing else would re-trigger advertising,
+  // so in SPIKE mode kick the fast Medtronic advert directly. Makes the toggle order not matter.
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    ble_gap_adv_stop();
+    pbl_bt_advert_advertising_enable(100, 140);
+  }
+}
+#endif
 
 static int prv_device_name_read_event_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                                          struct ble_gatt_attr *attr, void *arg) {
@@ -61,6 +88,11 @@ void pbl_bt_advert_advertising_disable(void) {
 
   rc = ble_gap_adv_stop();
   PBL_ASSERT(rc == 0, "Failed to stop advertising (0x%04x)", (uint16_t)rc);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    minimed_sake_log("adv DISABLE");
+  }
+#endif
 }
 
 bool pbl_bt_advert_client_get_tx_power(int8_t *tx_power) {
@@ -69,6 +101,22 @@ bool pbl_bt_advert_client_get_tx_power(int8_t *tx_power) {
 
 bool pbl_bt_advert_set_advertising_data(const struct pbl_bt_ad_data *ad_data) {
   int rc;
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // In SAKE mode, hijack the advert to pose as a Medtronic pump peripheral. In NORMAL mode, fall
+  // through to the real Pebble advert so the phone connects (and firmware can be sideloaded).
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    uint8_t sake_adv[31];
+    uint8_t sake_adv_len = minimed_sake_build_adv(sake_adv, sizeof(sake_adv));
+    rc = ble_gap_adv_set_data(sake_adv, sake_adv_len);
+    if (rc != 0) {
+      PBL_LOG_ERR("SAKE: failed to set Medtronic advert (0x%04x)", (uint16_t)rc);
+      return false;
+    }
+    minimed_sake_log("adv data: spike");
+    return true;
+  }
+#endif
 
   rc = ble_gap_adv_set_data((uint8_t *)&ad_data->data, ad_data->ad_data_length);
   if (rc != 0) {
@@ -90,6 +138,11 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // we only want to notify on a successful connection
   if (event->connect.status != 0)
     return;
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  s_sake_conn_handle = event->connect.conn_handle;
+  minimed_sake_spike_report(MinimedSakeStageConnected);
+#endif
 
   struct ble_gap_conn_desc desc;
   if (ble_gap_conn_find(event->connect.conn_handle, &desc) != 0) {
@@ -165,6 +218,17 @@ static void prv_end_pairing(uint16_t conn_handle, bool success) {
 }
 
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+  minimed_sake_read_stop();  // stop CGM polling; the link is gone
+  {
+    char line[32];
+    snprintf(line, sizeof(line), "disc reason=0x%02x", (uint8_t)event->disconnect.reason);
+    minimed_sake_log(line);
+  }
+  minimed_sake_spike_report(MinimedSakeStageDisconnected);
+#endif
+
   // A link dropped mid-pairing raises no pairing complete event.
   prv_end_pairing(event->disconnect.conn.conn_handle, false);
 
@@ -191,6 +255,11 @@ static void prv_handle_enc_change_event(struct ble_gap_event *event) {
 
   PBL_LOG_INFO("Encryption change: status=0x%04x encrypted=%u bonded=%u",
                (uint16_t)event->enc_change.status, desc.sec_state.encrypted, desc.sec_state.bonded);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (desc.sec_state.encrypted) {
+    minimed_sake_spike_report(MinimedSakeStageEncrypted);
+  }
+#endif
 
   struct pbl_bt_encryption_change enc_change_event = {
     .encryption_enabled = desc.sec_state.encrypted,
@@ -298,9 +367,22 @@ static void prv_handle_subscription_event(struct ble_gap_event *event) {
               event->subscribe.conn_handle, event->subscribe.attr_handle,
               event->subscribe.prev_notify, event->subscribe.cur_notify,
               event->subscribe.prev_indicate, event->subscribe.cur_indicate);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  minimed_sake_handle_subscribe(event->subscribe.conn_handle, event->subscribe.attr_handle,
+                                event->subscribe.cur_notify);
+#endif
 }
 
 static void prv_handle_notification_rx_event(struct ble_gap_event *event) {
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // In spike mode the pump's CGM notifications/indications land here (watch = GATT client). Let the
+  // SAKE read layer consume the ones it owns before the normal Pebble routing sees them.
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike &&
+      minimed_sake_read_handle_notify(event->notify_rx.attr_handle, event->notify_rx.om->om_data,
+                                      event->notify_rx.om->om_len)) {
+    return;
+  }
+#endif
   struct ble_gap_conn_desc desc;
   if (ble_gap_conn_find(event->notify_rx.conn_handle, &desc) != 0) {
     PBL_LOG_ERR("prv_handle_notification_rx_event: Failed to find connection descriptor");
@@ -354,7 +436,11 @@ static int prv_handle_repeat_pairing_event(struct ble_gap_event *event) {
   // In recovery mode there is no UI that allows to manually delete a pairing,
   // so we unconditionally enable repeat pairing. In main firmware, only allow
   // repeat pairing if using secure connections and we support user confirmation.
-#if defined(CONFIG_RECOVERY_FW) || \
+// The MiniMed spike uses legacy Just Works (SC_ONLY off, IO NoInputNoOutput), which otherwise
+// disables this auto-recovery path -- leaving a mismatched phone/pump bond stuck in a
+// connect/terminate(0x13) loop. Re-enable it here so a repeat-pairing just deletes the stale bond
+// and re-pairs cleanly.
+#if defined(CONFIG_RECOVERY_FW) || defined(CONFIG_MINIMED_SAKE_SPIKE) || \
     (MYNEWT_VAL(BLE_SM_SC_ONLY) && (MYNEWT_VAL(BLE_SM_IO_CAP) == BLE_HS_IO_DISPLAY_YESNO))
   struct ble_gap_conn_desc desc;
   int ret;
@@ -453,6 +539,22 @@ static int prv_handle_gap_event(struct ble_gap_event *event, void *arg) {
 
 bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_interval_ms) {
   int rc;
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    // The pump ignores adverts slower than ~150ms, but the reconnection job uses ~1s. Force a fast
+    // interval, and re-assert the Medtronic payload here (the reconnection job may reuse cached
+    // Pebble advert data without calling set_advertising_data), so SPIKE always advertises fast and
+    // as "Mobile PB" no matter who enabled advertising.
+    char line[32];
+    snprintf(line, sizeof(line), "adv EN %u->140ms fast", (unsigned)max_interval_ms);
+    minimed_sake_log(line);
+    min_interval_ms = 100;
+    max_interval_ms = 140;
+    uint8_t sake_adv[31];
+    uint8_t sake_adv_len = minimed_sake_build_adv(sake_adv, sizeof(sake_adv));
+    ble_gap_adv_set_data(sake_adv, sake_adv_len);
+  }
+#endif
   uint8_t own_addr_type;
   struct ble_gap_adv_params advp = {
     .conn_mode = BLE_GAP_CONN_MODE_UND,
