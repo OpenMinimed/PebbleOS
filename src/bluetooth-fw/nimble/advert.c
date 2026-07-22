@@ -500,18 +500,19 @@ bool bt_driver_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
   if (spike_mode) {
-    // The pump only *reconnects* to a peripheral advertising a Resolvable Private Address
-    // (Documentation/bluetooth.md; first-pair works with a public address too, which is why the
-    // earlier spikes worked). Advertise an RPA in SPIKE mode always, matching the Android bridge.
-    // The controller derives RPAs from the persisted identity root key (nimble_store gen-key),
-    // which pairing distributes to the pump now that BLE_SM_OUR_KEY_DIST includes the ID keys.
-    // Infer the RPA flavor from which identity exists: this watch has a static-random identity
-    // and no public one, so hardcoding RPA_PUBLIC_DEFAULT fails ENOADDR = no advertising (v15 bug).
-    uint8_t rpa_addr_type;
-    if (ble_hs_id_infer_auto(1, &rpa_addr_type) == 0) {
-      own_addr_type = rpa_addr_type;
+    // Address type by pairing state, mirroring the FE82/FE81 service split:
+    //  - First-pair (FE82): a PLAIN identity address (infer_auto(0) -> this watch's static-random
+    //    identity). The pump discovers + pairs with a plain address (Documentation/bluetooth.md);
+    //    an RPA for first-pair proved undiscoverable on hardware (v15-v19 regression) and is what
+    //    v10-v14 did NOT do.
+    //  - Reconnect (FE81): an RPA (infer_auto(1)); the pump only reconnects to an RPA and resolves
+    //    it via the IRK we distribute during pairing.
+    const int privacy = minimed_sake_pump_paired() ? 1 : 0;
+    uint8_t at;
+    if (ble_hs_id_infer_auto(privacy, &at) == 0) {
+      own_addr_type = at;
     } else {
-      minimed_sake_log("no RPA identity!");  // keep the non-RPA type: first-pair still works
+      minimed_sake_log("no adv identity!");
     }
     char line[32];
     snprintf(line, sizeof(line), "adv EN FE8%c t%u %u->140ms",

@@ -2193,8 +2193,10 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_IO_CAP
-/* MiniMed SAKE spike: pump pairs Just Works / NoInputNoOutput (was DISPLAY_YESNO). */
-#define MYNEWT_VAL_BLE_SM_IO_CAP (BLE_HS_IO_NO_INPUT_OUTPUT)
+/* MiniMed SAKE spike: keep the stock DISPLAY_YESNO default so the *phone* bond is unchanged; the
+ * spike relaxes this to NoInputNoOutput at RUNTIME (ble_hs_cfg.sm_io_cap) only while in SPIKE
+ * mode, for the pump's legacy Just Works pairing. See minimed_sake_apply_sm_config. */
+#define MYNEWT_VAL_BLE_SM_IO_CAP (BLE_HS_IO_DISPLAY_YESNO)
 #endif
 
 #ifndef MYNEWT_VAL_BLE_SM_KEYPRESS
@@ -2218,8 +2220,9 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_MITM
-/* MiniMed SAKE spike: NoInputNoOutput can't do MITM; pump falls back to Just Works. */
-#define MYNEWT_VAL_BLE_SM_MITM (0)
+/* MiniMed SAKE spike: keep the stock MITM default for the phone; the spike clears it at RUNTIME
+ * in SPIKE mode (pump can't do MITM -> Just Works). See minimed_sake_apply_sm_config. */
+#define MYNEWT_VAL_BLE_SM_MITM (1)
 #endif
 
 #ifndef MYNEWT_VAL_BLE_SM_OOB_DATA_FLAG
@@ -2228,9 +2231,10 @@
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_OUR_KEY_DIST
-/* MiniMed SAKE spike: distribute our IRK + identity address (bit 1) too, not just the LTK. The
- * pump only reconnects to a Resolvable Private Address, which it can resolve only with our IRK. */
-#define MYNEWT_VAL_BLE_SM_OUR_KEY_DIST (3)
+/* MiniMed SAKE spike: keep the stock LTK-only default for the phone; the spike adds the IRK +
+ * identity (value 3) at RUNTIME in SPIKE mode so the pump can resolve our RPA on reconnect. See
+ * minimed_sake_apply_sm_config. */
+#define MYNEWT_VAL_BLE_SM_OUR_KEY_DIST (1)
 #endif
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */

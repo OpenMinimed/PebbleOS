@@ -93,7 +93,10 @@ const char *minimed_sake_get_log(void) { return s_joined; }
 
 void minimed_sake_toggle_mode(void) {
   s_mode = (s_mode == MinimedSakeModeNormal) ? MinimedSakeModeSpike : MinimedSakeModeNormal;
-  minimed_sake_log(s_mode == MinimedSakeModeSpike ? "mode -> SPIKE" : "mode -> NORMAL");
+  const bool spike = (s_mode == MinimedSakeModeSpike);
+  minimed_sake_log(spike ? "mode -> SPIKE" : "mode -> NORMAL");
+  minimed_sake_apply_sm_config(spike);  // pump legacy-JW in SPIKE, stock strict LESC for the phone
+  minimed_sake_sender_set_mode(spike);
   minimed_sake_force_readvertise();
 }
 

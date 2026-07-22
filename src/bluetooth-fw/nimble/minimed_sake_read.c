@@ -12,6 +12,7 @@
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 
+#include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
 #include <system/logging.h>
@@ -82,6 +83,10 @@ static void prv_parse_and_show(void) {
   int32_t tenths = (mgdl * 100000 + 90091) / 180182;
   snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_log(line);
+
+  char bg_str[12];
+  snprintf(bg_str, sizeof(bg_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
+  minimed_sake_sender_send_bg(bg_str);  // forward to the watchface (no-op if it isn't running)
 }
 
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
