@@ -12,6 +12,7 @@
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 
+#include "minimed_iob.h"
 #include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
@@ -30,20 +31,44 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 static const uint8_t RACP_REPORT_LAST_RECORD[] = {0x01, 0x06};
 static const uint8_t RACP_REPORT_SUCCESS[] = {0x06, 0x00, 0x01, 0x01};
 
+// Medtronic Insulin Delivery service (vendor 128-bit base 0000XXXX-0000-1000-0000-009132591325):
+// IDD service 0x100, SRCP (Status Reader Control Point) char 0x105 (write + indicate). Byte order
+// is little-endian, same convention as the SAKE-port UUID in minimed_sake_service.c (last two data
+// bytes = the 16-bit short code low/high: 00 01 for 0x0100, 05 01 for 0x0105).
+static const ble_uuid128_t s_idd_svc_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00);
+static const ble_uuid128_t s_idd_srcp_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00);
+
+// SRCP "Get Insulin On Board" request: little-endian opcode 0x03F3. NOT E2E-CRC-wrapped -- the
+// 780G leaves E2E protection off for the IDD service (Documentation/idd-service.md), matching the
+// bridge's srcpGet which does not append a CRC. SAKE-encrypted before it goes on the wire.
+static const uint8_t SRCP_GET_IOB[] = {0xF3, 0x03};
+
 // Re-poll the latest record on this cadence. The sensor updates ~every 5 min; polling faster just
 // re-shows the current value and keeps the on-watch reading fresh within one interval.
 #define POLL_INTERVAL_SECS 60
 
 static struct ble_npl_callout s_read_co;
 static struct ble_npl_callout s_poll_co;
+static struct ble_npl_callout s_iob_co;  // deferred SRCP IOB read, chained after each CGM poll
 static uint16_t s_conn;
 static uint16_t s_cgm_start, s_cgm_end;
 static uint16_t s_h_measurement, s_h_feature, s_h_racp;
+static uint16_t s_idd_start, s_idd_end, s_h_srcp;
 
 // Reassembly buffer for a (decrypted) CGM Measurement record. The record's byte 0 is its total
 // length, so accumulate decrypted fragments until we have that many bytes.
 static uint8_t s_rec[64];
 static uint8_t s_rec_len;
+
+// Reassembly buffer for a (decrypted) SRCP IOB response. Unlike the CGM record there is no byte-0
+// length prefix -- the response is a single short indication starting with opcode 0x03FC on the
+// 780G, complete once the 7-byte mandatory prefix is present.
+static uint8_t s_srcp[24];
+static uint8_t s_srcp_len;
 
 // Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer mg/dL. Returns INT32_MIN for the
 // NaN/NRes/Inf sentinels (no usable value). Glucose normally has exponent 0.
@@ -89,12 +114,35 @@ static void prv_parse_and_show(void) {
   minimed_sake_sender_send_bg(bg_str);  // forward to the watchface (no-op if it isn't running)
 }
 
+// Parse a reassembled SRCP IOB response and forward it to the watchface. On a parse failure log
+// the leading bytes so an on-watch capture shows exactly what the pump returned (the first HW use
+// of encrypt-for-pump could reveal a framing/E2E surprise -- see PROGRESS.md risk register).
+static void prv_parse_iob(void) {
+  int32_t iob_mu;
+  if (!minimed_iob_parse_response(s_srcp, s_srcp_len, &iob_mu)) {
+    char line[32];
+    snprintf(line, sizeof(line), "IOB bad %u:%02x%02x%02x%02x", s_srcp_len, s_srcp[0], s_srcp[1],
+             s_srcp_len > 2 ? s_srcp[2] : 0, s_srcp_len > 3 ? s_srcp[3] : 0);
+    minimed_sake_log(line);
+    return;
+  }
+  // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
+  int32_t tenths = (iob_mu + 50) / 100;
+  char line[32];
+  snprintf(line, sizeof(line), "*** IOB %ld.%ld U ***", (long)(tenths / 10), (long)(tenths % 10));
+  minimed_sake_log(line);
+
+  char iob_str[12];  // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
+  snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
+  minimed_sake_sender_send_iob(iob_str);  // forward to the watchface (no-op if it isn't running)
+}
+
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
 bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len) {
   if (s_h_measurement != 0 && attr_handle == s_h_measurement) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
-    if (!minimed_sake_decrypt(data, len, plain, &plain_len)) {
+    if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("CGM decrypt failed");
       return true;
     }
@@ -116,6 +164,32 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
                memcmp(data, RACP_REPORT_SUCCESS, len) == 0);
     if (!ok) {
       minimed_sake_log("RACP unexpected resp");
+    } else if (s_h_srcp != 0) {
+      // The CGM poll just finished (its terminating indication is this one). Chain the IOB read
+      // ~200 ms later, off this notify context and after the CGM gattc procedure has fully
+      // completed -- NimBLE allows only one outstanding client op, so serializing CGM->IOB avoids
+      // BLE_HS_EBUSY and keeps the shared inbound cipher counter in order.
+      ble_npl_callout_reset(&s_iob_co, ble_npl_time_ms_to_ticks32(200));
+    }
+    return true;
+  }
+  if (s_h_srcp != 0 && attr_handle == s_h_srcp) {
+    uint8_t plain[24];
+    uint16_t plain_len = 0;
+    if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
+      minimed_sake_log("SRCP decrypt failed");
+      return true;
+    }
+    if (s_srcp_len + plain_len > sizeof(s_srcp)) {
+      s_srcp_len = 0;  // overflow guard; abandon this frame
+    }
+    memcpy(s_srcp + s_srcp_len, plain, plain_len);
+    s_srcp_len += plain_len;
+    // No byte-0 length prefix here (unlike the CGM record): the IOB response is a single short
+    // indication that starts with opcode 0x03FC, complete at the 7-byte mandatory prefix.
+    if (s_srcp_len >= 7) {
+      prv_parse_iob();
+      s_srcp_len = 0;
     }
     return true;
   }
@@ -149,6 +223,117 @@ static void prv_poll_timer_cb(struct ble_npl_event *ev) {
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
 }
 
+// Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
+// (s_h_srcp != 0); a missing/failed IDD discovery leaves BG working, just without IOB.
+static void prv_start_polling(void) {
+  minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
+  prv_do_poll();
+  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
+}
+
+static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
+                             struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    char line[32];
+    snprintf(line, sizeof(line), "SRCP write err=0x%04x", (uint16_t)error->status);
+    minimed_sake_log(line);
+  }
+  return 0;
+}
+
+// Deferred (post-CGM-poll) SRCP "get IOB": SAKE-encrypt the request and write it to the SRCP value
+// handle. The response comes back as an SRCP indication (handled in minimed_sake_read_handle_notify).
+static void prv_iob_read_cb(struct ble_npl_event *ev) {
+  uint8_t enc[sizeof(SRCP_GET_IOB) + 3];  // SeqCrypt appends a 1-byte counter + 2-byte MAC
+  uint16_t enc_len = 0;
+  if (!minimed_sake_encrypt(SRCP_GET_IOB, sizeof(SRCP_GET_IOB), enc, &enc_len)) {
+    minimed_sake_log("IOB encrypt failed");
+    return;
+  }
+  s_srcp_len = 0;  // reset reassembly for this exchange
+  int rc = ble_gattc_write_flat(s_conn, s_h_srcp, enc, enc_len, prv_srcp_write_cb, NULL);
+  if (rc != 0) {
+    char line[32];
+    snprintf(line, sizeof(line), "SRCP write rc=0x%04x", (uint16_t)rc);
+    minimed_sake_log(line);
+  }
+}
+
+static int prv_sub_srcp_cb(uint16_t conn, const struct ble_gatt_error *error,
+                           struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    char line[32];
+    snprintf(line, sizeof(line), "SRCP sub err=0x%04x", (uint16_t)error->status);
+    minimed_sake_log(line);
+    s_h_srcp = 0;  // give up on IOB, keep BG
+  }
+  prv_start_polling();
+  return 0;
+}
+
+static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
+                               const struct ble_gatt_chr *chr, void *arg) {
+  char line[32];
+  if (error->status == 0 && chr) {
+    // The SRCP char is 128-bit vendor, so match by full UUID (not ble_uuid_u16).
+    if (ble_uuid_cmp(&chr->uuid.u, &s_idd_srcp_uuid.u) == 0) {
+      s_h_srcp = chr->val_handle;
+    }
+    return 0;
+  }
+  if (error->status == BLE_HS_EDONE) {
+    if (s_h_srcp == 0) {
+      minimed_sake_log("no IDD SRCP chr");
+      prv_start_polling();  // BG still works without IOB
+      return 0;
+    }
+    // Subscribe SRCP indications (CCCD = value handle + 1, same as RACP on this pump).
+    static const uint8_t indicate[] = {0x02, 0x00};
+    int rc = ble_gattc_write_flat(s_conn, s_h_srcp + 1, indicate, sizeof(indicate),
+                                  prv_sub_srcp_cb, NULL);
+    if (rc != 0) {
+      snprintf(line, sizeof(line), "SRCP sub rc=0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+      s_h_srcp = 0;
+      prv_start_polling();
+    }
+    return 0;
+  }
+  snprintf(line, sizeof(line), "IDD chr disc err=0x%04x", (uint16_t)error->status);
+  minimed_sake_log(line);
+  s_h_srcp = 0;
+  prv_start_polling();
+  return 0;
+}
+
+static int prv_disc_idd_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
+                               const struct ble_gatt_svc *service, void *arg) {
+  char line[32];
+  if (error->status == 0 && service) {
+    s_idd_start = service->start_handle;
+    s_idd_end = service->end_handle;
+    return 0;
+  }
+  if (error->status == BLE_HS_EDONE) {
+    if (s_idd_start == 0) {
+      minimed_sake_log("no IDD svc 0x100");
+      prv_start_polling();  // BG still works without IOB
+      return 0;
+    }
+    int rc = ble_gattc_disc_all_chrs(s_conn, s_idd_start, s_idd_end, prv_disc_idd_chr_cb, NULL);
+    if (rc != 0) {
+      snprintf(line, sizeof(line), "IDD chr disc rc=0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+      prv_start_polling();
+    }
+    return 0;
+  }
+  snprintf(line, sizeof(line), "IDD svc disc err=0x%04x", (uint16_t)error->status);
+  minimed_sake_log(line);
+  prv_start_polling();
+  return 0;
+}
+
 static int prv_sub_racp_cb(uint16_t conn, const struct ble_gatt_error *error,
                            struct ble_gatt_attr *attr, void *arg) {
   if (error->status != 0) {
@@ -157,10 +342,16 @@ static int prv_sub_racp_cb(uint16_t conn, const struct ble_gatt_error *error,
     minimed_sake_log(line);
     return 0;
   }
-  // Both characteristics are subscribed; start polling the latest record continuously.
-  minimed_sake_log("polling BG every 60s");
-  prv_do_poll();
-  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
+  // CGM chars subscribed. Extend the setup chain with IDD-service discovery (for IOB); polling
+  // starts once that resolves (or immediately falls back to BG-only if the IDD service is absent).
+  minimed_sake_log("discovering IDD svc...");
+  int rc = ble_gattc_disc_svc_by_uuid(s_conn, &s_idd_svc_uuid.u, prv_disc_idd_svc_cb, NULL);
+  if (rc != 0) {
+    char line[32];
+    snprintf(line, sizeof(line), "IDD svc disc rc=0x%04x", (uint16_t)rc);
+    minimed_sake_log(line);
+    prv_start_polling();  // couldn't even start IDD discovery; keep BG
+  }
   return 0;
 }
 
@@ -287,18 +478,23 @@ static void prv_read_kickoff(struct ble_npl_event *ev) {
 void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_read_co, nimble_port_get_dflt_eventq(), prv_read_kickoff, NULL);
   ble_npl_callout_init(&s_poll_co, nimble_port_get_dflt_eventq(), prv_poll_timer_cb, NULL);
+  ble_npl_callout_init(&s_iob_co, nimble_port_get_dflt_eventq(), prv_iob_read_cb, NULL);
 }
 
 void minimed_sake_read_start(uint16_t conn_handle) {
   ble_npl_callout_stop(&s_poll_co);
+  ble_npl_callout_stop(&s_iob_co);
   s_conn = conn_handle;
   s_cgm_start = s_cgm_end = 0;
   s_h_measurement = s_h_feature = s_h_racp = 0;
+  s_idd_start = s_idd_end = s_h_srcp = 0;
   s_rec_len = 0;
+  s_srcp_len = 0;
   ble_npl_callout_reset(&s_read_co, ble_npl_time_ms_to_ticks32(250));
 }
 
 void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_read_co);
   ble_npl_callout_stop(&s_poll_co);
+  ble_npl_callout_stop(&s_iob_co);
 }

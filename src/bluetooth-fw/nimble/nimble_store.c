@@ -18,6 +18,10 @@
 
 #include "nimble_type_conversions.h"
 
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#include "popups/minimed_sake_spike_ui.h"
+#endif
+
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
 #define KEY_SIZE 16
@@ -162,7 +166,8 @@ static void prv_notify_irk_updated(const struct ble_store_value_sec *value_sec) 
 }
 
 static void prv_notify_host_bonding_changed(const int obj_type,
-                                            const struct ble_store_value_sec *value_sec) {
+                                            const struct ble_store_value_sec *value_sec,
+                                            bool is_gateway) {
   int rc;
   BleBonding bonding;
   BTDeviceAddress addr;
@@ -174,7 +179,7 @@ static void prv_notify_host_bonding_changed(const int obj_type,
   // persist bonding
   memset(&bonding, 0, sizeof(bonding));
 
-  bonding.is_gateway = true;
+  bonding.is_gateway = is_gateway;
 
   // read any existing data of the opposite type and combine with the new data before sending to the
   // host
@@ -218,6 +223,7 @@ static void prv_notify_host_bonding_changed(const int obj_type,
 typedef struct {
   int obj_type;
   struct ble_store_value_sec value_sec;
+  bool is_gateway;
 } NimbleStoreSecWrittenContext;
 
 static void prv_handle_sec_written_cb(void *data) {
@@ -228,7 +234,7 @@ static void prv_handle_sec_written_cb(void *data) {
     prv_notify_irk_updated(&ctx->value_sec);
   }
 
-  prv_notify_host_bonding_changed(ctx->obj_type, &ctx->value_sec);
+  prv_notify_host_bonding_changed(ctx->obj_type, &ctx->value_sec, ctx->is_gateway);
 
   kernel_free(ctx);
 }
@@ -242,10 +248,23 @@ static int prv_nimble_store_write_sec(const int obj_type,
 
   prv_nimble_store_upsert_sec(obj_type, value_sec);
 
+  // Bonds are the OS gateway (phone) by default.
+  bool is_gateway = true;
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // The pump pairs only in SPIKE mode (the phone always pairs in NORMAL), so a bond written now is
+  // the pump's. Persist it like any bond -- the keys are needed to reconnect after reboot -- but
+  // flag it non-gateway so it is NOT made the OS active gateway, which would displace the phone
+  // (symptom: pump shows in the watch's Bluetooth menu, phone can't reconnect).
+  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+    is_gateway = false;
+  }
+#endif
+
   NimbleStoreSecWrittenContext *ctx = kernel_malloc_check(sizeof(*ctx));
   *ctx = (NimbleStoreSecWrittenContext) {
     .obj_type = obj_type,
     .value_sec = *value_sec,
+    .is_gateway = is_gateway,
   };
   launcher_task_add_callback(prv_handle_sec_written_cb, ctx);
 

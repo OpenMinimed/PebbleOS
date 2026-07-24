@@ -17,6 +17,11 @@
 //! Safe to call from the BT host task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_bg(const char *bg_str);
 
+//! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
+//! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG
+//! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
+void minimed_sake_sender_send_iob(const char *iob_str);
+
 //! Open (spike=true) / close (spike=false) the loopback session. The session must NOT exist in
 //! NORMAL mode: a real phone connection would then compete with it. Called from the mode toggle;
 //! marshals to KernelMain internally.

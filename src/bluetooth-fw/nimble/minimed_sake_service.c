@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "host/ble_gatt.h"
+#include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_hci.h"
 #include "host/ble_uuid.h"
@@ -66,6 +67,13 @@ static sake_server s_server;
 // a bool, torn reads impossible. Persisted to a settings file so a reboot/reflash goes straight
 // back to FE81 and the pump reconnects unattended (the NimBLE bond already persists).
 static bool s_pump_paired;
+
+// Pump identity address, captured (RAM-only) at handshake completion so the v29 advert diagnostics
+// can label a later connection PUMP vs phone. Not persisted: the pump re-runs the full SAKE
+// handshake on every reconnect, so it is re-captured each cycle. Written and read on the NimBLE
+// host task, so no locking.
+static ble_addr_t s_pump_id_addr;
+static bool s_pump_addr_known;
 
 #define MINIMED_SETTINGS_FILE "minimedsake"
 #define MINIMED_SETTINGS_MAX_SIZE 256
@@ -184,6 +192,11 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     minimed_sake_log(line);
   } else if (r == SAKE_RESULT_DONE) {
     prv_set_pump_paired(true);  // pump is bonded now -> advertise FE81 (reconnect) from here on
+    struct ble_gap_conn_desc d;  // remember who the pump is, for the v29 PUMP/phone conn label
+    if (ble_gap_conn_find(conn_handle, &d) == 0) {
+      s_pump_id_addr = d.peer_id_addr;
+      s_pump_addr_known = true;
+    }
     minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
   } else {
@@ -305,8 +318,14 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
   prv_defer_notify(conn_handle, wakeup, 120);
 }
 
-bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len) {
+bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t out_cap,
+                          uint16_t *out_len) {
   if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
+    return false;
+  }
+  // sake_decrypt_from_pump writes n-3 plaintext bytes unconditionally; `n` is an external device's
+  // frame length and the MTU is not clamped to 20, so bound it against the caller's buffer here.
+  if (n < 3 || (uint16_t)(n - 3) > out_cap) {
     return false;
   }
   size_t out_n = 0;
@@ -314,6 +333,15 @@ bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t 
     return false;
   }
   *out_len = (uint16_t)out_n;
+  return true;
+}
+
+bool minimed_sake_encrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len) {
+  if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
+    return false;
+  }
+  sake_encrypt_for_pump(&s_server, in, n, out);
+  *out_len = (uint16_t)(n + 3);  // SeqCrypt appends a 1-byte counter + 2-byte MAC
   return true;
 }
 
@@ -339,6 +367,10 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
 }
 
 bool minimed_sake_pump_paired(void) { return s_pump_paired; }
+
+bool minimed_sake_addr_is_pump(const ble_addr_t *addr) {
+  return s_pump_addr_known && ble_addr_cmp(addr, &s_pump_id_addr) == 0;
+}
 
 void minimed_sake_forget_pump(void) {
   prv_set_pump_paired(false);

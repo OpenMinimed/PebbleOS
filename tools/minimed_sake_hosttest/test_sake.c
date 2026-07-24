@@ -10,6 +10,7 @@
 
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_aes.h"
+#include "minimed_iob.h"
 
 static int g_pass, g_fail;
 
@@ -245,11 +246,44 @@ static void section_seqcrypt(void) {
   printf("\n");
 }
 
+// --- Section 4: IOB medfloat32 decode + SRCP 0x03FC parse -----------------
+// Vectors from OpenMinimed's Kotlin unit tests (MedtronicCodecMedFloat32Test / IddStatusReaderTest);
+// the 1.4 IU frame is confirmed against a live 780G. This pins minimed_iob.c before it ever flashes.
+
+static void section_iob(void) {
+  printf("[4] IOB medfloat32 decode + SRCP 0x03FC parse\n");
+  int32_t mu = 0;
+
+  check("medfloat32 0xfa155cc0 -> 1400 mU (1.4 IU)",
+        minimed_iob_decode_medfloat32_mu(0xfa155cc0u, &mu) && mu == 1400);
+  check("medfloat32 0xfb280de8 -> 26250 mU (26.25)",
+        minimed_iob_decode_medfloat32_mu(0xfb280de8u, &mu) && mu == 26250);
+  check("medfloat32 0 -> 0 mU", minimed_iob_decode_medfloat32_mu(0u, &mu) && mu == 0);
+  check("medfloat32 0x000000c8 -> 200000 mU (200 IU, decode is faithful)",
+        minimed_iob_decode_medfloat32_mu(0x000000c8u, &mu) && mu == 200000);
+
+  uint8_t body[16];
+  size_t n = unhex("fc0300c05c15fa", body);  // live-confirmed IOB response = 1.4 IU
+  check("parse IOB response 'fc0300c05c15fa' -> 1400 mU",
+        minimed_iob_parse_response(body, (uint16_t)n, &mu) && mu == 1400);
+
+  n = unhex("fc0300c8000000", body);  // 200 IU -> rejected by the 0..100 IU plausibility gate
+  check("parse rejects out-of-range 200 IU", !minimed_iob_parse_response(body, (uint16_t)n, &mu));
+
+  n = unhex("fb0300c05c15fa", body);  // wrong opcode (0x03fb)
+  check("parse rejects wrong opcode", !minimed_iob_parse_response(body, (uint16_t)n, &mu));
+
+  n = unhex("fc0300c05c15", body);  // 6 bytes < MIN_BODY_SIZE(7)
+  check("parse rejects short body", !minimed_iob_parse_response(body, (uint16_t)n, &mu));
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
   section_captured_trace();
   section_seqcrypt();
+  section_iob();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

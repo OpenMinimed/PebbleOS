@@ -17,6 +17,7 @@
 #include "nimble_type_conversions.h"
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
+#include "comm/ble/gap_le_advert.h"
 #include "minimed_sake_read.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
@@ -31,20 +32,20 @@ static bool s_pairing_in_progress;
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
 static uint16_t s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 
-// Drop the active link (if any) so the connection manager re-advertises under the current mode.
-// ble_gap_terminate takes the ble_hs lock internally, so this is safe to call from the app task.
+// Re-advertise under the current mode after a mode toggle or forget-pump. The advert payload is
+// mode-dependent (Medtronic in SPIKE via the set_advertising_data hijack, Pebble in NORMAL), but
+// the advertising scheduler skips re-pushing data when its job pointer is unchanged -- so a mode
+// change would otherwise leave the previous mode's payload live in the controller (e.g. a stale
+// FE81 payload in NORMAL, which lets the pump connect and run SAKE while we believe we're an
+// ordinary Pebble). gap_le_advert_force_data_refresh forces the scheduler to re-push, which runs
+// set_advertising_data and picks up the correct payload for the current mode.
 void minimed_sake_force_readvertise(void) {
+  gap_le_advert_force_data_refresh();
+  // If a link is up, drop it too: this frees the single connection slot (leaving SPIKE drops the
+  // pump; entering it drops the phone) and the ensuing disconnect makes the scheduler re-air --
+  // now with the refreshed, mode-correct payload.
   if (s_sake_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-    // Active link: terminate it. The disconnect makes the connection manager re-advertise, and the
-    // advertising_enable clamp below makes that fast + Medtronic in SPIKE mode.
     ble_gap_terminate(s_sake_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-    return;
-  }
-  // No active link (e.g. phone Bluetooth already off): nothing else would re-trigger advertising,
-  // so in SPIKE mode kick the fast Medtronic advert directly. Makes the toggle order not matter.
-  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
-    ble_gap_adv_stop();
-    bt_driver_advert_advertising_enable(100, 140);
   }
 }
 #endif
@@ -92,7 +93,12 @@ bool bt_driver_advert_set_advertising_data(const BLEAdData *ad_data) {
       PBL_LOG_ERR("SAKE: failed to set Medtronic advert (0x%04x)", (uint16_t)rc);
       return false;
     }
-    minimed_sake_log(minimed_sake_pump_paired() ? "adv data: FE81" : "adv data: FE82");
+    // DIAGNOSTIC (v29): dump the actual bytes pushed, so FE82/FE81 is read from the wire payload
+    // (b[5]b[6]) rather than inferred from the paired flag.
+    char line[32];
+    snprintf(line, sizeof(line), "advS %02x%02x%02x%02x%02x%02x%02x", sake_adv[0], sake_adv[1],
+             sake_adv[2], sake_adv[3], sake_adv[4], sake_adv[5], sake_adv[6]);
+    minimed_sake_log(line);
     return true;
   }
 #endif
@@ -109,6 +115,19 @@ bool bt_driver_advert_set_advertising_data(const BLEAdData *ad_data) {
     PBL_LOG_ERR("Failed to set scan response data (0x%04x)", (uint16_t)rc);
     return false;
   }
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // DIAGNOSTIC (v29): dump the actual bytes handed to the controller in NORMAL. Read b[5]b[6]:
+  // 82fe/81fe = a leaked Medtronic payload live in NORMAL; anything else = the real Pebble payload
+  // landed. No advN line after a mode toggle = set_advertising_data never ran (stale payload).
+  {
+    const uint8_t *b = ad_data->data;
+    char line[32];
+    snprintf(line, sizeof(line), "advN %02x%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3], b[4],
+             b[5], b[6]);
+    minimed_sake_log(line);
+  }
+#endif
 
   return true;
 }
@@ -127,6 +146,20 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     PBL_LOG_ERR("prv_handle_connection_event: Failed to find connection descriptor");
     return;
   }
+
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  // DIAGNOSTIC (v29): label the connection PUMP vs phone (by the identity captured at handshake),
+  // in which mode, with two address bytes for continuity with older logs. A PUMP connection while
+  // m=N is a pump reconnecting in NORMAL -- the open question we're chasing.
+  {
+    char line[32];
+    bool is_pump = minimed_sake_addr_is_pump(&desc.peer_id_addr);
+    snprintf(line, sizeof(line), "conn %s m=%c %02x:%02x t%u", is_pump ? "PUMP" : "phone",
+             minimed_sake_get_mode() == MinimedSakeModeSpike ? 'S' : 'N',
+             desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
+    minimed_sake_log(line);
+  }
+#endif
 
   struct BleConnectionCompleteEvent complete_event = {
       .handle = event->connect.conn_handle,
@@ -473,15 +506,12 @@ bool bt_driver_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_
   bool spike_mode = minimed_sake_get_mode() == MinimedSakeModeSpike;
   unsigned spike_orig_max_ms = (unsigned)max_interval_ms;
   if (spike_mode) {
-    // The pump ignores adverts slower than ~150ms, but the reconnection job uses ~1s. Force a fast
-    // interval, and re-assert the Medtronic payload here (the reconnection job may reuse cached
-    // Pebble advert data without calling set_advertising_data), so SPIKE always advertises fast and
-    // as "Mobile PB" no matter who enabled advertising.
+    // The pump ignores adverts slower than ~150ms, but the reconnection job we piggyback on uses
+    // ~1s. Force a fast interval. This only controls HOW we advertise; WHAT we advertise (the
+    // Medtronic payload) is set by the set_advertising_data hijack, kept in sync across mode
+    // changes by gap_le_advert_force_data_refresh (see minimed_sake_force_readvertise).
     min_interval_ms = 100;
     max_interval_ms = 140;
-    uint8_t sake_adv[31];
-    uint8_t sake_adv_len = minimed_sake_build_adv(sake_adv, sizeof(sake_adv));
-    ble_gap_adv_set_data(sake_adv, sake_adv_len);
   }
 #endif
   uint8_t own_addr_type;
@@ -517,6 +547,11 @@ bool bt_driver_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_
     char line[32];
     snprintf(line, sizeof(line), "adv EN FE8%c t%u %u->140ms",
              minimed_sake_pump_paired() ? '1' : '2', own_addr_type, spike_orig_max_ms);
+    minimed_sake_log(line);
+  } else {
+    // DIAGNOSTIC: confirm what we advertise + which address type when we (re)enable in NORMAL.
+    char line[32];
+    snprintf(line, sizeof(line), "adv EN PBL t%u", own_addr_type);
     minimed_sake_log(line);
   }
 #endif

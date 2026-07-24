@@ -118,3 +118,33 @@ context for ongoing work**; `PROGRESS.md` has the current state. Newest at the b
 - v16 HW: 🎉 **reconnect works.** NORMAL⇄SPIKE toggle → pump reconnected by itself, re-ran the full
   handshake, correct BG resumed. Confirms the pump's RPA + distributed-IRK reconnect requirements
   (noted in `Documentation/bluetooth.md`) and that the handshake re-runs fresh per connection.
+- v16 soaked clean all day (a few disconnects, always self-recovered).
+
+## v17–v20 — watchface display + the first-pair-address bug (2026-07-22 evening)
+
+Goal this session: show BG on the *real* `minimed-pebble-watchface`, plus DX/pairing polish.
+
+- Two research agents mapped (a) the inbound AppMessage seam and (b) the watchface protocol
+  (UUID `567a3f6e-…`, Pebble Glucose Protocol keys). Chosen approach: firmware injects local
+  AppMessages via a phone-less loopback CommSession (QEMU-transport pattern) — watchface unmodified.
+- **v17:** persisted pump-paired flag (settings file) + watchface local-sender (BG → AppMessage).
+- **DX:** `spike-build.sh` (build+version+adb-push in one) and `TESTING.md` written. User's real
+  pain was re-pairing, not file copy.
+- **v18:** phone-bond fix — discovered NimBLE reads `ble_hs_cfg.sm_*` at runtime (old "compile-time,
+  unfixable" assumption was wrong), so NORMAL keeps stock strict LESC and SPIKE flips to legacy JW.
+- **v19:** tried faking `PEBBLE_BT_CONNECTION_EVENT` to clear the watchface "not connected" banner.
+- **The evening's rabbit hole:** v16→v17 needed a pairing resync (persisted flag empty → FE82 vs
+  pump's FE81); then a mirror mismatch (watch FE81 vs pump unpaired) fixed by DOWN=forget. Then
+  after clearing bonds, **first-pair stopped working entirely — pump couldn't discover the watch**
+  (pure discovery failure, nothing after `adv EN FE82`). v19's connection event was suspected but
+  the code showed no advertising-disable path.
+- **Root cause (v20):** v15 had made SPIKE *always* advertise an RPA (needed for reconnect), which
+  dragged first-pair onto an RPA too — and the pump frequently can't discover an RPA first-pair
+  advert. v10–v14 used a plain address and paired reliably. **Fix: address type follows pairing
+  state** — plain (`t1`) for first-pair FE82, RPA (`t3`) for reconnect FE81. v19's connection-event
+  hack reverted (confound; and unnecessary).
+- **v20 HW-verified:** `adv EN FE82 t1` → pump found + paired; reconnect (`t3`) works (1–2 min pump
+  latency); **real watchface shows live BG ("6.2"), screen clean, no "not connected."** Milestone:
+  the on-watch pipeline drives the actual watchface, no phone.
+- Committed as a checkpoint (`d066acc3` tooling+docs, `7a5d44ec` code). Nothing pushed.
+- Lesson recorded: stop stacking unverified changes; one change per flash, verify, then next.

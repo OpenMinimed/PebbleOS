@@ -31,11 +31,13 @@ static const Uuid s_watchface_uuid = {
 };
 
 // Pebble Glucose Protocol v1 keys (minimed-pebble-watchface docs/PEBBLE_GLUCOSE_PROTOCOL.md).
-// v1 sends the minimum the watchface needs: BG string + timestamp. IOB/status/graph later.
+// BG string + timestamp; IOB string (14). Status/graph later.
 #define KEY_BG_TIMESTAMP 10
 #define KEY_BG_STRING 11
+#define KEY_IOB_STRING 14
 
-#define BG_STR_MAX 8  // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
+#define BG_STR_MAX 8   // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
+#define IOB_STR_MAX 8  // "N.N"/"NN.N" IU
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see prv_set_bg.
@@ -47,6 +49,7 @@ static CommSession *s_session;
 static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
+static char s_iob_str[IOB_STR_MAX];
 
 // -- Outbound (watchface -> us): drain the send queue, detect the "ready" ping -----------------
 
@@ -145,10 +148,13 @@ static void prv_push_bg_cb(void *unused) {
   };
 
   uint32_t dict_size = sizeof(payload) - offsetof(AppMessagePush, dictionary);
-  const char *bg = s_bg_str;  // array would trip -Werror=address in TupletCString's NULL check
+  // Pointer locals: an array would trip -Werror=address in TupletCString's NULL check.
+  const char *bg = s_bg_str;
+  const char *iob = s_iob_str;
   const Tuplet tuplets[] = {
       TupletInteger(KEY_BG_TIMESTAMP, s_bg_timestamp),
       TupletCString(KEY_BG_STRING, bg),
+      TupletCString(KEY_IOB_STRING, iob),  // empty until the first IOB read; watchface blanks it
   };
   if (dict_serialize_tuplets_to_buffer(tuplets, ARRAY_LENGTH(tuplets),
                                        (uint8_t *)&push->dictionary, &dict_size) != DICT_OK) {
@@ -203,6 +209,14 @@ void minimed_sake_sender_send_bg(const char *bg_str) {
   strncpy(s_bg_str, bg_str, sizeof(s_bg_str) - 1);
   s_bg_str[sizeof(s_bg_str) - 1] = '\0';
   s_bg_timestamp = (uint32_t)rtc_get_time();
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_iob(const char *iob_str) {
+  // Same lock-free discipline as send_bg. Deliberately does NOT touch s_bg_timestamp: an IOB
+  // update must not make a stale BG look fresh (the watchface keys staleness off the BG timestamp).
+  strncpy(s_iob_str, iob_str, sizeof(s_iob_str) - 1);
+  s_iob_str[sizeof(s_iob_str) - 1] = '\0';
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
