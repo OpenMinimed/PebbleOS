@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "host/ble_gatt.h"
+#include "host/ble_gap.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_hci.h"
 #include "host/ble_uuid.h"
@@ -16,6 +17,8 @@
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_read.h"
 #include "popups/minimed_sake_spike_ui.h"
+#include "kernel/event_loop.h"
+#include "pbl/services/settings/settings_file.h"
 #include "pbl/logging/logging.h"
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
@@ -59,10 +62,59 @@ static bool s_keydb_ok;
 static sake_server s_server;
 
 // True once a SAKE handshake has completed, i.e. the pump holds a bond (LTK + our IRK) to this
-// watch. Selects the FE81 (reconnect) advert instead of FE82 (first-pair). RAM only: lost on
-// reboot, cleared by "forget pump" in the spike app. Written on the BT host task, read on the BT
-// task and the app task -- a bool, torn reads impossible.
+// watch. Selects the FE81 (reconnect) advert instead of FE82 (first-pair). Cleared by "forget
+// pump" in the spike app. Written on the BT host task, read on the BT task and the app task --
+// a bool, torn reads impossible. Persisted to a settings file so a reboot/reflash goes straight
+// back to FE81 and the pump reconnects unattended (the NimBLE bond already persists).
 static bool s_pump_paired;
+
+// Pump identity address, captured (RAM-only) at handshake completion so the v29 advert diagnostics
+// can label a later connection PUMP vs phone. Not persisted: the pump re-runs the full SAKE
+// handshake on every reconnect, so it is re-captured each cycle. Written and read on the NimBLE
+// host task, so no locking.
+static ble_addr_t s_pump_id_addr;
+static bool s_pump_addr_known;
+
+#define MINIMED_SETTINGS_FILE "minimedsake"
+#define MINIMED_SETTINGS_MAX_SIZE 256
+static const char s_paired_setting_key[] = "paired";
+
+static void prv_load_pump_paired(void) {
+  SettingsFile fd;
+  if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
+    return;  // no file yet -> stay unpaired (FE82)
+  }
+  uint8_t v = 0;
+  if (settings_file_get(&fd, s_paired_setting_key, sizeof(s_paired_setting_key), &v, sizeof(v)) ==
+      S_SUCCESS) {
+    s_pump_paired = (v != 0);
+  }
+  settings_file_close(&fd);
+}
+
+// Flash write deferred to KernelMain: the flag flips on the BT host task (handshake) or the app
+// task (forget), neither of which should block on filesystem I/O.
+static void prv_store_pump_paired_cb(void *data) {
+  SettingsFile fd;
+  if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
+    minimed_sake_log("persist open fail");
+    return;
+  }
+  uint8_t v = (data != NULL) ? 1 : 0;
+  if (settings_file_set(&fd, s_paired_setting_key, sizeof(s_paired_setting_key), &v, sizeof(v)) !=
+      S_SUCCESS) {
+    minimed_sake_log("persist set fail");
+  }
+  settings_file_close(&fd);
+}
+
+static void prv_set_pump_paired(bool paired) {
+  if (s_pump_paired == paired) {
+    return;  // no change -> no flash write (handshake re-runs on every reconnect)
+  }
+  s_pump_paired = paired;
+  launcher_task_add_callback(prv_store_pump_paired_cb, paired ? (void *)1 : NULL);
+}
 
 static void prv_rng(void *ud, uint8_t *out, size_t n) {
   (void)ud;
@@ -139,7 +191,12 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     snprintf(line, sizeof(line), "sent reply (st%d)", stage);
     minimed_sake_log(line);
   } else if (r == SAKE_RESULT_DONE) {
-    s_pump_paired = true;  // pump is bonded now -> advertise FE81 (reconnect) from here on
+    prv_set_pump_paired(true);  // pump is bonded now -> advertise FE81 (reconnect) from here on
+    struct ble_gap_conn_desc d;  // remember who the pump is, for the v29 PUMP/phone conn label
+    if (ble_gap_conn_find(conn_handle, &d) == 0) {
+      s_pump_id_addr = d.peer_id_addr;
+      s_pump_addr_known = true;
+    }
     minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
   } else {
@@ -261,8 +318,14 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
   prv_defer_notify(conn_handle, wakeup, 120);
 }
 
-bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len) {
+bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t out_cap,
+                          uint16_t *out_len) {
   if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
+    return false;
+  }
+  // sake_decrypt_from_pump writes n-3 plaintext bytes unconditionally; `n` is an external device's
+  // frame length and the MTU is not clamped to 20, so bound it against the caller's buffer here.
+  if (n < 3 || (uint16_t)(n - 3) > out_cap) {
     return false;
   }
   size_t out_n = 0;
@@ -270,6 +333,15 @@ bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t 
     return false;
   }
   *out_len = (uint16_t)out_n;
+  return true;
+}
+
+bool minimed_sake_encrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t *out_len) {
+  if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
+    return false;
+  }
+  sake_encrypt_for_pump(&s_server, in, n, out);
+  *out_len = (uint16_t)(n + 3);  // SeqCrypt appends a 1-byte counter + 2-byte MAC
   return true;
 }
 
@@ -296,8 +368,12 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
 
 bool minimed_sake_pump_paired(void) { return s_pump_paired; }
 
+bool minimed_sake_addr_is_pump(const ble_addr_t *addr) {
+  return s_pump_addr_known && ble_addr_cmp(addr, &s_pump_id_addr) == 0;
+}
+
 void minimed_sake_forget_pump(void) {
-  s_pump_paired = false;
+  prv_set_pump_paired(false);
   minimed_sake_log("forget pump -> FE82");
   // Re-advertise first-pair immediately; in NORMAL mode the next SPIKE toggle picks it up anyway
   // (and force_readvertise would needlessly drop the phone link).
@@ -306,9 +382,38 @@ void minimed_sake_forget_pump(void) {
   }
 }
 
+void minimed_sake_apply_sm_config(bool spike) {
+  // The pump and the phone want opposite Security Manager settings, and NimBLE reads ble_hs_cfg
+  // live when it builds each pairing request -- so flip at runtime by mode instead of baking one
+  // compromise into syscfg. The phone never pairs in SPIKE mode (its BT is off) and the pump never
+  // in NORMAL, so the two configs never meet. This keeps the phone bond identical to stock (no
+  // re-pair dance on every reflash) while still letting the pump pair legacy Just Works.
+  if (spike) {
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;  // pump: no MITM -> Just Works
+    ble_hs_cfg.sm_mitm = 0;
+    ble_hs_cfg.sm_our_key_dist = 3;  // + IRK/identity so the pump can resolve our RPA on reconnect
+    ble_hs_cfg.sm_their_key_dist = 3;
+    minimed_sake_log("SM: pump (legacy JW)");
+  } else {
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_YESNO;  // phone: stock LESC + numeric-compare MITM
+    ble_hs_cfg.sm_mitm = 1;
+    ble_hs_cfg.sm_our_key_dist = 1;
+    ble_hs_cfg.sm_their_key_dist = 3;
+  }
+}
+
 int minimed_sake_service_init(void) {
   ble_npl_callout_init(&s_notify_co, nimble_port_get_dflt_eventq(), prv_notify_cb, NULL);
   minimed_sake_read_init();
+
+  // Boot mode is NORMAL: make sure the phone gets the stock strict config even though we compile
+  // with the permissive legacy gates (SC_ONLY 0 / LEGACY 1) the pump needs.
+  minimed_sake_apply_sm_config(false);
+
+  prv_load_pump_paired();
+  if (s_pump_paired) {
+    minimed_sake_log("paired (persisted): FE81");
+  }
 
   s_keydb_ok = sake_keydb_parse(&s_keydb, s_pump_keydb_bytes, sizeof(s_pump_keydb_bytes));
   if (s_keydb_ok) {

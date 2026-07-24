@@ -18,7 +18,8 @@ config NIMBLE_BLE_HS_AUTO_START
     default n
 
 # LE Secure Connections only, with MITM protection: mode 1 level 4. The MiniMed pump only does
-# legacy Just Works pairing, so the MiniMed build accepts that instead.
+# legacy Just Works pairing, so that build accepts it too and relaxes the phone's strict config at
+# runtime (minimed_sake_apply_sm_config).
 config NIMBLE_BLE_SM_BONDING
     default y
 
@@ -34,23 +35,18 @@ config NIMBLE_BLE_SM_LEGACY
     default n
 
 config NIMBLE_BLE_SM_MITM
-    default n if MINIMED_SAKE_SPIKE
     default y
 
 config NIMBLE_BLE_SM_LVL
     default 4
 
-# The pump only reconnects to a Resolvable Private Address, which it can resolve only with our
-# IRK, so the MiniMed build distributes the IRK and identity address (bit 1) too.
 config NIMBLE_BLE_SM_OUR_KEY_DIST
-    default 3 if MINIMED_SAKE_SPIKE
     default 1
 
 config NIMBLE_BLE_SM_THEIR_KEY_DIST
     default 3
 
 choice NIMBLE_BLE_SM_IO_CAP_CHOICE
-    default NIMBLE_BLE_SM_IO_CAP_NO_INPUT_OUTPUT if MINIMED_SAKE_SPIKE
     default NIMBLE_BLE_SM_IO_CAP_DISPLAY_YESNO
 endchoice
 

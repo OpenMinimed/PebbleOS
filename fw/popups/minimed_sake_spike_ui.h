@@ -56,3 +56,13 @@ bool minimed_sake_pump_paired(void);
 //! to FE82 (first-pair) advertising -- for when the "Mobile PB" device was removed on the pump.
 //! Called from the spike app's DOWN handler.
 void minimed_sake_forget_pump(void);
+
+//! Implemented in the BT layer (minimed_sake_sender.c): open/close the loopback CommSession that
+//! feeds the watchface local AppMessages. Open only in SPIKE mode (in NORMAL mode it would
+//! compete with the real phone session). Called from the mode toggle.
+void minimed_sake_sender_set_mode(bool spike);
+
+//! Implemented in the BT layer (minimed_sake_service.c): switch the runtime Security Manager
+//! config between the phone's stock strict LESC (NORMAL) and the pump's legacy Just Works
+//! (SPIKE). Keeps the phone bond stable across reflashes. Called from the mode toggle.
+void minimed_sake_apply_sm_config(bool spike);
