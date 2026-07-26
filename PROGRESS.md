@@ -143,7 +143,13 @@ was supposedly fixed. **Unresolved. Do not repeat these dead ends:**
   mtime to *source* mtime, not to the commit.)
 - **The watchface's rendering and parse paths are healthy.** Verified in the emulator with TEST_MODE:
   BG, IOB, the graph trace and the trend projection all draw correctly with 30 points. So the new
-  graph data is not what kills it.
+  graph data is not what kills it. **But this clears less than it looks** (found 2026-07-26): under
+  `TEST_MODE`, `load_state()` is compiled out (`main.c` `#ifndef TEST_MODE`) *and* `new_data_callback`
+  is never exercised — i.e. the emulator run covers the rendering path but neither of the two
+  functions that actually run on the watch at launch. Both were then read closely and no fault
+  found (the persist reads are size-bounded; `count` is clamped to `MAX_GRAPH_POINTS` before use),
+  but they are **not** covered by the emulator evidence. Cheap fix for the gap, no hardware needed:
+  a TEST_MODE variant that pushes a synthetic 4-tuplet dictionary through `new_data_callback`.
 - **Not memory.** flint reports 9436 B footprint and 56100 B free heap, so `app_message_open(2048,64)`
   is comfortable.
 - **Audited every layer access** (`text_layer_set_text` / `layer_mark_dirty`): all were guarded except
@@ -155,12 +161,41 @@ was supposedly fixed. **Unresolved. Do not repeat these dead ends:**
   a fixed range (no data-derived divide-by-zero), and the graph parse bound-checks the tuple length.
   All confirmed, all fine.
 
-Best remaining hypothesis: something about the *injected* AppMessage itself (a malformed or
-mis-length-ed dictionary would make `dict_find` walk off the buffer and fault **before** any of the
-watchface's guards apply). v34 grew the push from ~40 B to ~180 B and from 3 tuplets to 4. The
-firmware side to re-audit is `prv_push_bg_cb` / `prv_inject` in `minimed_sake_sender.c` — especially
-that the `payload_len` handed to `prv_inject` matches what `dict_serialize_tuplets_to_buffer`
-actually wrote.
+- **The injected AppMessage is NOT malformed — hypothesis DISPROVED, not merely unconfirmed**
+  (audit + 2 independent refuters, 2026-07-26). This was the leading theory: a mis-length-ed
+  dictionary making `dict_find` walk off the buffer and fault before any watchface guard applies.
+  Every link in it was checked against the real code and every one is clean:
+  - **`dict_serialize_tuplets_to_buffer`'s size parameter is capacity-in / bytes-written-out**
+    (`src/fw/util/dict.c:246` → `:108-116` → `:27-29`, documented at `dict.h:390-391`). So
+    `prv_push_bg_cb` passes the bytes actually written, never the 192-byte capacity, and the
+    declared dictionary length always equals its content. **This is the fact to remember.**
+  - Protocol header length and delivered byte count come from the same variable and cannot diverge
+    (`minimed_sake_sender.c:141-148`); endianness matches the reader.
+  - `s_frame` is 214 B against a 145 B worst case (real 30-point push: 137 B dict / 155 B payload).
+    An overflow is impossible *and* would not be silent — `dict_write_data_internal` bounds-checks
+    every tuple and the caller logs `wf dict fail`.
+  - The graph blob length is a plain local assigned before the tuplet initializer, from the same
+    snapshotted `count` the body loop uses; macro-expansion time and serialize time cannot disagree.
+  - `comm_session_receive_router_write` has no max single-write size, no chunking threshold and no
+    reassembly state that 155 bytes trips.
+  - The app inbox really is 2048 B (the `.pbw` declares SDK 0x05/0x65, past the 8k cutoff), so the
+    push is never dropped, let alone truncated.
+  - Watchface UUID matches; a mismatch would NACK cleanly anyway, not crash.
+- **The launch gap is real but cannot be the cause.** `window_load` genuinely is deferred
+  (`window_stack_push` → … → `animation_schedule`), so the 2026-07-23 Gotcha's mechanism is sound —
+  but it needs a message to land in a microsecond window against a 60 s poll. That is a per-launch
+  lottery, not a consistent crash, and every layer access is now guarded. Consider it closed.
+
+Remaining candidates, in order: **the app fault log's PC/LR** (nothing in a code audit substitutes
+for it); the watchface's own launch sequence that the emulator skips — especially `load_state()`
+reading a **v33-era persisted state with v34 code**; and firmware code touched by v34 outside the
+sender, notably the new `s_reading_ts` / Time-Offset tracking in `minimed_sake_read.c:125-149`.
+
+Two fragile-but-correct spots found along the way, worth a comment each so nobody "fixes" them:
+`prv_ack_and_resend_cb` writes an ACK into `s_frame` and `prv_push_bg_cb` immediately overwrites the
+same buffer (safe only because `comm_session_receive_router_write` copies synchronously);
+and `window_unload` destroys the layers but leaves the pointers non-NULL, so the NULL guards the
+2026-07-23 fix relies on are stale after an unload (currently unreachable, but NULLing them is free).
 
 **Next step requires the app crash log**, which needs a phone connection — and that costs the pump
 bond (a gateway write prunes it). Use the USB tunnel, not an IP: `adb forward tcp:9000 tcp:9000`
