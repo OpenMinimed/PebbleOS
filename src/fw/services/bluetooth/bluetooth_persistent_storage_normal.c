@@ -643,6 +643,7 @@ typedef struct {
   BTBondingID key_out;
   uint32_t last_modified_out;
   uint8_t ble_count;
+  bool keep_is_gateway;
 } MostRecentBleItrData;
 
 static bool prv_find_most_recent_ble_bonding_itr(SettingsFile *file, SettingsRecordInfo *info,
@@ -661,12 +662,26 @@ static bool prv_find_most_recent_ble_bonding_itr(SettingsFile *file, SettingsRec
 
   BTBondingID key;
   info->get_key(file, (uint8_t *)&key, info->key_len);
+  const bool is_gateway = stored_data.ble_data.is_gateway;
 
   itr_data->ble_count++;
-  if (itr_data->key_out == BT_BONDING_ID_INVALID ||
-      info->last_modified > itr_data->last_modified_out) {
+  // Prefer keeping the gateway (phone): a gateway always beats a non-gateway (e.g. the MiniMed pump)
+  // regardless of modified time; among the same class, keep the most-recently modified. Without the
+  // gateway preference a reboot could keep a more-recently-bonded non-gateway and prune the phone,
+  // re-triggering the reconnect(0x13) loop. In stock builds all BLE bonds are gateways, so this
+  // reduces to the original most-recent-wins behaviour.
+  bool better;
+  if (itr_data->key_out == BT_BONDING_ID_INVALID) {
+    better = true;
+  } else if (is_gateway != itr_data->keep_is_gateway) {
+    better = is_gateway;
+  } else {
+    better = (info->last_modified > itr_data->last_modified_out);
+  }
+  if (better) {
     itr_data->key_out = key;
     itr_data->last_modified_out = info->last_modified;
+    itr_data->keep_is_gateway = is_gateway;
   }
   return true;
 }
@@ -772,10 +787,14 @@ BTBondingID bt_persistent_storage_store_ble_pairing(const SMPairingInfo *new_pai
 
   prv_call_ble_bonding_change_handlers(key, op);
 
-  // We only support a single BLE pairing at a time. Drop any previous BLE bonding so that
-  // re-pairing with a different phone (or merging a PRF pairing) replaces the old one instead of
-  // leaving it behind and forcing the user to forget it manually.
-  prv_delete_other_ble_bondings(key);
+  // We only support a single BLE *gateway* pairing at a time, so adding a new gateway drops the
+  // previous one. Guard on is_gateway: a NON-gateway bond (e.g. the MiniMed pump) must not evict
+  // the gateway (phone) -- doing so deletes the phone's LTK, so it can't re-encrypt on reconnect
+  // and gets stuck in a connect/terminate(0x13) loop, forcing a re-pair. In stock builds every BLE
+  // bond is a gateway, so this guard is a no-op there.
+  if (is_gateway) {
+    prv_delete_other_ble_bondings(key);
+  }
 
   return key;
 }
