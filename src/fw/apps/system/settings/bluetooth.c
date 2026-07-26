@@ -137,6 +137,14 @@ static void prv_add_ble_remote(BTDeviceInternal *device, SMIdentityResolvingKey 
     return;
   }
 
+  // This menu is the "paired phone" list, and pairability is enabled only while it is empty (see
+  // prv_expand_cb). A non-gateway bond -- the MiniMed pump -- is not a phone: listing it would
+  // both miscount the header and permanently block pairing a new phone, since the pump bond now
+  // survives reboots. In stock builds every BLE bond is a gateway, so nothing is ever skipped.
+  if (!bt_persistent_storage_is_ble_ancs_bonding(*id)) {
+    return;
+  }
+
   StoredRemote* remote = stored_remote_create();
   remote->ble.bonding = *id;
   prv_copy_device_name_with_fallback(remote, name);
