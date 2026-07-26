@@ -815,3 +815,57 @@ void test_bluetooth_persistent_storage__gateway_still_evicts_gateway(void) {
   cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(id_1, NULL, NULL, NULL));
   cl_assert(bt_persistent_storage_get_ble_pairing_by_id(id_2, NULL, NULL, NULL));
 }
+
+// Forgetting the PUMP must not wipe the PHONE's shared-PRF pairing slot. The erase was
+// unconditional, so pressing DOWN (forget pump) on the watch -- a routine step in the FE81/FE82
+// reconciliation -- left the phone unpaired in PRF until the next boot repaired it.
+void test_bluetooth_persistent_storage__deleting_non_gateway_keeps_prf(void) {
+  SMPairingInfo pump = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xd1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xd1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xd1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = true,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID pump_id = bt_persistent_storage_store_ble_pairing(&pump, false /* is_gateway */,
+                                                                NULL,
+                                                                false /* requires_address_pinning */,
+                                                                false /* auto_accept_re_pairing */);
+
+  fake_shared_prf_storage_reset_counts();
+  bt_persistent_storage_delete_ble_pairing_by_id(pump_id);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(pump_id, NULL, NULL, NULL));
+  cl_assert_equal_i(fake_shared_prf_storage_get_ble_delete_count(), 0);
+}
+
+// Deleting the phone must still erase the PRF slot -- stock behaviour, unchanged.
+void test_bluetooth_persistent_storage__deleting_gateway_erases_prf(void) {
+  SMPairingInfo phone = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xd2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xd2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xd2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = false,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID phone_id = bt_persistent_storage_store_ble_pairing(&phone, true /* is_gateway */,
+                                                                 NULL,
+                                                                 false /* requires_address_pinning */,
+                                                                 false /* auto_accept_re_pairing */);
+
+  fake_shared_prf_storage_reset_counts();
+  bt_persistent_storage_delete_ble_pairing_by_id(phone_id);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(phone_id, NULL, NULL, NULL));
+  cl_assert_equal_i(fake_shared_prf_storage_get_ble_delete_count(), 1);
+}

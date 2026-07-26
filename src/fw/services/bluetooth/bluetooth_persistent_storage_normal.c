@@ -916,11 +916,20 @@ static bool prv_delete_ble_pairing_by_id(BTBondingID bonding) {
 }
 
 void bt_persistent_storage_delete_ble_pairing_by_id(BTBondingID bonding) {
+  // Read this BEFORE the delete -- the record is gone afterwards. supports_ancs is set equal to
+  // is_gateway when a bond is stored, so this answers "was this the phone?".
+  const bool was_gateway = bt_persistent_storage_is_ble_ancs_bonding(bonding);
+
   if (!prv_delete_ble_pairing_by_id(bonding)) {
     return;
   }
-  // TODO: Make sure this matches what we have stored
-  shared_prf_storage_erase_ble_pairing_data();
+
+  // Only the gateway (phone) is mirrored into shared PRF storage, so only its deletion should clear
+  // that slot. Erasing on a non-gateway delete wiped the phone's PRF pairing when the pump was
+  // forgotten -- self-healing at the next boot, but leaving PRF/recovery unpaired until then.
+  if (was_gateway) {
+    shared_prf_storage_erase_ble_pairing_data();
+  }
 }
 
 typedef struct {
