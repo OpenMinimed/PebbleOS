@@ -98,6 +98,16 @@ bool bt_driver_advert_set_advertising_data(const BLEAdData *ad_data) {
       PBL_LOG_ERR("SAKE: failed to set Medtronic advert (0x%04x)", (uint16_t)rc);
       return false;
     }
+    // Clear any scan response left over from NORMAL. This branch used to return without touching
+    // it, so the watch kept answering active scans with Pebble's manufacturer data (company
+    // 0x0eea) carrying its serial number -- i.e. announcing itself as a Pebble in the same breath
+    // as claiming to be a Medtronic peripheral. Observed on air with a laptop scanner. NULL/0 is
+    // the documented way to clear it (NimBLE only rejects NULL with a nonzero length).
+    rc = ble_gap_adv_rsp_set_data(NULL, 0);
+    if (rc != 0) {
+      PBL_LOG_ERR("SAKE: failed to clear scan response (0x%04x)", (uint16_t)rc);
+      return false;
+    }
     // DIAGNOSTIC (v29): dump the actual bytes pushed, so FE82/FE81 is read from the wire payload
     // (b[5]b[6]) rather than inferred from the paired flag.
     char line[32];
