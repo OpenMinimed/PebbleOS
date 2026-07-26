@@ -144,7 +144,32 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   UNRESOLVED; v29's diagnostics are what will finally pin it (film a SPIKE→NORMAL toggle; see
   version log + the advert saga in HISTORY).
 
-## OPEN: watchface crashes ("failed" screen) on launch under v34/v35 (2026-07-26)
+## OPEN→DORMANT: watchface launch crash — does NOT reproduce on v36 (2026-07-26 evening)
+
+**Could not be reproduced on v36 at all.** Tested in this order: launched in NORMAL (fine, shows
+time, "need companion app" toast as expected with no sender); toggled to SPIKE with it running
+(fine — graph appeared immediately, then live BG); left the watchface and returned while in SPIKE
+(fine); switched to another watchface and back (fine). Every one of these crashed reliably on
+v34/v35.
+
+Nothing in v36 touches the sender, the watchface, or AppMessage, so the most probable explanation
+is the one the audit flagged: **bad persisted state**. `load_state()` runs at every launch and was
+reading a v33-era save with v34 code; once the watchface finally ran to completion it rewrote that
+save in the current format, and the trigger disappeared. That also explains why the audit could
+prove the injected dictionary well-formed while the crash stayed real, and why TEST_MODE never
+caught it (`load_state()` is compiled out under TEST_MODE, and `new_data_callback` is never
+exercised there — so the emulator run covered neither function that actually runs at launch).
+
+Not proven, because the evidence is gone: the historical crash logs have rotated out of the flash
+log, and older generations were written by v35 whose loghash dictionary differs, so they no longer
+dehash. **If it ever returns, it is now cheap to catch** — see the flash-log tooling below; the
+fault handler logs `PC:`/`LR:` (`fault_handling.c:105-108`) and `app_manager.c:502` logs
+`Watchface crashed (id=…)`, all of which go to flash. Reproduce in SPIKE, toggle to NORMAL, dump.
+
+Kept below for the record, since the ruled-out list is still valid and the audit's conclusions
+stand:
+
+## OPEN (historical): watchface crashed ("failed" screen) on launch under v34/v35 (2026-07-26)
 
 BG + IOB read correctly and show in the SAKE Spike app, but launching the real watchface gives the
 Pebble app-crash screen — the same symptom as the 2026-07-23 launch-gap crash (see Gotchas), which
@@ -279,6 +304,37 @@ vocabulary). Quick facts kept here:
 - Everything is behind Kconfig `CONFIG_MINIMED_SAKE_SPIKE`; boots NORMAL (ordinary Pebble).
   "SAKE Spike" app: SELECT = NORMAL⇄SPIKE, DOWN = forget pump, Back = exit.
 - Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`, 24/24) before reflashing.
+
+### After-the-fact logs from a SPIKE session (`tools/dump_flash_logs.py`) — NEW 2026-07-26
+
+**This is the debugging unblock, and it did not need dual connection.** Every `PBL_LOG` line is
+written to flash continuously (`flash_logging_set_enabled(true)` at init) and kept per boot
+*generation*, so a SPIKE session with no phone attached is still fully recorded. Reproduce a
+problem in SPIKE, toggle to NORMAL, and pull the history:
+
+    adb forward tcp:9000 tcp:9000
+    tools/dump_flash_logs.py              # this boot
+    tools/dump_flash_logs.py -g 1         # previous boot
+    tools/dump_flash_logs.py -g 2 --dict build/sake-spike-v35-….loghash.json
+
+Verified on hardware: recovered the complete SAKE handshake (`pump WRITE conn=1 len=20 …`) from a
+SPIKE session, dehashed and readable, over the phone afterwards. That is most of what "live logs"
+was wanted for — so **Stage 2 dual connection is now a convenience, not a debugging prerequisite.**
+
+Details worth knowing:
+
+- Run it with the pebble-tool interpreter (it needs `libpebble2`), e.g.
+  `~/.local/share/uv/tools/pebble-tool/bin/python3 tools/dump_flash_logs.py`. `pyelftools` was
+  added to that venv for the dehasher.
+- **The dict is per build.** Log lines are stored hashed and the hashes change every build, so an
+  older generation needs that firmware's dictionary. `spike-build.sh` now archives one next to each
+  `.pbz` as `sake-spike-vNN-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
+  lines come back as raw `NL:xxxx`.
+- Requires **Developer Connection** enabled in the Pebble app *and* the watch in NORMAL. Re-pairing
+  the watch turns Developer Connection off — that cost time once; the symptom is
+  "Connection to remote host was lost" while port 9000 still accepts, i.e. the server is up but has
+  no watch. `pebble screenshot` working does **not** mean Developer Connection is on.
+- Useful forensic line at every boot: `debug.c:211 Last launched app: <…>`.
 
 ### Host unit tests (`./waf test`) — worth using, three traps
 
