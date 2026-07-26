@@ -24,6 +24,33 @@ The streamlined loop for iterating on the spike firmware. See `PROGRESS.md` for 
 
 Recovery if a build misbehaves: factory reset, or PRF recovery mode (separate slot; bricking very unlikely).
 
+### What the flash costs you in pairings (derived from the code, 2026-07-26)
+
+**The phone bond survives a flash; the pump bond never does.** `bt_persistent_storage_init` →
+`prv_load_ble_pairing_from_prf` re-stores the PRF slot (always the phone — only gateway bonds are
+written there) as `is_gateway=true`, and a *gateway* write still prunes every other BLE bond. A
+flash is a reboot, so the pump's bond is evicted every time. Same reason the pump re-pairs after any
+reboot (remaining-work item 8). So budget **one pump re-pair per flash, and no phone re-pair** —
+unless the phone link is already broken before you start, which on pre-v33 firmware it often is.
+
+Order matters, because pairing the phone deletes the pump bond but not vice versa:
+
+1. **Phone first.** NORMAL mode, get a working Pebble-app link (that's what sideloading needs). If
+   it loops `connected` → `reason 0x13` or the phone says "error pairing", forget the watch on the
+   phone and re-pair. Don't bother protecting the pump bond here — you're about to lose it anyway.
+2. **Sideload** the `.pbz` (steps above). The watch reboots.
+3. **Pump second.** SPIKE mode, press **DOWN** (forget pump). This is required, not optional: the
+   pump's SM bond is gone but the watch's own paired flag lives in a separate settings file
+   (`minimedsake`) and still says paired, so it would advertise FE81 with no bond — the classic
+   FE81/FE82 mismatch below. DOWN drops it to FE82 first-pair. Then on the pump, remove the old
+   entry and add **"Mobile Pebble"**.
+4. Wait for `HANDSHAKE OK!`, confirm BG (and IOB), and note the `prm …` line.
+5. **Only then** run the phone-bond test (SPIKE→NORMAL toggles). Don't reboot the watch or re-pair
+   the phone mid-test — either one costs you step 3 again.
+
+Worth fixing eventually: the watch could clear its own paired flag at boot when no pump bond exists,
+which would make step 3's DOWN unnecessary and auto-heal the FE81/FE82 mismatch permanently.
+
 ## Decisive test: pump must NOT connect in NORMAL (v27 rearchitecture)
 
 The bug this checks: in NORMAL the watch used to keep broadcasting the stale FE81 payload, so the
@@ -108,6 +135,51 @@ Setup: SPIKE, pump connected, BG flowing (as for the normal pump test).
 5. Known-benign: the first IOB can lag the first BG by one poll (the sender drops an IOB push that
    arrives before any BG exists); it catches up on the next reading.
 
+## Verifying v34 (graph, staleness, quiet, connection params)
+
+Four independent things; each shows up on its own, so a failure in one doesn't invalidate the rest.
+
+**1. No more vibrations.** The whole point of the change. Toggle SPIKE and let the pump connect
+and handshake: the watch must stay **completely still**. Previously this was up to four buzzes
+(connect, subscribe, PUMP WROTE, HANDSHAKE OK). Also toggle back to NORMAL and let the phone
+reconnect — that used to buzz too. If anything still vibrates on a BT event, note *which* stage
+line it coincides with in the log.
+
+**2. Connection parameters** (the battery measurement — this is the one number worth capturing).
+On every connect, right after the `conn PUMP m=S …` line, expect:
+
+    prm 30ms lat0 sv720ms
+
+Write down what the pump actually chose. Interval × (latency + 1) is how often the radio must
+wake — at latency 0 and a short interval this is the suspected main drain, and the number decides
+whether the next step is worth doing (PROGRESS.md remaining-work 6). A second `prm …` line later
+means the pump renegotiated mid-session; note that too.
+
+**3. Honest staleness.** Watch two or three consecutive 60 s polls. Because the sensor only
+produces a value every ~5 min, most polls should now log:
+
+    BG 6.2 same 3m
+
+and only every ~5th poll should log `*** BG 6.2 mmol/L ***`. On the watchface the "ago" counter
+must now **climb to ~5 min and reset**, instead of sitting at 0. If *every* poll logs the `***`
+form, the Time Offset field isn't behaving as assumed — capture a few `*** BG` lines with timings
+and we'll re-read the record. If it *never* logs the `***` form, readings are being wrongly
+suppressed (the graph would stay stuck at one point) — that's the failure to report.
+
+**4. Graph.** Starts EMPTY — this is expected, there is no backfill. One point appears per new
+reading, so the trace builds up over ~2 h and only then fills the plot area. After ~15 min there
+should be 3 visible points. A gap of more than 15 min (a pump dropout) draws as a break in the
+line, not a straight bridge. If the graph area stays blank after several `*** BG` lines, look for
+`wf dict fail` in the log (dictionary too small — a clean failure, not a crash, but nothing
+reaches the watchface then).
+
+**Also confirm:** the pump shows the watch as **"Mobile Pebble"** — only after a remove + re-add on
+the pump, since the name is read at pairing time.
+
+**Protocol follow-up if 3 behaves as expected:** that confirms CGM Time Offset (record bytes 4–5,
+u16 LE) is a per-reading monotonic minute counter — currently `???` in
+`Documentation/cgm-service.md:198`. Update it there once seen on HW.
+
 ## Capturing the advert diagnostics (the pump-in-NORMAL question)
 
 v30 also adds passive advert logging to finally settle whether the pump reconnects in NORMAL by
@@ -127,19 +199,27 @@ address (advert payload irrelevant) or the advert refresh isn't landing. **Film 
 - Set the MiniMed watchface active, SPIKE mode on. Each BG reading should show as the big number +
   age. Log: `wf sender up` (loopback session), `wf ready ping` (watchface announced itself).
 
-## Verify the v18 phone-bond fix (PENDING — not yet deliberately tested)
+## Verify the phone-bond fix (v33, shipped in v34 — PENDING HW)
 
-v18's runtime SM reconfig (strict LESC in NORMAL, legacy Just Works only in SPIKE) is bundled
-in v20 but has never been verified on its own — v20's HW pass only covered the pump side.
+The re-pair-every-cycle papercut had two causes. The pump stealing the single slot is fixed and
+HW-verified (v32). The second — the pump's bond **deleting** the phone's, so the phone lost its LTK
+and looped connect/terminate(`0x13`) — is fixed in v33 and still unverified. This is the test.
 
-1. NORMAL mode. Forget the watch on the phone and re-pair once (the old bond was formed under
-   the weak SM config, so one re-pair is expected). The pairing dialog should be a numeric
-   confirm/yes-no prompt — that's LESC working; a silent Just Works pair means the reconfig
-   didn't take.
-2. Cycle: SPIKE → wait for `HANDSHAKE OK!` → back to NORMAL → phone should reconnect within
-   ~a minute with **no re-pair prompt** and no connect/terminate(0x13) loop.
-3. Repeat step 2 three times. **Pass:** phone reconnects every cycle without re-pairing.
+1. Flash, then do the FULL first-time pairing **once**: phone in NORMAL, then pump in SPIKE
+   (DOWN to forget, then add "Mobile Pebble" on the pump). This one re-pair is expected.
+2. Cycle: SPIKE → wait for `HANDSHAKE OK!` → back to NORMAL. The phone should reconnect within
+   ~a minute with **no re-pair prompt** and no `0x13` loop. In the log: `pump conn in NORMAL ->
+   drop` for the pump (v32 doing its job), then `connected` + `conn phone m=N` that **stays**.
+3. Repeat three times. **Pass:** the phone reconnects every cycle without re-pairing.
    **Fail:** any cycle needs a re-pair, or the bond loops — note which, plus the on-watch log.
+
+Still expected, not a regression: the **pump** re-pairs after a watch reboot, and after an explicit
+phone re-pair. v33 only stopped the pump evicting the phone, not the reverse — full coexistence is
+remaining-work item 8.
+
+Also unverified from v18: the runtime SM reconfig (strict LESC in NORMAL, legacy Just Works only in
+SPIKE). At step 1 the phone's pairing dialog should be a **numeric confirm / yes-no prompt** — that
+is LESC working; a silent Just Works pair means the reconfig didn't take.
 
 ## When pump can't see watch (FE81/FE82 mismatch)
 
