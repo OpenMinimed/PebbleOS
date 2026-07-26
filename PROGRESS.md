@@ -921,9 +921,21 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
      45 ms × (latency 3 + 1) = 180 ms effective. Headroom for the fix is ample: the constraint
      `(latency+1) × interval × 2 < supervision timeout` allows latency up to 11, so asking for
      latency 4 (→ 625 ms effective, ~5× fewer wakeups) or even 7 (→ 1 s) is safely inside it.
-     Next step is lever (a) below: one `ble_gap_update_params()` after `SAKE_RESULT_DONE`, then
-     confirm via the flash log that a "Connection parameters updated" line appears for the pump
-     link (a pump-side reject is harmless — the link just keeps the old parameters).
+     **Lever (a) TRIED AND REJECTED (v37, 2026-07-26).** A standard peripheral-initiated update
+     asking only for slave latency 4 — keeping the pump's own interval and supervision timeout —
+     came back `Connection parameters update failed: 0x023b`, i.e. HCI `0x3B` *Unacceptable
+     Connection Parameters*. The request was spec-valid with a wide margin
+     (`(1+4) × 125 × 2 = 1250 ms` against a 3000 ms timeout), so this reads as pump policy, not a
+     malformed ask — and it suggests the NOS Observation Mode exists precisely because the generic
+     mechanism is blocked. Recorded upstream in `../Documentation/bluetooth.md`.
+     v37 leaves the request in place as a **probe at latency 1** (the smallest ask that still halves
+     wakeups): if that is refused too, the pump refuses the mechanism outright, so delete the
+     function and do lever (b). Untried variation worth one attempt: offering an interval *range*
+     instead of `itvl_min == itvl_max`.
+     Lever (b), now the likely real answer: the NOS service "Observation Mode" write carries
+     min/max interval, slave latency and supervision timeout (`../Documentation/nos-service.md`).
+     Needs its own discovery + a SAKE-encrypted write, and every field's unit is `???` in the doc,
+     so doing it would also be a documentation contribution.
    - **#1 The pump link's connection parameters are never negotiated.** Structural, not incidental:
      Pebble only issues a param update on a *consumer-driven* state change (`bt_conn_mgr.c`), and
      every consumer (PPoGATT, GATT discovery, AMS, pairing service) is on the phone path — the

@@ -267,7 +267,15 @@ static void prv_poll_timer_cb(struct ble_npl_event *ev) {
 // ~(N+1)x. It costs nothing in responsiveness that matters here: our own polls are
 // peripheral-initiated and go out at the next event regardless, and a pump-initiated notification
 // is delayed by at most N intervals, which is irrelevant against a 5-minute sensor cadence.
-#define DESIRED_SLAVE_LATENCY 4
+//
+// HW result 2026-07-26: latency 4 was REJECTED with HCI 0x3B (unacceptable connection parameters),
+// even though the request kept the pump's own interval and supervision timeout and cleared the
+// spec constraint with a wide margin. So this is now a probe rather than an optimisation: 1 is the
+// smallest ask that still halves the wakeups, and it distinguishes "the pump dislikes that value"
+// from "the pump refuses peripheral-initiated updates at all". If 1 is refused too, delete this and
+// go via the NOS service instead (see below). Other untried variation: offering a range rather than
+// itvl_min == itvl_max, which some centrals insist on.
+#define DESIRED_SLAVE_LATENCY 1
 
 // Ask the pump to let us idle. Deliberately keeps the pump's own interval and supervision timeout
 // and changes only the latency: the narrowest possible request, so there is least to reject.
