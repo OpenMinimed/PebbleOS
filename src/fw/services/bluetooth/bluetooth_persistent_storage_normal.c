@@ -715,8 +715,13 @@ static void prv_prune_stale_ble_bondings(void) {
     return;
   }
 
-  PBL_LOG_INFO("Found %u BLE bondings at boot, keeping most recent (id %d)",
-               itr_data.ble_count, itr_data.key_out);
+  // DBG, not INFO: with a phone and a pump bonded this is the normal steady state and fires on
+  // every boot, and the collector then deletes nothing (it skips non-gateway bonds). An INFO line
+  // describing a prune that did not happen makes log archaeology harder, which is how this project
+  // debugs connectivity. Actual removals are still logged in prv_delete_other_ble_bondings. Also
+  // avoid saying "most recent": the selection prefers a gateway over last_modified.
+  PBL_LOG_DBG("Found %u BLE bondings at boot, keeping id %d",
+              itr_data.ble_count, itr_data.key_out);
   prv_delete_other_ble_bondings(itr_data.key_out);
 }
 
