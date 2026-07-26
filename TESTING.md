@@ -26,6 +26,30 @@ Recovery if a build misbehaves: factory reset, or PRF recovery mode (separate sl
 
 ### What the flash costs you in pairings (derived from the code, 2026-07-26)
 
+#### On v36 and later: nothing (verify with the v36 checks before trusting it)
+
+v36 stops non-gateway bonds being pruned, so **the pump bond survives a reboot** and a flash costs
+no pairings at all. The loop becomes: NORMAL → sideload → reboot → **SELECT** into SPIKE → the pump
+reconnects on its own (`paired (persisted): FE81` → `HANDSHAKE OK!`). The mode still resets to
+NORMAL at boot (it is RAM-only), so the one SELECT press remains.
+
+Read the SAKE Spike app's bond inventory line to confirm, before and after:
+
+- `bond gw1 pmp1 del0` — both bonds present, nothing pruned. This is the pass.
+- `pmp0 del1` — something still pruned the pump bond; v36 did not hold.
+- `pmp0 del0` — the bond was never stored; a different bug from pruning.
+- `gw0` — the phone bond is gone (the v33 regression direction).
+- `MODE: SPIKE (FE81)` together with `pmp0` — the FE81/FE82 mismatch, stated outright instead of
+  having to be inferred from a `disc reason=0x08` loop half a minute later.
+
+The v36 checks: (1) reboot with the pump paired and confirm it reconnects with no re-add on the
+pump; (2) forget the watch on the phone and re-pair it, then confirm the pump bond still survives;
+(3) with the pump bonded, open Settings → Bluetooth and confirm the pump is not listed, is not
+counted in the header, and that pairing a new phone is still offered. If any fail, reflash v35 and
+the v35-and-earlier procedure below applies again.
+
+#### On v35 and earlier: one pump re-pair per flash
+
 **The phone bond survives a flash; the pump bond never does.** `bt_persistent_storage_init` →
 `prv_load_ble_pairing_from_prf` re-stores the PRF slot (always the phone — only gateway bonds are
 written there) as `is_gateway=true`, and a *gateway* write still prunes every other BLE bond. A
@@ -49,7 +73,9 @@ Order matters, because pairing the phone deletes the pump bond but not vice vers
    the phone mid-test — either one costs you step 3 again.
 
 Worth fixing eventually: the watch could clear its own paired flag at boot when no pump bond exists,
-which would make step 3's DOWN unnecessary and auto-heal the FE81/FE82 mismatch permanently.
+which would make step 3's DOWN unnecessary and auto-heal the FE81/FE82 mismatch permanently. (v36's
+bond inventory line now *detects* that mismatch — `FE81` with `pmp0` — but deliberately does not
+auto-heal it; making the state visible came first.)
 
 ## Decisive test: pump must NOT connect in NORMAL (v27 rearchitecture)
 

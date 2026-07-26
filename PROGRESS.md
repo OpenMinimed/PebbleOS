@@ -17,9 +17,18 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
 
 ## Status
 
-> **Next job after v34 is HW-verified: DUAL CONNECTION (phone + pump simultaneously).** It is the
-> tooling unblock — live logs over a real comm session instead of filming the watch screen, and
-> flashing/`.pbw` installs without un-pairing the pump every time. See "→ NEXT UP" below.
+> **The re-pairing tax and dual connection turned out to be SEPARATE problems, and the cheap half
+> is done.** The per-flash pump re-pair was caused by bond pruning, not by the single connection
+> slot — so it is fixed in **v36 (built, AWAITING HW)** without touching connection handling at all.
+> Test v36 first (three checks in TESTING.md); once it passes, a flash costs no pairings and every
+> later experiment gets cheaper.
+>
+> **Dual connection (phone + pump simultaneously) is still the next real job**, but only for what
+> the bond fix cannot give: live logs over a real comm session instead of filming the watch screen.
+> Design and corrected blockers: `docs/superpowers/specs/2026-07-26-dual-connection-design.md`
+> section 2 — note it found four things wrong with the plan in "→ NEXT UP" below, most importantly
+> that the pump-link swallow does not exist yet and that advertising-XOR-connected, not the two
+> connection booleans, is the real blocker.
 
 - **End-to-end PROVEN on real HW (2026-07-21):** advertise as "Mobile PB" → pump connects → SAKE
   handshake → GATT-client CGM read → decrypt → continuous auto-updating BG in mmol/L, matching the
@@ -267,6 +276,27 @@ vocabulary). Quick facts kept here:
   "SAKE Spike" app: SELECT = NORMAL⇄SPIKE, DOWN = forget pump, Back = exit.
 - Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`, 24/24) before reflashing.
 
+### Host unit tests (`./waf test`) — worth using, three traps
+
+The firmware has a real clar unit-test suite (327 tests) that runs on the host in ~1 s once built.
+`tests/fw/services/bluetooth/test_bluetooth_persistent_storage.c` in particular covers the bonding
+DB, so bond-storage work can be genuine TDD with no hardware. Run it in Docker like everything else:
+
+    docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/pebbleos -w /pebbleos \
+      pebbleos-build:local bash -lc "
+        git config --global --add safe.directory /pebbleos
+        ./waf test -M '.*bluetooth_persistent_storage.*'"
+
+- **Never run `./waf configure` without `--board`** — it wipes `build/c4che` and de-configures the
+  firmware build. Restore with `./waf configure --board asterix -DCONFIG_MINIMED_SAKE_SPIKE=y`
+  (in Docker, with `/opt/pebbleos-sdk/arm-none-eabi/bin` on PATH); verify with
+  `grep MINIMED build/autoconf.h`.
+- **`-M` is an anchored `re.match` against the test source path.** `-M bluetooth_persistent_storage`
+  matches **nothing** and the run still says "finished successfully" having built no tests. Always
+  wrap it: `-M '.*name.*'`. Drop `-M` entirely for the full suite (~40 s).
+- `./waf test` uses the `test` waf **variant** (`build/test/`), so it does *not* clobber the
+  firmware build and is fine to run with the asterix configure in place. First run ~2 min.
+
 ### How to build (recreate the image if `pebbleos-build:local` is gone)
 
 `ghcr.io/coredevices/pebbleos-docker:v6` + `pip install -r requirements.txt`, then `docker commit`.
@@ -275,6 +305,46 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
+- v36 (2026-07-26, **AWAITING HW**): **phone + pump bond coexistence — no more re-pairing.** The
+  per-flash pump re-pair was never about the single connection slot; it was bond pruning. Three
+  edits, all no-ops in stock where every BLE bond is a gateway:
+  1. `prv_collect_other_ble_bondings_itr` skips non-gateway bonds. This one edit closes the
+     phone-re-pair prune **and** both boot paths, because all three reach the pump through this
+     same collector (the boot SPRF replay re-stores the phone as a gateway and lands here, and
+     `prv_prune_stale_ble_bondings` deletes through it too). Completes v33, which fixed only the
+     mirror image (a pump write evicting the phone).
+  2. `bt_persistent_storage_delete_ble_pairing_by_id` only erases the shared-PRF slot for gateway
+     bonds, captured *before* the delete since the record is gone after. Forgetting the pump no
+     longer wipes the phone's PRF record.
+  3. Settings → Bluetooth skips non-gateway bonds when building the phone list. **Required, not
+     cosmetic:** pairability is gated on that list being empty, so a now-permanent pump bond would
+     otherwise lock out phone pairing forever behind "Forget this device to pair a new device".
+  Plus a live `bond gw<N> pmp<N> del<N>` readout in the SAKE Spike app (throttled to every 10th
+  refresh — reading it opens the bonding settings file). The `del` counter resets at the *top* of
+  `bt_persistent_storage_init`, before the boot prune it runs a few lines later, so after a reboot
+  `pmp0 del1` means the prune ate the bond while `pmp0 del0` means it was never stored — and
+  `FE81` in the mode line with `pmp0` names the FE81/FE82 mismatch outright.
+  **Adversarial review earned its keep again:** the first cut of edit 3 called
+  `bt_persistent_storage_is_ble_ancs_bonding` from inside the `for_each_ble_pairing` callback,
+  which re-enters the **non-recursive** bonding-DB mutex — opening Settings → Bluetooth would have
+  frozen the watch. All 327 host tests passed anyway, because `stubs_mutex.h` stubs `mutex_lock()`
+  to a no-op (now in Gotchas). Fixed by filtering in the second pass, after the lock is released.
+  A second review pass (4 lenses × 15 findings, each refuted by 2 independent skeptics) confirmed
+  that deadlock independently and left only one other survivor, now fixed: the boot prune logged at
+  INFO on every boot about a prune that no longer happens (it was effectively unreachable before,
+  since the store-time prune had already eaten the pump bond by then) — dropped to DBG and reworded,
+  since "most recent" is not the rule applied either. 13 findings were refuted, several of them
+  interesting near-misses worth not re-litigating: the NimBLE `BLE_STORE_MAX_BONDS` cap counts peer
+  *addresses* in its RAM store, not settings-file records, so two bonds cannot lock out pairing; and
+  the pump bond is **not** unremovable despite Settings hiding it — `prv_handle_repeat_pairing_event`
+  in `advert.c` deletes and re-pairs it automatically, which is exactly the path a pump-side
+  remove/re-add takes.
+  Host tests 327/327 including 5 new bond-coexistence tests; the settings filter is HW-only (this
+  repo has no settings-app test harness). Fallback: reflash v35.
+  Known nit, deliberately not fixed (pre-existing, out of scope): `bt_persistent_storage_is_ble_ancs_bonding`
+  ignores the return of `prv_file_get`, so a failed record read reads uninitialized stack. The
+  settings filter now depends on it, but the bonding ID it passes was just produced by an iteration
+  over that same file, so the read cannot miss.
 - v35 (2026-07-26, **ON THE WATCH, pump pairs again**): two fixes for v34's pairing failure.
   (1) The SPIKE advert branch of `bt_driver_advert_set_advertising_data` never cleared the **scan
   response**, so the watch answered active scans with Pebble manufacturer data (company `0x0eea`)
@@ -591,6 +661,14 @@ Modified:
   tested. See "Dual pump+phone" in Remaining work for what it would actually take.
 - Phone bond can loop connect/terminate(0x13) after the SM changes; repeat-pairing recovery usually
   self-heals; else forget + re-pair on the phone (NORMAL mode).
+- **The host tests are blind to locks — `stubs_mutex.h` makes `mutex_lock()` a no-op.** So a
+  lock-ordering or reentrancy bug passes all 327 tests and then hangs the watch. Specifically: the
+  bonding DB's `s_db_mutex` is **non-recursive** (`mutex_create()`, not `mutex_create_recursive()`),
+  and `prv_file_each` holds it across the *entire* iteration — so calling any
+  `bt_persistent_storage_*` reader from inside a `for_each_ble_pairing` callback self-deadlocks.
+  This was caught by review in v36 before flashing (it would have frozen the watch on opening
+  Settings → Bluetooth). Do per-bond lookups in a **second pass** after the iteration returns;
+  `prv_add_ble_remotes` in `settings/bluetooth.c` is the worked example.
 - clangd floods spike files with false errors (missing NimBLE include paths). Trust `./waf build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 - **FE81/FE82 pairing-state reconciliation.** The watch's paired flag and the pump's bond can
@@ -741,22 +819,17 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    job, then test *only* "both links up at once, pump completes SAKE". Leave the bond-store and
    settings work out of that probe.
 
-8. **Full phone+pump bond coexistence** (v33 only stopped the pump *evicting* the phone; the pump
-   bond is still deleted on a phone re-pair and at boot, hence the re-pair-after-reboot dance).
-   Worth doing independently of dual — it makes every later flash cheaper. Researched 2026-07-26:
-   `prv_collect_other_ble_bondings_itr` must skip non-gateway bonds (necessary, not sufficient),
-   **plus** `bt_persistent_storage_delete_ble_pairing_by_id` unconditionally calls
-   `shared_prf_storage_erase_ble_pairing_data()` — deleting the pump currently wipes the *phone's*
-   PRF slot (self-heals next boot, but PRF is unpaired until then) — plus `prv_load_ble_pairing_from_prf`
-   replays the SPRF slot as `is_gateway=true` at every boot, re-triggering the prune. Also, Settings
-   → Bluetooth gates pairability on the remote list being **empty** (`prv_expand_cb`,
-   `prv_settings_bluetooth_event_handler`, and the "Forget this device to pair a new device" row),
-   so with a pump bond present **you cannot pair a phone from the menu** — those three need an
-   `is_gateway` signal the `BtPersistBondingDBEachBLE` callback does not currently expose. Useful
-   accident: `is_gateway` doubles as `supports_ancs`, so the pump bond is already invisible to the
-   ANCS/reconnect machinery. The menu itself is structurally a multi-device list — a pump bond just
-   shows up as a second `<Untitled>` row; the single-entry limit is enforced by the storage prune,
-   not the UI.
+8. **Full phone+pump bond coexistence — IMPLEMENTED in v36, AWAITING HW.** Design:
+   `docs/superpowers/specs/2026-07-26-dual-connection-design.md`; plan:
+   `docs/superpowers/plans/2026-07-26-stage1-bond-coexistence.md`. All three holes researched here
+   on 2026-07-26 are now closed — the collector skip (which turned out to close the boot paths too,
+   since they all funnel through it), the unconditional `shared_prf_storage_erase_ble_pairing_data()`
+   on any delete, and the Settings pairability gate. The `is_gateway` signal the
+   `BtPersistBondingDBEachBLE` callback does not expose turned out **not** to be needed: the public
+   `bt_persistent_storage_is_ble_ancs_bonding(id)` answers it (`supports_ancs` is set equal to
+   `is_gateway` at store time), as long as it is called *after* the iteration returns and not from
+   inside the callback — see the non-recursive-mutex Gotcha. Once HW-verified this closes the item;
+   the remaining bond work for dual is per-peer `is_gateway`/SM decisions, tracked under item 5.
 6. **Battery — investigated 2026-07-26; drains now ranked, top lever needs one measurement.**
    v34 logs the numbers on-watch (`prm <itvl>ms lat<N> sv<T>ms` at every connect and param update)
    so this stops being guesswork. Ranked:
