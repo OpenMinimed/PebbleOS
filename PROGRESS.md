@@ -18,10 +18,10 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
 ## Status
 
 > **The re-pairing tax and dual connection turned out to be SEPARATE problems, and the cheap half
-> is done.** The per-flash pump re-pair was caused by bond pruning, not by the single connection
-> slot — so it is fixed in **v36 (built, AWAITING HW)** without touching connection handling at all.
-> Test v36 first (three checks in TESTING.md); once it passes, a flash costs no pairings and every
-> later experiment gets cheaper.
+> is DONE.** The per-flash pump re-pair was caused by bond pruning, not by the single connection
+> slot — so **v36 fixes it without touching connection handling at all** (HW-verified 2026-07-26,
+> all three checks). A flash now costs zero pairings: sideload, reboot, SELECT into SPIKE, pump
+> reconnects by itself. Every later experiment on this project just got cheaper.
 >
 > **Dual connection (phone + pump simultaneously) is still the next real job**, but only for what
 > the bond fix cannot give: live logs over a real comm session instead of filming the watch screen.
@@ -35,7 +35,11 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
-- **ON THE WATCH NOW: v35** (`build/sake-spike-v35-scanrsp-and-name-revert.pbz`, 2026-07-26).
+- **ON THE WATCH NOW: v36** (`build/sake-spike-v36-bond-coexistence.pbz`, 2026-07-26).
+  **Working:** pump pairs, BG + IOB correct, and **neither bond is ever lost again** — reboot and
+  phone re-pair both verified. **Still broken (pre-existing, unrelated):** the real watchface
+  crashes on launch, so the Spike app is still what's on screen. v36 = v35 + bond coexistence.
+- v35 (`build/sake-spike-v35-scanrsp-and-name-revert.pbz`, 2026-07-26, superseded by v36).
   **Working:** pump pairs, BG + IOB correct on the SAKE Spike app display. **Broken:** the real
   watchface crashes on launch (see the OPEN section below) — Morten is wearing it with the Spike app
   visible instead. v35 = v34 + two fixes for the v34 pairing failure (scan response cleared; advert
@@ -305,7 +309,25 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
-- v36 (2026-07-26, **AWAITING HW**): **phone + pump bond coexistence — no more re-pairing.** The
+- v36 (2026-07-26, **FULLY HW-VERIFIED — all three checks passed**): **phone + pump bond
+  coexistence — no more re-pairing.** Verified the same evening:
+  1. **Reboot survival.** `bond gw1 pmp1 del0` read identically before and after a power cycle
+     (phone BT off to isolate the test), then SELECT into SPIKE → `HANDSHAKE OK!` → correct BG +
+     IOB, **without touching the pump**. That is the flash tax gone. BG/IOB also confirms no
+     collateral damage to the SAKE/CGM/IDD paths.
+  2. **Phone re-pair survival.** Forgot the watch on the phone *and* the phone on the watch, paired
+     fresh, and the line still read `gw1 pmp1 del0`. A gateway write no longer evicts the pump —
+     the direction v33 did not fix.
+  3. **Settings pairability.** With the pump bonded, Settings → Bluetooth listed **only the phone,
+     no pump**. This is the check with no unit-test coverage (no settings-app harness in this repo),
+     so hardware was the only way to know.
+  Bonus real-world confirmation of *why* edit 3 was needed: on v35 that same evening the pump bond
+  in the Bluetooth menu made the watch unpairable, so the phone sat at "connecting" forever and the
+  only way out was forgetting the pump — exactly the lockout edit 3 removes. Also re-learned the
+  hard way: forgetting the pump from the **Bluetooth menu** instead of the app's DOWN button leaves
+  the app's paired flag set (FE81 with no bond); v36's mode line now shows this directly as
+  `MODE: SPIKE (FE81)` above `pmp0`.
+  The
   per-flash pump re-pair was never about the single connection slot; it was bond pruning. Three
   edits, all no-ops in stock where every BLE bond is a gateway:
   1. `prv_collect_other_ble_bondings_itr` skips non-gateway bonds. This one edit closes the
@@ -819,7 +841,9 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    job, then test *only* "both links up at once, pump completes SAKE". Leave the bond-store and
    settings work out of that probe.
 
-8. **Full phone+pump bond coexistence — IMPLEMENTED in v36, AWAITING HW.** Design:
+8. ✅ **Full phone+pump bond coexistence — DONE, HW-VERIFIED 2026-07-26 (v36).** All three checks
+   passed: pump bond survives a reboot, survives a phone re-pair, and Settings → Bluetooth no
+   longer lists it or refuses to pair a phone. A flash now costs zero pairings. Design:
    `docs/superpowers/specs/2026-07-26-dual-connection-design.md`; plan:
    `docs/superpowers/plans/2026-07-26-stage1-bond-coexistence.md`. All three holes researched here
    on 2026-07-26 are now closed — the collector skip (which turned out to close the boot paths too,

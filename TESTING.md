@@ -26,10 +26,10 @@ Recovery if a build misbehaves: factory reset, or PRF recovery mode (separate sl
 
 ### What the flash costs you in pairings (derived from the code, 2026-07-26)
 
-#### On v36 and later: nothing (verify with the v36 checks before trusting it)
+#### On v36 and later: nothing (HW-VERIFIED 2026-07-26)
 
 v36 stops non-gateway bonds being pruned, so **the pump bond survives a reboot** and a flash costs
-no pairings at all. The loop becomes: NORMAL → sideload → reboot → **SELECT** into SPIKE → the pump
+no pairings at all. All three checks below passed on hardware the day it was built. The loop becomes: NORMAL → sideload → reboot → **SELECT** into SPIKE → the pump
 reconnects on its own (`paired (persisted): FE81` → `HANDSHAKE OK!`). The mode still resets to
 NORMAL at boot (it is RAM-only), so the one SELECT press remains.
 
@@ -42,11 +42,24 @@ Read the SAKE Spike app's bond inventory line to confirm, before and after:
 - `MODE: SPIKE (FE81)` together with `pmp0` — the FE81/FE82 mismatch, stated outright instead of
   having to be inferred from a `disc reason=0x08` loop half a minute later.
 
-The v36 checks: (1) reboot with the pump paired and confirm it reconnects with no re-add on the
-pump; (2) forget the watch on the phone and re-pair it, then confirm the pump bond still survives;
-(3) with the pump bonded, open Settings → Bluetooth and confirm the pump is not listed, is not
-counted in the header, and that pairing a new phone is still offered. If any fail, reflash v35 and
-the v35-and-earlier procedure below applies again.
+The v36 checks, all passed 2026-07-26: (1) reboot with the pump paired and confirm it reconnects
+with no re-add on the pump; (2) forget the watch on the phone and re-pair it, then confirm the pump
+bond still survives; (3) with the pump bonded, open Settings → Bluetooth and confirm the pump is not
+listed, is not counted in the header, and that pairing a new phone is still offered. Re-run these
+after any change to bond storage. If they ever fail, reflash v35 and the v35-and-earlier procedure
+below applies again.
+
+Two things learned doing this the first time, both worth repeating:
+
+- **Forget the pump with the app's DOWN button, never from the Bluetooth menu.** The menu deletes
+  the SM bond but not the app's paired flag, so the watch advertises FE81 with no bond behind it
+  and the pump cannot find it. v36 shows this state directly: `MODE: SPIKE (FE81)` above `pmp0`.
+- **Turn phone Bluetooth off while first-pairing the pump.** There is still one connection slot,
+  and nothing rejects the *phone* in SPIKE (the v32 rule only keeps the *pump* out of NORMAL), so a
+  bonded phone can take the slot by identity address while you are advertising FE82. Also note the
+  watch is only pairable while you are actually standing on the Settings → Bluetooth screen, and
+  only when its list is empty — forgetting the watch on the phone is not enough, you must forget
+  the phone on the watch too.
 
 #### On v35 and earlier: one pump re-pair per flash
 
