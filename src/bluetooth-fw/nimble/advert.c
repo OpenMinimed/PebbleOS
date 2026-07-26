@@ -137,6 +137,18 @@ bool bt_driver_advert_set_advertising_data(const BLEAdData *ad_data) {
   return true;
 }
 
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+// Connection interval / peripheral latency / supervision timeout, in milliseconds, to the on-watch
+// log. Interval x (latency + 1) is how often the radio actually has to wake.
+static void prv_log_conn_params(const struct ble_gap_conn_desc *desc) {
+  char line[32];
+  snprintf(line, sizeof(line), "prm %ums lat%u sv%ums",
+           (unsigned)(desc->conn_itvl * BLE_HCI_CONN_ITVL / 1000), (unsigned)desc->conn_latency,
+           (unsigned)(desc->supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS));
+  minimed_sake_log(line);
+}
+#endif
+
 static void prv_handle_connection_event(struct ble_gap_event *event) {
   // we only want to notify on a successful connection
   if (event->connect.status != 0) return;
@@ -186,6 +198,11 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
              minimed_sake_get_mode() == MinimedSakeModeSpike ? 'S' : 'N',
              desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
     minimed_sake_log(line);
+
+    // The pump dictates these and we never renegotiate, so they set the watch's idle radio duty
+    // cycle for as long as the link is up -- the prime suspect for the battery drain. Surface them
+    // on-watch (the PBL_LOG copy needs a tethered console) so the numbers can just be read off.
+    prv_log_conn_params(&desc);
   }
 #endif
 
@@ -308,6 +325,9 @@ static void prv_handle_conn_params_updated_event(struct ble_gap_event *event) {
             "itvl=%u ms, latency=%u, spvn timeout=%u ms",
             desc.conn_itvl * BLE_HCI_CONN_ITVL / 1000, desc.conn_latency,
             desc.supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  prv_log_conn_params(&desc);  // the link's duty cycle changed; keep the on-watch record current
+#endif
 
   struct BleConnectionUpdateCompleteEvent conn_params_update_event = {
       .status = HciStatusCode_Success,
