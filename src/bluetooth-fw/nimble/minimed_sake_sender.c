@@ -11,6 +11,7 @@
 #include "comm/bt_lock.h"
 #include "drivers/rtc.h"
 #include "kernel/event_loop.h"
+#include "minimed_graph.h"
 #include "pbl/services/comm_session/protocol.h"
 #include "pbl/services/comm_session/session_transport.h"
 #include "popups/minimed_sake_spike_ui.h"
@@ -31,16 +32,23 @@ static const Uuid s_watchface_uuid = {
 };
 
 // Pebble Glucose Protocol v1 keys (minimed-pebble-watchface docs/PEBBLE_GLUCOSE_PROTOCOL.md).
-// BG string + timestamp; IOB string (14). Status/graph later.
+// BG string + timestamp; IOB string (14); graph (17). Status (15) later.
 #define KEY_BG_TIMESTAMP 10
 #define KEY_BG_STRING 11
 #define KEY_IOB_STRING 14
+#define KEY_GRAPH_DATA 17
 
 #define BG_STR_MAX 8   // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
 #define IOB_STR_MAX 8  // "N.N"/"NN.N" IU
 
+// Largest dictionary we serialize. The graph blob dominates; the rest is the BG/IOB strings, the
+// timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 7 + blob). Sized with
+// room to spare -- an undersized buffer is a silent "wf dict fail", not a crash, but it would also
+// mean no data reaches the watchface at all.
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 96)
+
 // All state below is only touched on KernelMain (every entry point marshals there), except the
-// string/timestamp pair which is written before the marshal -- see prv_set_bg.
+// string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
 typedef struct {
   Transport *unused;
 } LoopbackTransport;
@@ -50,6 +58,15 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
+
+static MinimedGraph s_graph;
+
+// The one outbound frame: [PebbleProtocolHeader][AppMessagePush ... dictionary]. Static rather
+// than two nested stack buffers -- with the graph blob that pair came to ~500 B of KernelMain
+// stack. Every writer runs on KernelMain, so there is no concurrent use to guard against.
+static uint8_t s_frame[sizeof(PebbleProtocolHeader) + offsetof(AppMessagePush, dictionary) +
+                       WF_DICT_MAX];
+#define FRAME_PAYLOAD (s_frame + sizeof(PebbleProtocolHeader))
 
 // -- Outbound (watchface -> us): drain the send queue, detect the "ready" ping -----------------
 
@@ -114,21 +131,20 @@ static const TransportImplementation s_loopback_implementation = {
 extern void comm_session_set_capabilities(CommSession *session,
                                           CommSessionCapability capability_flags);
 
-// KernelMain only. Frame = [PebbleProtocolHeader BE][payload]; injected through the same inbound
-// router the phone uses, so the watchface receives a completely normal AppMessage.
-static void prv_inject(const uint8_t *payload, uint16_t payload_len) {
-  uint8_t frame[sizeof(PebbleProtocolHeader) + 96];
-  if (payload_len > sizeof(frame) - sizeof(PebbleProtocolHeader)) {
+// KernelMain only. The caller has already built the payload at FRAME_PAYLOAD; stamp the header in
+// front of it and inject through the same inbound router the phone uses, so the watchface receives
+// a completely normal AppMessage.
+static void prv_inject(uint16_t payload_len) {
+  if (payload_len > sizeof(s_frame) - sizeof(PebbleProtocolHeader)) {
     return;
   }
-  PebbleProtocolHeader *hdr = (PebbleProtocolHeader *)frame;
+  PebbleProtocolHeader *hdr = (PebbleProtocolHeader *)s_frame;
   hdr->length = htons(payload_len);
   hdr->endpoint_id = htons(APP_MESSAGE_ENDPOINT_ID);
-  memcpy(frame + sizeof(*hdr), payload, payload_len);
 
   bt_lock();
   if (s_session) {
-    comm_session_receive_router_write(s_session, frame, sizeof(*hdr) + payload_len);
+    comm_session_receive_router_write(s_session, s_frame, sizeof(*hdr) + payload_len);
   }
   bt_unlock();
 }
@@ -140,14 +156,16 @@ static void prv_push_bg_cb(void *unused) {
     return;
   }
 
-  uint8_t payload[sizeof(AppMessagePush) + 64];
-  AppMessagePush *push = (AppMessagePush *)payload;
+  AppMessagePush *push = (AppMessagePush *)FRAME_PAYLOAD;
   *push = (AppMessagePush){
       .header = {.command = CMD_PUSH, .transaction_id = s_txn++},
       .uuid = s_watchface_uuid,
   };
 
-  uint32_t dict_size = sizeof(payload) - offsetof(AppMessagePush, dictionary);
+  uint8_t graph[MINIMED_GRAPH_BLOB_MAX];
+  const uint16_t graph_len = minimed_graph_serialize(&s_graph, graph);
+
+  uint32_t dict_size = WF_DICT_MAX;
   // Pointer locals: an array would trip -Werror=address in TupletCString's NULL check.
   const char *bg = s_bg_str;
   const char *iob = s_iob_str;
@@ -155,21 +173,28 @@ static void prv_push_bg_cb(void *unused) {
       TupletInteger(KEY_BG_TIMESTAMP, s_bg_timestamp),
       TupletCString(KEY_BG_STRING, bg),
       TupletCString(KEY_IOB_STRING, iob),  // empty until the first IOB read; watchface blanks it
+      // Graph rides every push rather than only on change: this transport is a memcpy, not a
+      // radio, so re-sending ~100 B costs nothing and keeps the watchface in sync after a relaunch.
+      TupletBytes(KEY_GRAPH_DATA, graph, graph_len),
   };
-  if (dict_serialize_tuplets_to_buffer(tuplets, ARRAY_LENGTH(tuplets),
-                                       (uint8_t *)&push->dictionary, &dict_size) != DICT_OK) {
+  // Drop the graph tuplet entirely until there is a point to plot -- a zero-length byte array
+  // would tell the watchface "count=0" is a real, parseable graph.
+  const uint8_t n_tuplets = ARRAY_LENGTH(tuplets) - (graph_len == 0 ? 1 : 0);
+  if (dict_serialize_tuplets_to_buffer(tuplets, n_tuplets, (uint8_t *)&push->dictionary,
+                                       &dict_size) != DICT_OK) {
     minimed_sake_log("wf dict fail");
     return;
   }
-  prv_inject(payload, offsetof(AppMessagePush, dictionary) + dict_size);
+  prv_inject(offsetof(AppMessagePush, dictionary) + dict_size);
 }
 
 // KernelMain only. ACK the watchface's ready ping (txn in ctx), then answer it with the BG.
 static void prv_ack_and_resend_cb(void *ctx) {
-  const AppMessageAck ack = {
+  AppMessageAck *ack = (AppMessageAck *)FRAME_PAYLOAD;
+  *ack = (AppMessageAck){
       .header = {.command = CMD_ACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
   };
-  prv_inject((const uint8_t *)&ack, sizeof(ack));
+  prv_inject(sizeof(*ack));
   minimed_sake_log("wf ready ping");
   prv_push_bg_cb(NULL);
 }
@@ -203,13 +228,19 @@ static void prv_set_mode_cb(void *ctx) {
 
 // -- Public API ---------------------------------------------------------------------------------
 
-void minimed_sake_sender_send_bg(const char *bg_str) {
+void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp) {
   // Written on the BT host task, consumed on KernelMain. A torn read would garble one displayed
   // value for one 60s poll cycle -- tolerable, matching the spike's lock-free logging approach.
   strncpy(s_bg_str, bg_str, sizeof(s_bg_str) - 1);
   s_bg_str[sizeof(s_bg_str) - 1] = '\0';
-  s_bg_timestamp = (uint32_t)rtc_get_time();
+  s_bg_timestamp = timestamp;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
+  // Runs on the BT host task; read on KernelMain during the push. Same lock-free discipline as the
+  // BG string -- the worst case is one frame drawn from a half-updated array.
+  minimed_graph_add(&s_graph, timestamp, mgdl);
 }
 
 void minimed_sake_sender_send_iob(const char *iob_str) {

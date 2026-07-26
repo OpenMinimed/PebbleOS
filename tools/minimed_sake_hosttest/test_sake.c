@@ -10,6 +10,7 @@
 
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_aes.h"
+#include "minimed_graph.h"
 #include "minimed_iob.h"
 
 static int g_pass, g_fail;
@@ -278,12 +279,105 @@ static void section_iob(void) {
   printf("\n");
 }
 
+// --- Section 5: graph history buffer + wire encoding ----------------------
+// The watch has no pump-side backfill, so the graph is whatever readings it has accumulated. The
+// awkward cases are all about keeping the array strictly ascending (the offset-from-oldest wire
+// format cannot express anything else) and aging points out of the window.
+
+#define T0 1800000000u  // arbitrary epoch base for readable arithmetic
+#define MIN(m) ((m) * 60u)
+
+static uint16_t g_blob_len;
+static uint8_t g_blob[MINIMED_GRAPH_BLOB_MAX];
+
+static uint16_t blob_count(void) { return (uint16_t)(g_blob[4] | (g_blob[5] << 8)); }
+static uint32_t blob_ref(void) {
+  return (uint32_t)g_blob[0] | ((uint32_t)g_blob[1] << 8) | ((uint32_t)g_blob[2] << 16) |
+         ((uint32_t)g_blob[3] << 24);
+}
+static uint16_t blob_offset(int i) {
+  return (uint16_t)(g_blob[6 + 2 * i] | (g_blob[7 + 2 * i] << 8));
+}
+static uint8_t blob_bg(int i) { return g_blob[6 + 2 * blob_count() + i]; }
+
+static void section_graph(void) {
+  printf("[5] Graph history buffer + wire encoding\n");
+  MinimedGraph g = {0};
+
+  check("empty graph serializes to nothing", minimed_graph_serialize(&g, g_blob) == 0);
+
+  minimed_graph_add(&g, T0, 100);
+  minimed_graph_add(&g, T0 + MIN(5), 110);
+  minimed_graph_add(&g, T0 + MIN(10), 121);
+  g_blob_len = minimed_graph_serialize(&g, g_blob);
+  check("3 points -> 6 + 3N bytes", g_blob_len == 6 + 3 * 3);
+  check("count field is 3", blob_count() == 3);
+  check("ref timestamp is the oldest point", blob_ref() == T0);
+  check("offsets are minutes from ref", blob_offset(0) == 0 && blob_offset(1) == 5 &&
+                                            blob_offset(2) == 10);
+  // mg/dL / 2, rounded: 100 -> 50, 110 -> 55, 121 -> 61.
+  check("bg values are mg/dL/2, rounded",
+        blob_bg(0) == 50 && blob_bg(1) == 55 && blob_bg(2) == 61);
+
+  check("negative reading is ignored",
+        (minimed_graph_add(&g, T0 + MIN(15), -1), g.count == 3));
+  check("out-of-range reading clamps to 255",
+        (minimed_graph_add(&g, T0 + MIN(15), 900), g.bg[3] == 255));
+
+  // A point exactly WINDOW old ages out; the window is a half-open interval.
+  MinimedGraph w = {0};
+  minimed_graph_add(&w, T0, 100);
+  minimed_graph_add(&w, T0 + MINIMED_GRAPH_WINDOW_SECS, 120);
+  check("point exactly one window old is dropped", w.count == 1 && w.bg[0] == 60);
+
+  // Overflow: feed more points than the buffer holds. Spacing must be >= 1 min or the /60 in the
+  // wire encoding collapses every offset to 0 and the ascending check below proves nothing --
+  // 4 min keeps all 30 retained points inside the 150 min window, so eviction is by capacity.
+  MinimedGraph f = {0};
+  const int n_fill = MINIMED_GRAPH_MAX_POINTS + 10;
+  for (int i = 0; i < n_fill; i++) {
+    minimed_graph_add(&f, T0 + MIN(4 * i), (int32_t)(100 + i));
+  }
+  check("buffer caps at MAX_POINTS", f.count == MINIMED_GRAPH_MAX_POINTS);
+  check("oldest points are the ones evicted", f.ts[0] == T0 + MIN(4 * 10));
+  check("newest point is retained", f.ts[f.count - 1] == T0 + MIN(4 * (n_fill - 1)));
+
+  // Clock stepping backwards (time sync / DST) must not produce an unsortable array.
+  MinimedGraph b = {0};
+  minimed_graph_add(&b, T0 + MIN(60), 100);
+  minimed_graph_add(&b, T0 + MIN(65), 110);
+  minimed_graph_add(&b, T0 + MIN(10), 120);  // jumped back an hour
+  check("backwards clock discards the now-future points", b.count == 1 && b.ts[0] == T0 + MIN(10));
+
+  // A duplicate timestamp would encode two points at the same x; treat it as a replacement.
+  MinimedGraph d = {0};
+  minimed_graph_add(&d, T0, 100);
+  minimed_graph_add(&d, T0, 140);
+  check("duplicate timestamp replaces rather than duplicates", d.count == 1 && d.bg[0] == 70);
+
+  // Serialized offsets must stay ascending across a full buffer -- this is what the watchface
+  // relies on to draw a left-to-right trace.
+  g_blob_len = minimed_graph_serialize(&f, g_blob);
+  // Guard the guard: with sub-minute spacing every offset encodes to 0 and the ascending check
+  // below can't fail for any implementation. Assert the offsets actually differ first.
+  check("fill spacing yields distinct offsets", blob_offset(1) > blob_offset(0));
+  int ascending = 1;
+  for (int i = 1; i < blob_count(); i++) {
+    if (blob_offset(i) <= blob_offset(i - 1)) ascending = 0;
+  }
+  check("full-buffer offsets are strictly ascending", ascending);
+  check("full-buffer blob length matches count",
+        g_blob_len == 6 + 3 * MINIMED_GRAPH_MAX_POINTS);
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
   section_captured_trace();
   section_seqcrypt();
   section_iob();
+  section_graph();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;
