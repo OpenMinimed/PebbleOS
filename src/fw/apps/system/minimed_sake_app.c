@@ -10,6 +10,7 @@
 #include "applib/fonts/fonts.h"
 #include "applib/ui/ui.h"
 #include "kernel/pbl_malloc.h"
+#include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "popups/minimed_sake_spike_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
@@ -30,7 +31,14 @@ static void prv_refresh(MinimedSakeAppData *data) {
   const char *mode = (minimed_sake_get_mode() == MinimedSakeModeSpike)
                          ? (minimed_sake_pump_paired() ? "MODE: SPIKE (FE81)" : "MODE: SPIKE (FE82)")
                          : "MODE: NORMAL";
-  snprintf(data->buf, sizeof(data->buf), "%s\n%s", mode, minimed_sake_get_log());
+  // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
+  // deleted since boot. "FE81" above with pmp0 is the FE81/FE82 mismatch; pmp0 with del1 means
+  // something pruned the pump bond; pmp0 with del0 means it was never stored.
+  uint8_t gateway = 0, non_gateway = 0, deleted = 0;
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+
+  snprintf(data->buf, sizeof(data->buf), "%s\nbond gw%u pmp%u del%u\n%s", mode, gateway,
+           non_gateway, deleted, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 

@@ -111,6 +111,10 @@ static const char BLE_PINNED_ADDRESS_KEY[] = "BLE_PINNED_ADDRESS";
 
 static uint8_t s_bt_persistent_storage_updates = 0;
 
+//! Non-gateway BLE bondings deleted since boot. Diagnostic only: distinguishes a pump bond that was
+//! pruned from one that was never stored, which are indistinguishable from the watch otherwise.
+static uint8_t s_non_gateway_deletes;
+
 static PebbleMutex *s_db_mutex = NULL;
 
 //! Cache of the last connected system session capabilities. Updated in flash when we get new flags
@@ -905,6 +909,10 @@ static bool prv_delete_ble_pairing_by_id(BTBondingID bonding) {
     return false;
   }
 
+  if (!deleted_data.ble_data.is_gateway && s_non_gateway_deletes < UINT8_MAX) {
+    s_non_gateway_deletes++;
+  }
+
   status_t rv;
   rv = prv_delete_all_cccd_for_addr(&deleted_data.ble_data.pairing_info.identity);
   PBL_ASSERTN(rv == S_SUCCESS);
@@ -1116,6 +1124,48 @@ bool bt_persistent_storage_is_ble_ancs_bonding(BTBondingID bonding) {
     return data.ble_data.supports_ancs;
   }
   return false;
+}
+
+typedef struct {
+  uint8_t gateway;
+  uint8_t non_gateway;
+} BleBondingCountsItrData;
+
+static bool prv_count_ble_bondings_itr(SettingsFile *file, SettingsRecordInfo *info,
+                                       void *context) {
+  if (info->val_len == 0 || info->key_len != sizeof(BTBondingID)) {
+    return true;
+  }
+
+  BtPersistBondingData stored_data;
+  info->get_val(file, (uint8_t *)&stored_data, MIN((unsigned)info->val_len, sizeof(stored_data)));
+  if (stored_data.type != BtPersistBondingTypeBLE) {
+    return true;
+  }
+
+  BleBondingCountsItrData *itr_data = context;
+  if (stored_data.ble_data.is_gateway) {
+    itr_data->gateway++;
+  } else {
+    itr_data->non_gateway++;
+  }
+  return true;
+}
+
+void bt_persistent_storage_get_ble_bonding_counts(uint8_t *gateway_out, uint8_t *non_gateway_out,
+                                                  uint8_t *non_gateway_deleted_out) {
+  BleBondingCountsItrData itr_data = { 0 };
+  prv_file_each(prv_count_ble_bondings_itr, &itr_data);
+
+  if (gateway_out) {
+    *gateway_out = itr_data.gateway;
+  }
+  if (non_gateway_out) {
+    *non_gateway_out = itr_data.non_gateway;
+  }
+  if (non_gateway_deleted_out) {
+    *non_gateway_deleted_out = s_non_gateway_deletes;
+  }
 }
 
 bool bt_persistent_storage_has_ble_ancs_bonding(void) {
@@ -1501,6 +1551,11 @@ void bt_persistent_storage_set_cached_system_capabilities(
 void bt_persistent_storage_init(void) {
   // Note: this gets called well before the BT stack is initialized, make sure there is no code
   // that tries to use the BT stack in this path.
+
+  // Reset BEFORE the prune below, so a non-gateway bond eaten by the boot prune is counted. That
+  // distinction -- pruned versus never stored -- is the whole value of the counter.
+  s_non_gateway_deletes = 0;
+
   s_db_mutex = mutex_create();
 
   prv_load_data_from_prf();

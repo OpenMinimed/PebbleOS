@@ -869,3 +869,65 @@ void test_bluetooth_persistent_storage__deleting_gateway_erases_prf(void) {
   cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(phone_id, NULL, NULL, NULL));
   cl_assert_equal_i(fake_shared_prf_storage_get_ble_delete_count(), 1);
 }
+
+// The bond inventory is the on-watch diagnostic for the coexistence work: it distinguishes "the
+// pump bond was pruned" from "the pump bond was never stored", which otherwise look identical on
+// the watch. The delete counter is reset at the top of bt_persistent_storage_init, before the boot
+// prune runs, so a bond eaten by that prune is counted -- that is the whole point.
+void test_bluetooth_persistent_storage__ble_bonding_counts(void) {
+  uint8_t gateway = 0xff, non_gateway = 0xff, deleted = 0xff;
+
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 0);
+  cl_assert_equal_i(non_gateway, 0);
+  cl_assert_equal_i(deleted, 0);
+
+  SMPairingInfo pump = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xe1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xe1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xe1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = true,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID pump_id = bt_persistent_storage_store_ble_pairing(&pump, false /* is_gateway */,
+                                                                NULL,
+                                                                false /* requires_address_pinning */,
+                                                                false /* auto_accept_re_pairing */);
+
+  SMPairingInfo phone = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xe2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xe2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xe2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = false,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  bt_persistent_storage_store_ble_pairing(&phone, true /* is_gateway */, NULL,
+                                          false /* requires_address_pinning */,
+                                          false /* auto_accept_re_pairing */);
+
+  // This is the passing state on the watch after a reboot: one of each, nothing deleted.
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 1);
+  cl_assert_equal_i(non_gateway, 1);
+  cl_assert_equal_i(deleted, 0);
+
+  // Deleting the pump must be counted, so a failure reads as "pruned" not "never stored".
+  bt_persistent_storage_delete_ble_pairing_by_id(pump_id);
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 1);
+  cl_assert_equal_i(non_gateway, 0);
+  cl_assert_equal_i(deleted, 1);
+
+  // All out-params are optional.
+  bt_persistent_storage_get_ble_bonding_counts(NULL, NULL, NULL);
+}
