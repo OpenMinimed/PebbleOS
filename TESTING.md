@@ -49,6 +49,20 @@ listed, is not counted in the header, and that pairing a new phone is still offe
 after any change to bond storage. If they ever fail, reflash v35 and the v35-and-earlier procedure
 below applies again.
 
+**Day-to-day swapping (v36, HW-confirmed 2026-07-26): press SELECT, do nothing else.** No action on
+the phone or the pump, ever — no pairing, no forgetting, no Bluetooth menus. Confirmed with phone
+Bluetooth **on** and the phone actively reconnecting: toggling NORMAL → SPIKE still gets the pump
+back (give it up to ~1–2 min; the pump scans slowly for reconnects to save battery). The phone does
+*not* steal the slot in practice, even though nothing rejects it there — the v32 rule is
+one-directional and only keeps the pump out of NORMAL. While the pump holds the slot the Pebble app
+sits on "connecting"; that is correct, not a fault, and it clears when you toggle back to NORMAL.
+
+Still untested, and the one case where the slot could go the wrong way: immediately after a reboot
+the pump's identity is not yet known (it is RAM-only, captured at handshake completion), so the v32
+reject cannot fire and a bonded pump could take the slot while you are in NORMAL wanting the phone.
+Low impact on the flash loop, since you normally have the phone connected *before* flashing. If it
+ever bites, persisting the pump identity is the fix.
+
 Two things learned doing this the first time, both worth repeating:
 
 - **Forget the pump with the app's DOWN button, never from the Bluetooth menu.** The menu deletes
