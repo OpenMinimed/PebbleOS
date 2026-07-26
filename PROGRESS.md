@@ -365,6 +365,23 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
+- v39 (2026-07-26, **ON THE WATCH, soaking overnight — results pending**): v38 + **passive
+  subscription to IDD Status Changed `0x101`**, the pump's push channel. Logs the decoded flags and
+  the raw plaintext; acts on nothing. Deliberately fire-and-forget *after* `prv_start_polling`
+  rather than chained into discovery, so a failed subscribe cannot cost a night of BG.
+  Expect one indication then silence (bits latch until an explicit Reset Status, which v39 does not
+  send) — if more arrive, newly-set bits re-indicate while others stay latched, which would simplify
+  the eventual reset design.
+- v38 (2026-07-26, superseded by v39 before flashing): **push probe.** `PBL_LOG` on every RACP poll
+  write and every CGM measurement notification, so a flash dump shows whether notifications hug the
+  polls or arrive on their own. Both lines are marked `push probe` and **should be removed once
+  answered**. Also added timestamps to `tools/dump_flash_logs.py`, without which the experiment is
+  unreadable.
+- v37 (2026-07-26, **flashed; result: pump REJECTED it**): asked the pump for slave latency 4 via a
+  standard peripheral-initiated update. Came back HCI `0x3B` *Unacceptable Connection Parameters*
+  despite being spec-valid with a wide margin. Now a probe at latency 1 (riding v39) to separate
+  "dislikes the value" from "refuses the mechanism". See remaining-work item 6 and
+  `../Documentation/bluetooth.md`.
 - v36 (2026-07-26, **FULLY HW-VERIFIED — all three checks passed**): **phone + pump bond
   coexistence — no more re-pairing.** Verified the same evening:
   1. **Reboot survival.** `bond gw1 pmp1 del0` read identically before and after a power cycle
@@ -853,6 +870,42 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    state, reservoir, sensor state via IDD Status `0x102` encrypted read; SmartGuard via TAS
    `0x03FD`) — same IDD machinery now proven by IOB, plus watchface status key 15. Ref: bridge
    `.../ble/read/IddStatusReader.kt`, `Documentation/idd-service.md`.
+3b. **Event-driven push instead of the 60 s poll — RESEARCHED 2026-07-26, Stage A soaking in v39.**
+   The mechanism is **IDD Status Changed `0x101`** (vendor UUID, IDD service `0x100`, Read +
+   **Indicate**), the same service we already discover for IOB. Three things the obvious mental
+   model gets wrong:
+   - It is an **indication**, not a notification (CCCD `0x02 0x00`, pump awaits a confirmation).
+   - The flags are a **variable-width self-extending bitfield**: little-endian 16-bit blocks, bit 15
+     of each meaning "another block follows", 16/32/48 bits (`Documentation/idd-service.md:143-149`).
+     Field capture: all 296 observed indications were 7 bytes on the wire = 4 plaintext + the 3-byte
+     SeqCrypt trailer. No length prefix, no fragmentation, no E2E on the 780G.
+   - **The bits LATCH.** You must write Reset Status (SRCP `0x030C` + the exact flags to clear) or
+     the pump indicates once and goes silent forever. So the cycle is receive → read → *write back*,
+     an extra encrypted SRCP exchange. This is the bridge's gotcha #2 (`../minimed-pebble-bridge/
+     docs/PUMP-DATA.md:33-35`), implemented at `.../ble/read/IddStatusReader.kt:129-135`.
+   Bits the bridge acts on: 0 therapy-control, 3 annunciation, 16 therapy-algorithm, 17 IOB,
+   18 new-CGM, plus the fingerstick family {20,21,26,27}.
+   **The SAKE cipher is NOT a problem** — this was the feared blocker and it is settled. The inbound
+   counter is recovered per-frame from a wire byte (`minimed_sake_crypto.c:132-147`) and committed
+   only after the MAC verifies, so a bad frame is dropped rather than poisoning the session; all
+   pump→watch frames share one ordered ATT bearer and NimBLE dispatches them synchronously on the
+   host task. An async push therefore cannot desynchronise anything. The bridge relies on the same
+   invariant and has run all three producers concurrently for months.
+   What *does* need serialising is the **reassembly buffers**: `prv_do_poll` unconditionally zeroes
+   `s_rec_len` (so two overlapping RACP exchanges truncate a record), and `s_srcp` has a single
+   IOB-specific "complete at 7 bytes" rule that a Reset Status reply would break. That is a small
+   explicit state machine (one busy flag + a pending-work mask) — the only genuinely new structure.
+   Also correct a stale comment while there: `minimed_sake_read.c` claims a second concurrent gattc
+   op returns `BLE_HS_EBUSY`. It does not in this build — ops queue FIFO at the ATT layer with
+   `BLE_GATT_MAX_PROCS=8`. The real hazard is that the 30 s unresponsive timer starts when a proc is
+   *queued*, not sent, so a burst can time out without ever going on air. Deferring is still right,
+   for a different reason than we wrote down. Related: NimBLE sends an indication's confirmation
+   *after* the handler returns, so a gattc write issued synchronously from a push handler goes out
+   ahead of the confirmation the pump is waiting for — keep using the callout defer.
+   **Stage A (v39, soaking):** does the pump notify CGM `0x2AA7` unsolicited? We have been
+   subscribed since v11, so if it does, event-driven BG needs *no new code* and only IOB would want
+   `0x101`. **Stage B:** the port proper (~a few hundred lines). **Stage C:** act on more bits,
+   which overlaps with pump status in item 3.
 4. **Graph — DONE in v34 (awaiting HW); BACKFILL still deferred.** The graph is now drawn from
    readings the watch accumulates itself, so a cold start begins empty and fills over ~2 h. That
    was the cheap 90%: no new pump protocol, no new failure mode, and it made the staleness fix
