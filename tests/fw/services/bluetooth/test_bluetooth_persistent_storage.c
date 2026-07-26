@@ -725,3 +725,93 @@ void test_bluetooth_persistent_storage__ble_serialized_data(void) {
   cl_assert_equal_m(expected_raw_data, data, sizeof(expected_raw_data));
 }
 
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//! Gateway / non-gateway bond coexistence
+//!
+//! A non-gateway BLE bond (the MiniMed pump) must not be destroyed by machinery that assumes every
+//! BLE bond is the phone. In stock builds every BLE bond is a gateway, so none of this fires.
+
+// A non-gateway bond (the MiniMed pump) must survive a gateway (phone) bond being stored. Before
+// this fix the prune deleted every other BLE bond unconditionally, so pairing the phone destroyed
+// the pump bond and the pump had to be re-paired after every flash.
+void test_bluetooth_persistent_storage__non_gateway_survives_gateway_store(void) {
+  SMPairingInfo pump = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xaa, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xaa, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xaa, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = true,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID pump_id = bt_persistent_storage_store_ble_pairing(&pump, false /* is_gateway */,
+                                                                NULL,
+                                                                false /* requires_address_pinning */,
+                                                                false /* auto_accept_re_pairing */);
+  cl_assert(pump_id != BT_BONDING_ID_INVALID);
+
+  SMPairingInfo phone = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xbb, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xbb, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xbb, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = false,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID phone_id = bt_persistent_storage_store_ble_pairing(&phone, true /* is_gateway */,
+                                                                 NULL,
+                                                                 false /* requires_address_pinning */,
+                                                                 false /* auto_accept_re_pairing */);
+  cl_assert(phone_id != BT_BONDING_ID_INVALID);
+
+  // Both must still be there.
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(pump_id, NULL, NULL, NULL));
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(phone_id, NULL, NULL, NULL));
+}
+
+// The other direction: storing a second gateway still evicts the first. Stock single-phone policy
+// must be unchanged -- this fix must not turn the watch into a multi-phone device.
+void test_bluetooth_persistent_storage__gateway_still_evicts_gateway(void) {
+  SMPairingInfo phone_1 = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xc1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xc1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xc1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = false,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID id_1 = bt_persistent_storage_store_ble_pairing(&phone_1, true /* is_gateway */, NULL,
+                                                             false /* requires_address_pinning */,
+                                                             false /* auto_accept_re_pairing */);
+
+  SMPairingInfo phone_2 = (SMPairingInfo) {
+    .irk = (SMIdentityResolvingKey) {{
+      0xc2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+      0xc2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00
+    }},
+    .identity = (BTDeviceInternal) {
+      .address = (BTDeviceAddress) {{0xc2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+      .is_classic = false,
+      .is_random_address = false,
+    },
+    .is_remote_identity_info_valid = true,
+  };
+  BTBondingID id_2 = bt_persistent_storage_store_ble_pairing(&phone_2, true /* is_gateway */, NULL,
+                                                             false /* requires_address_pinning */,
+                                                             false /* auto_accept_re_pairing */);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(id_1, NULL, NULL, NULL));
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(id_2, NULL, NULL, NULL));
+}

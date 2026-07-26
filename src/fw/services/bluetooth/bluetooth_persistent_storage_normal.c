@@ -614,15 +614,25 @@ static bool prv_collect_other_ble_bondings_itr(SettingsFile *file, SettingsRecor
     return true;
   }
 
+  // Never prune a NON-gateway bond (the MiniMed pump). The single-BLE-pairing policy is about
+  // gateways -- one phone -- and the pump is not competing for that role. Pruning it here is what
+  // deleted the pump bond on every reboot (the boot SPRF replay re-stores the phone as a gateway,
+  // which lands in this collector) and on every phone re-pair, forcing a pump re-pair each time.
+  // In stock builds every BLE bond is a gateway, so this skip never fires.
+  if (!stored_data.ble_data.is_gateway) {
+    return true;
+  }
+
   if (itr_data->count < BT_BONDING_PRUNE_MAX) {
     itr_data->ids[itr_data->count++] = key;
   }
   return true;
 }
 
-//! Delete every BLE bonding except `keep_id`. We only ever support one BLE pairing at a time, so
-//! any other BLE bonding present is stale and must be removed (e.g. when a new phone pairs and
-//! replaces the previous one).
+//! Delete every other BLE *gateway* bonding except `keep_id`. We only ever support one BLE gateway
+//! (phone) pairing at a time, so any other gateway bonding present is stale and must be removed
+//! (e.g. when a new phone pairs and replaces the previous one). Non-gateway bondings (the MiniMed
+//! pump) are deliberately left alone -- see prv_collect_other_ble_bondings_itr.
 //!
 //! Uses the internal delete helper that does not erase shared PRF pairing data, since the kept
 //! entry is the one that should remain reflected in PRF storage.
