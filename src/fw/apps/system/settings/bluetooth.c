@@ -137,14 +137,6 @@ static void prv_add_ble_remote(BTDeviceInternal *device, SMIdentityResolvingKey 
     return;
   }
 
-  // This menu is the "paired phone" list, and pairability is enabled only while it is empty (see
-  // prv_expand_cb). A non-gateway bond -- the MiniMed pump -- is not a phone: listing it would
-  // both miscount the header and permanently block pairing a new phone, since the pump bond now
-  // survives reboots. In stock builds every BLE bond is a gateway, so nothing is ever skipped.
-  if (!bt_persistent_storage_is_ble_ancs_bonding(*id)) {
-    return;
-  }
-
   StoredRemote* remote = stored_remote_create();
   remote->ble.bonding = *id;
   prv_copy_device_name_with_fallback(remote, name);
@@ -156,6 +148,23 @@ static void prv_add_ble_remotes(SettingsBluetoothData *data) {
 
   StoredRemote *remote = (StoredRemote *)data->remote_list_head;
   while (remote) {
+    StoredRemote *next = (StoredRemote *)remote->list_node.next;
+
+    // This menu is the "paired phone" list, and pairability is enabled only while it is empty (see
+    // prv_expand_cb). A non-gateway bond -- the MiniMed pump -- is not a phone: listing it would
+    // miscount the header and permanently block pairing a new phone, now that such a bond survives
+    // reboots. This must happen HERE and not in prv_add_ble_remote: that callback runs inside
+    // bt_persistent_storage_for_each_ble_pairing, which holds the bonding-DB mutex, and that mutex
+    // is not recursive -- so reading the bonding DB from inside the callback self-deadlocks. By
+    // this point the iteration has returned and the lock is free. In stock builds every BLE bond
+    // is a gateway, so nothing is ever removed.
+    if (!bt_persistent_storage_is_ble_ancs_bonding(remote->ble.bonding)) {
+      list_remove(&remote->list_node, &data->remote_list_head, NULL);
+      task_free(remote);
+      remote = next;
+      continue;
+    }
+
     SMIdentityResolvingKey irk;
     BTDeviceInternal device;
 
@@ -171,7 +180,7 @@ static void prv_add_ble_remotes(SettingsBluetoothData *data) {
 #endif
       bt_unlock();
     }
-    remote = (StoredRemote *)remote->list_node.next;
+    remote = next;
   }
 }
 

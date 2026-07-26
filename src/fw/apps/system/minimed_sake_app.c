@@ -20,25 +20,40 @@
 
 #define SAKE_APP_REFRESH_MS 400
 
+//! Re-read the bond inventory every Nth refresh. Reading it opens the bonding settings file, so
+//! doing it at the full 400 ms rate would mean flash reads 2.5x a second for the whole time this
+//! app is foreground. Bond state changes only on a pair/forget, so a few seconds of lag on a
+//! diagnostic line costs nothing.
+#define SAKE_APP_BOND_REFRESH_EVERY 10
+
 typedef struct {
   Window window;
   TextLayer text;
   AppTimer *timer;
   char buf[384];
+  uint8_t bond_refresh_countdown;
+  uint8_t bond_gateway;
+  uint8_t bond_non_gateway;
+  uint8_t bond_deleted;
 } MinimedSakeAppData;
 
 static void prv_refresh(MinimedSakeAppData *data) {
   const char *mode = (minimed_sake_get_mode() == MinimedSakeModeSpike)
                          ? (minimed_sake_pump_paired() ? "MODE: SPIKE (FE81)" : "MODE: SPIKE (FE82)")
                          : "MODE: NORMAL";
+
   // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
   // deleted since boot. "FE81" above with pmp0 is the FE81/FE82 mismatch; pmp0 with del1 means
   // something pruned the pump bond; pmp0 with del0 means it was never stored.
-  uint8_t gateway = 0, non_gateway = 0, deleted = 0;
-  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  if (data->bond_refresh_countdown == 0) {
+    bt_persistent_storage_get_ble_bonding_counts(&data->bond_gateway, &data->bond_non_gateway,
+                                                 &data->bond_deleted);
+    data->bond_refresh_countdown = SAKE_APP_BOND_REFRESH_EVERY;
+  }
+  data->bond_refresh_countdown--;
 
-  snprintf(data->buf, sizeof(data->buf), "%s\nbond gw%u pmp%u del%u\n%s", mode, gateway,
-           non_gateway, deleted, minimed_sake_get_log());
+  snprintf(data->buf, sizeof(data->buf), "%s\nbond gw%u pmp%u del%u\n%s", mode, data->bond_gateway,
+           data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 
