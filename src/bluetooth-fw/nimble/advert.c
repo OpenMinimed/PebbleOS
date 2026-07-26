@@ -31,6 +31,11 @@ static bool s_pairing_in_progress;
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
 static uint16_t s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+// A pump connection we rejected in NORMAL (terminated on connect). Its connect was NOT routed to
+// the Pebble stack, so its disconnect must not be either -- the stack would dereference a
+// GAPLEConnection that was never created (NULL -> hard fault). Tracked so the disconnect handler
+// can recognise and swallow it.
+static uint16_t s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
 
 // Re-advertise under the current mode after a mode toggle or forget-pump. The advert payload is
 // mode-dependent (Medtronic in SPIKE via the set_advertising_data hijack, Pebble in NORMAL), but
@@ -136,11 +141,6 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // we only want to notify on a successful connection
   if (event->connect.status != 0) return;
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-  s_sake_conn_handle = event->connect.conn_handle;
-  minimed_sake_spike_report(MinimedSakeStageConnected);
-#endif
-
   struct ble_gap_conn_desc desc;
   if (ble_gap_conn_find(event->connect.conn_handle, &desc) != 0) {
     PBL_LOG_ERR("prv_handle_connection_event: Failed to find connection descriptor");
@@ -148,9 +148,37 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   }
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
-  // DIAGNOSTIC (v29): label the connection PUMP vs phone (by the identity captured at handshake),
-  // in which mode, with two address bytes for continuity with older logs. A PUMP connection while
-  // m=N is a pump reconnecting in NORMAL -- the open question we're chasing.
+  // The bonded pump reconnects by identity address regardless of the advertised payload (it holds
+  // the bond + our IRK -- HW-confirmed: it handshakes in NORMAL even though we advertise a plain
+  // Pebble payload). In NORMAL we advertise for the phone, so a pump connection here would run SAKE
+  // and squat the single connection slot, blocking the phone (the re-pair papercut). Reject it: the
+  // freed slot lets the phone win, and once the phone holds the single slot the pump is locked out.
+  // In SPIKE the pump is exactly who we want, so only gate NORMAL.
+  if (minimed_sake_get_mode() != MinimedSakeModeSpike &&
+      minimed_sake_addr_is_pump(&desc.peer_id_addr)) {
+    minimed_sake_log("pump conn in NORMAL -> drop");
+    s_rejected_pump_conn = event->connect.conn_handle;  // so its disconnect is swallowed, not routed
+    int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0) {
+      // Surface it: the pump may squat the slot until the link drops on its own. But KEEP the
+      // marker. It records "this connect was never routed to the fw stack", which is true whether
+      // or not the terminate succeeded (we return either way, so no GAPLEConnection exists). The
+      // connection always ends eventually, and routing that disconnect would deref a NULL
+      // GAPLEConnection in gap_le_connect.c -- the exact v31 hard fault. Clearing it here re-armed
+      // that crash for e.g. a link that died in the window before the terminate reached the
+      // controller. Handle reuse is not a risk: with a single slot no other central can take this
+      // handle until this connection's own disconnect arrives and clears the marker.
+      char line[32];
+      snprintf(line, sizeof(line), "pump drop FAIL 0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+    }
+    return;
+  }
+
+  s_sake_conn_handle = event->connect.conn_handle;
+  minimed_sake_spike_report(MinimedSakeStageConnected);
+
+  // Label the connection PUMP vs phone (by the identity captured at handshake) and mode.
   {
     char line[32];
     bool is_pump = minimed_sake_addr_is_pump(&desc.peer_id_addr);
@@ -207,6 +235,16 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
 
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (event->disconnect.conn.conn_handle == s_rejected_pump_conn) {
+    // A pump connection we rejected in NORMAL. The stack never saw it connect, so do NOT route its
+    // disconnect (that path derefs a never-created GAPLEConnection -> NULL crash). The controller
+    // stopped advertising when this connected and the scheduler was never told, so force the Pebble
+    // advert back on air here -- otherwise we sit off-air and the phone can't take the freed slot.
+    s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
+    gap_le_advert_force_data_refresh();
+    minimed_sake_log("pump drop done -> re-advertise");
+    return;
+  }
   s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
   minimed_sake_read_stop();  // stop CGM polling; the link is gone
   {
