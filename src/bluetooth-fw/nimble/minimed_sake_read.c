@@ -42,6 +42,14 @@ static const ble_uuid128_t s_idd_svc_uuid =
 static const ble_uuid128_t s_idd_srcp_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00);
+// IDD Status Changed 0x101 (read + indicate): the pump's "something changed" push. Subscribed
+// PASSIVELY for now -- we log what arrives and act on nothing. Note the pump LATCHES each bit until
+// an explicit Reset Status (SRCP 0x030C + the bits to clear), so without that write-back expect one
+// indication and then silence. Whether a *newly* set bit re-indicates while others stay latched is
+// exactly what an overnight capture answers.
+static const ble_uuid128_t s_idd_status_changed_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00);
 
 // SRCP "Get Insulin On Board" request: little-endian opcode 0x03F3. NOT E2E-CRC-wrapped -- the
 // 780G leaves E2E protection off for the IDD service (Documentation/idd-service.md), matching the
@@ -59,6 +67,7 @@ static uint16_t s_conn;
 static uint16_t s_cgm_start, s_cgm_end;
 static uint16_t s_h_measurement, s_h_feature, s_h_racp;
 static uint16_t s_idd_start, s_idd_end, s_h_srcp;
+static uint16_t s_h_status_changed;
 
 // Reassembly buffer for a (decrypted) CGM Measurement record. The record's byte 0 is its total
 // length, so accumulate decrypted fragments until we have that many bytes.
@@ -193,6 +202,43 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       prv_parse_and_show();
       s_rec_len = 0;
     }
+    return true;
+  }
+  if (s_h_status_changed != 0 && attr_handle == s_h_status_changed) {
+    // Passive: decode and log, act on nothing. Flags are little-endian 16-bit blocks where bit 15
+    // of a block means "another block follows" (Documentation/idd-service.md), so the field is
+    // 16/32/48 bits wide and self-describing. Observed on the bridge: 4 plaintext bytes.
+    uint8_t plain[24];
+    uint16_t plain_len = 0;
+    if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
+      minimed_sake_log("0x101 decrypt failed");
+      PBL_LOG_INFO("SAKE: 0x101 decrypt failed (%u bytes on the wire)", (unsigned)len);
+      return true;
+    }
+
+    uint64_t flags = 0;
+    unsigned blocks = 0;
+    for (unsigned i = 0; i + 1 < plain_len && blocks < 3; i += 2) {
+      const uint16_t block = (uint16_t)(plain[i] | (plain[i + 1] << 8));
+      flags |= (uint64_t)block << (16 * blocks);
+      blocks++;
+      if ((block & 0x8000) == 0) {
+        break;  // no continuation bit: this was the last block
+      }
+    }
+
+    // Log the raw plaintext too: the decode above is from documentation we have not yet confirmed
+    // against this pump, so keep the bytes that would let us re-derive it.
+    char line[32];
+    snprintf(line, sizeof(line), "0x101 %08x%08x", (unsigned)(flags >> 32), (unsigned)flags);
+    minimed_sake_log(line);
+    // Two lines: PBL_LOG allows at most 7 format conversions each.
+    PBL_LOG_INFO("SAKE: 0x101 push flags=0x%08x%08x (%u blocks, %u plaintext bytes)",
+                 (unsigned)(flags >> 32), (unsigned)flags, blocks, (unsigned)plain_len);
+    PBL_LOG_INFO("SAKE: 0x101 raw %02x %02x %02x %02x %02x %02x",
+                 plain_len > 0 ? plain[0] : 0, plain_len > 1 ? plain[1] : 0,
+                 plain_len > 2 ? plain[2] : 0, plain_len > 3 ? plain[3] : 0,
+                 plain_len > 4 ? plain[4] : 0, plain_len > 5 ? plain[5] : 0);
     return true;
   }
   if (s_h_racp != 0 && attr_handle == s_h_racp) {
@@ -344,6 +390,22 @@ static void prv_start_polling(void) {
   // Only now, with discovery finished: a latent link is what we want from here on, but asking any
   // earlier would have slowed the service/characteristic discovery that just ran.
   prv_request_slave_latency();
+
+  // Passive push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
+  // matters (BG, IOB) is already running by this point, so a failure here -- or no callback at all
+  // -- cannot cost us a reading. That is the whole reason it is not chained into the discovery
+  // sequence above like the other subscribes.
+  if (s_h_status_changed != 0) {
+    static const uint8_t indicate[] = {0x02, 0x00};
+    const int rc = ble_gattc_write_flat(s_conn, s_h_status_changed + 1, indicate, sizeof(indicate),
+                                        NULL, NULL);
+    char line[32];
+    snprintf(line, sizeof(line), "0x101 sub rc=%d", rc);
+    minimed_sake_log(line);
+    PBL_LOG_INFO("SAKE: subscribed IDD Status Changed (0x101) passively: rc=%d", rc);
+  } else {
+    PBL_LOG_INFO("SAKE: no IDD Status Changed (0x101) characteristic found");
+  }
 }
 
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
@@ -393,6 +455,8 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
     // The SRCP char is 128-bit vendor, so match by full UUID (not ble_uuid_u16).
     if (ble_uuid_cmp(&chr->uuid.u, &s_idd_srcp_uuid.u) == 0) {
       s_h_srcp = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_changed_uuid.u) == 0) {
+      s_h_status_changed = chr->val_handle;  // subscribed after polling starts; see prv_start_polling
     }
     return 0;
   }
@@ -603,6 +667,7 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_cgm_start = s_cgm_end = 0;
   s_h_measurement = s_h_feature = s_h_racp = 0;
   s_idd_start = s_idd_end = s_h_srcp = 0;
+  s_h_status_changed = 0;  // re-discovered per connection; a stale handle could alias a new one
   s_rec_len = 0;
   s_srcp_len = 0;
   // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
