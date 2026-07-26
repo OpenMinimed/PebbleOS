@@ -913,6 +913,17 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
 6. **Battery — investigated 2026-07-26; drains now ranked, top lever needs one measurement.**
    v34 logs the numbers on-watch (`prm <itvl>ms lat<N> sv<T>ms` at every connect and param update)
    so this stops being guesswork. Ranked:
+   - **MEASURED 2026-07-26 (the blocking number, now known): the pump link runs at
+     `itvl=125 ms, slave latency=0, supervision timeout=3000 ms`.** Read out of the flash log
+     (`gap_le_connect.c:372`, `conn_interval_1_25ms=100`) after a normal SPIKE session — no flash
+     needed, and note this FW log already carried the number, so v34's on-watch `prm` line was
+     redundant. The radio therefore wakes **every 125 ms, 24/7**, against the phone link's
+     45 ms × (latency 3 + 1) = 180 ms effective. Headroom for the fix is ample: the constraint
+     `(latency+1) × interval × 2 < supervision timeout` allows latency up to 11, so asking for
+     latency 4 (→ 625 ms effective, ~5× fewer wakeups) or even 7 (→ 1 s) is safely inside it.
+     Next step is lever (a) below: one `ble_gap_update_params()` after `SAKE_RESULT_DONE`, then
+     confirm via the flash log that a "Connection parameters updated" line appears for the pump
+     link (a pump-side reject is harmless — the link just keeps the old parameters).
    - **#1 The pump link's connection parameters are never negotiated.** Structural, not incidental:
      Pebble only issues a param update on a *consumer-driven* state change (`bt_conn_mgr.c`), and
      every consumer (PPoGATT, GATT discovery, AMS, pairing service) is on the phone path — the
