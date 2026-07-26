@@ -260,10 +260,73 @@ static void prv_poll_timer_cb(struct ble_npl_event *ev) {
 
 // Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
 // (s_h_srcp != 0); a missing/failed IDD discovery leaves BG working, just without IOB.
+// Peripheral latency to ask the pump for once the link goes idle. The pump dictates the connection
+// parameters and never renegotiates, so without this the watch's radio wakes every connection
+// interval around the clock (measured: 125 ms, latency 0) -- the largest steady drain on the link.
+// Latency N lets us skip up to N connection events when we have nothing to send, cutting wakeups
+// ~(N+1)x. It costs nothing in responsiveness that matters here: our own polls are
+// peripheral-initiated and go out at the next event regardless, and a pump-initiated notification
+// is delayed by at most N intervals, which is irrelevant against a 5-minute sensor cadence.
+#define DESIRED_SLAVE_LATENCY 4
+
+// Ask the pump to let us idle. Deliberately keeps the pump's own interval and supervision timeout
+// and changes only the latency: the narrowest possible request, so there is least to reject.
+//
+// This is the plain BLE route (an L2CAP parameter-update request, since we are the peripheral).
+// Medtronic also define a sanctioned one -- the NOS service's "Observation Mode" write carries
+// min/max interval, slave latency and supervision timeout (../Documentation/nos-service.md), and is
+// presumably what the official app uses. It is not the first thing to try: it needs its own service
+// discovery and a SAKE-encrypted write, and the doc lists every field's unit as "???", so we would
+// be guessing. Try the standard mechanism first and read the result out of the flash log; if the
+// pump rejects it, NOS is the justified next step -- and worth documenting upstream either way.
+static void prv_request_slave_latency(void) {
+  struct ble_gap_conn_desc d;
+  if (ble_gap_conn_find(s_conn, &d) != 0) {
+    return;
+  }
+
+  // The link dies if a whole supervision window can elapse while we are legitimately silent, so the
+  // spec requires (latency + 1) * interval * 2 < supervision_timeout. In native units (interval
+  // 1.25 ms, timeout 10 ms) that reduces to (latency + 1) * itvl < sv * 4. Derive the ceiling from
+  // what the pump actually chose rather than assuming the measured 125 ms / 3000 ms holds forever.
+  uint16_t max_latency = 0;
+  if (d.conn_itvl > 0) {
+    const uint32_t limit = ((uint32_t)d.supervision_timeout * 4) / d.conn_itvl;
+    max_latency = (limit > 1) ? (uint16_t)(limit - 1) : 0;
+  }
+  const uint16_t latency = (DESIRED_SLAVE_LATENCY < max_latency) ? DESIRED_SLAVE_LATENCY
+                                                                 : max_latency;
+  if (latency == 0 || d.conn_latency >= latency) {
+    return;  // nothing to gain (no headroom, or the pump already gave us latency)
+  }
+
+  struct ble_gap_upd_params p = {
+      .itvl_min = d.conn_itvl,
+      .itvl_max = d.conn_itvl,
+      .latency = latency,
+      .supervision_timeout = d.supervision_timeout,
+  };
+  const int rc = ble_gap_update_params(s_conn, &p);
+
+  // Log either way: a reject is harmless (the link keeps the pump's parameters) but we want to know
+  // which happened, and the acceptance shows up separately as a "Connection parameters updated"
+  // line from advert.c.
+  char line[32];
+  snprintf(line, sizeof(line), "lat req %u rc=%d", (unsigned)latency, rc);
+  minimed_sake_log(line);
+  // INFO, not DBG: the default log level is INFO, so a DBG line would never reach a flash dump --
+  // and reading this back afterwards is the entire point. Fires once per pump connection.
+  PBL_LOG_INFO("SAKE: requested slave latency %u (itvl=%u sv=%u): rc=%d",
+               (unsigned)latency, (unsigned)d.conn_itvl, (unsigned)d.supervision_timeout, rc);
+}
+
 static void prv_start_polling(void) {
   minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
   prv_do_poll();
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
+  // Only now, with discovery finished: a latent link is what we want from here on, but asking any
+  // earlier would have slowed the service/characteristic discovery that just ran.
+  prv_request_slave_latency();
 }
 
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
