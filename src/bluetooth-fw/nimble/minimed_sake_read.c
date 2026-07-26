@@ -175,6 +175,9 @@ static void prv_parse_iob(void) {
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
 bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len) {
   if (s_h_measurement != 0 && attr_handle == s_h_measurement) {
+    // PUSH PROBE (temporary, remove once answered): see prv_do_poll. Logged before decrypting so a
+    // frame still counts even if it fails to decrypt -- arrival timing is the whole question here.
+    PBL_LOG_INFO("SAKE: CGM notify %u bytes (push probe)", (unsigned)len);
     uint8_t plain[24];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
@@ -244,6 +247,12 @@ static int prv_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
 // Issue one RACP "report last stored record"; the record arrives via measurement notifications.
 static void prv_do_poll(void) {
   s_rec_len = 0;
+  // PUSH PROBE (temporary, remove once answered): pairs with the "CGM notify" line below. If the
+  // pump ever notifies a measurement WITHOUT us asking, a notify will appear in the flash log far
+  // from any poll -- and event-driven BG then needs no new code at all, because we are already
+  // subscribed to 0x2AA7. If every notify hugs a poll, the pump only answers RACP and we need the
+  // IDD Status Changed (0x101) push machinery instead.
+  PBL_LOG_INFO("SAKE: RACP poll write (push probe)");
   int rc = ble_gattc_write_flat(s_conn, s_h_racp, RACP_REPORT_LAST_RECORD,
                                 sizeof(RACP_REPORT_LAST_RECORD), prv_racp_write_cb, NULL);
   if (rc != 0) {

@@ -29,6 +29,7 @@ import argparse
 import os
 import sys
 import threading
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "log_hashing"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "libs", "pebble-loghash"))
@@ -113,7 +114,14 @@ def main():
                         payload.filename, payload.line = d["file"], d.get("line", payload.line)
                 except Exception:
                     pass  # keep the hashed form rather than losing the line
-            text = "[{}] {}:{} {}".format(level, payload.filename, payload.line, message)
+            # Timestamps matter more than they look: correlating when things happened relative to
+            # each other is most of what a flash dump is for (e.g. did this notification arrive
+            # right after our request, or on its own?).
+            try:
+                stamp = datetime.fromtimestamp(payload.timestamp).strftime("%H:%M:%S")
+            except (OverflowError, OSError, ValueError):
+                stamp = str(payload.timestamp)  # watch RTC unset or nonsense; show it raw
+            text = "{} [{}] {}:{} {}".format(stamp, level, payload.filename, payload.line, message)
             lines.append(text)
             print(text, flush=True)
         elif isinstance(payload, LogMessageDone):
