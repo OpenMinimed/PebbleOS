@@ -169,6 +169,12 @@ pbl_bt_bonding_id_t bt_persistent_storage_get_ble_ancs_bonding(void);
  */
 bool bt_persistent_storage_is_ble_ancs_bonding(pbl_bt_bonding_id_t bonding);
 
+//! Diagnostic: inventory of stored BLE bondings by gateway status, plus a count of non-gateway
+//! bondings deleted since boot. Lets a non-gateway (e.g. MiniMed pump) bond that has gone missing
+//! be attributed to a deletion rather than a failed store. Any out-param may be NULL.
+void bt_persistent_storage_get_ble_bonding_counts(uint8_t *gateway_out, uint8_t *non_gateway_out,
+                                                  uint8_t *non_gateway_deleted_out);
+
 /**
  * @brief Check whether any BLE bonding supports ANCS.
  *

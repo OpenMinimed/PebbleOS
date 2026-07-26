@@ -104,6 +104,10 @@ static const char BLE_PINNED_ADDRESS_KEY[] = "BLE_PINNED_ADDRESS";
 
 static uint8_t s_bt_persistent_storage_updates = 0;
 
+//! Non-gateway BLE bondings deleted since boot. Diagnostic only: distinguishes a pump bond that was
+//! pruned from one that was never stored, which are indistinguishable from the watch otherwise.
+static uint8_t s_non_gateway_deletes;
+
 static PBL_MUTEX_DEFINE(s_db_mutex);
 
 //! Cache of the last connected system session capabilities. Updated in flash when we get new flags
@@ -603,15 +607,25 @@ static bool prv_collect_other_ble_bondings_itr(SettingsFile *file, SettingsRecor
     return true;
   }
 
+  // Never prune a NON-gateway bond (the MiniMed pump). The single-BLE-pairing policy is about
+  // gateways -- one phone -- and the pump is not competing for that role. Pruning it here is what
+  // deleted the pump bond on every reboot (the boot SPRF replay re-stores the phone as a gateway,
+  // which lands in this collector) and on every phone re-pair, forcing a pump re-pair each time.
+  // In stock builds every BLE bond is a gateway, so this skip never fires.
+  if (!stored_data.ble_data.is_gateway) {
+    return true;
+  }
+
   if (itr_data->count < BT_BONDING_PRUNE_MAX) {
     itr_data->ids[itr_data->count++] = key;
   }
   return true;
 }
 
-//! Delete every BLE bonding except `keep_id`. We only ever support one BLE pairing at a time, so
-//! any other BLE bonding present is stale and must be removed (e.g. when a new phone pairs and
-//! replaces the previous one).
+//! Delete every other BLE *gateway* bonding except `keep_id`. We only ever support one BLE gateway
+//! (phone) pairing at a time, so any other gateway bonding present is stale and must be removed
+//! (e.g. when a new phone pairs and replaces the previous one). Non-gateway bondings (the MiniMed
+//! pump) are deliberately left alone -- see prv_collect_other_ble_bondings_itr.
 //!
 //! Uses the internal delete helper that does not erase shared PRF pairing data, since the kept
 //! entry is the one that should remain reflected in PRF storage.
@@ -632,6 +646,7 @@ typedef struct {
   pbl_bt_bonding_id_t key_out;
   uint32_t last_modified_out;
   uint8_t ble_count;
+  bool keep_is_gateway;
 } MostRecentBleItrData;
 
 static bool prv_find_most_recent_ble_bonding_itr(SettingsFile *file, SettingsRecordInfo *info,
@@ -650,12 +665,26 @@ static bool prv_find_most_recent_ble_bonding_itr(SettingsFile *file, SettingsRec
 
   pbl_bt_bonding_id_t key;
   info->get_key(file, (uint8_t *)&key, info->key_len);
+  const bool is_gateway = stored_data.ble_data.is_gateway;
 
   itr_data->ble_count++;
-  if (itr_data->key_out == PBL_BT_BONDING_ID_INVALID ||
-      info->last_modified > itr_data->last_modified_out) {
+  // Prefer keeping the gateway (phone): a gateway always beats a non-gateway (e.g. the MiniMed
+  // pump) regardless of modified time; among the same class, keep the most-recently modified.
+  // Without the gateway preference a reboot could keep a more-recently-bonded non-gateway and prune
+  // the phone, re-triggering the reconnect(0x13) loop. In stock builds all BLE bonds are gateways,
+  // so this reduces to the original most-recent-wins behaviour.
+  bool better;
+  if (itr_data->key_out == PBL_BT_BONDING_ID_INVALID) {
+    better = true;
+  } else if (is_gateway != itr_data->keep_is_gateway) {
+    better = is_gateway;
+  } else {
+    better = (info->last_modified > itr_data->last_modified_out);
+  }
+  if (better) {
     itr_data->key_out = key;
     itr_data->last_modified_out = info->last_modified;
+    itr_data->keep_is_gateway = is_gateway;
   }
   return true;
 }
@@ -675,8 +704,12 @@ static void prv_prune_stale_ble_bondings(void) {
     return;
   }
 
-  PBL_LOG_INFO("Found %u BLE bondings at boot, keeping most recent (id %d)", itr_data.ble_count,
-               itr_data.key_out);
+  // DBG, not INFO: with a phone and a pump bonded this is the normal steady state and fires on
+  // every boot, and the collector then deletes nothing (it skips non-gateway bonds). An INFO line
+  // describing a prune that did not happen makes log archaeology harder, which is how this project
+  // debugs connectivity. Actual removals are still logged in prv_delete_other_ble_bondings. Also
+  // avoid saying "most recent": the selection prefers a gateway over last_modified.
+  PBL_LOG_DBG("Found %u BLE bondings at boot, keeping id %d", itr_data.ble_count, itr_data.key_out);
   prv_delete_other_ble_bondings(itr_data.key_out);
 }
 
@@ -760,10 +793,14 @@ pbl_bt_bonding_id_t bt_persistent_storage_store_ble_pairing(
 
   prv_call_ble_bonding_change_handlers(key, op);
 
-  // We only support a single BLE pairing at a time. Drop any previous BLE bonding so that
-  // re-pairing with a different phone (or merging a PRF pairing) replaces the old one instead of
-  // leaving it behind and forcing the user to forget it manually.
-  prv_delete_other_ble_bondings(key);
+  // We only support a single BLE *gateway* pairing at a time, so adding a new gateway drops the
+  // previous one. Guard on is_gateway: a NON-gateway bond (e.g. the MiniMed pump) must not evict
+  // the gateway (phone) -- doing so deletes the phone's LTK, so it can't re-encrypt on reconnect
+  // and gets stuck in a connect/terminate(0x13) loop, forcing a re-pair. In stock builds every BLE
+  // bond is a gateway, so this guard is a no-op there.
+  if (is_gateway) {
+    prv_delete_other_ble_bondings(key);
+  }
 
   return key;
 }
@@ -863,6 +900,10 @@ static bool prv_delete_ble_pairing_by_id(pbl_bt_bonding_id_t bonding) {
     return false;
   }
 
+  if (!deleted_data.ble_data.is_gateway && s_non_gateway_deletes < UINT8_MAX) {
+    s_non_gateway_deletes++;
+  }
+
   status_t rv;
   rv = prv_delete_all_cccd_for_addr(&deleted_data.ble_data.pairing_info.identity);
   PBL_ASSERTN(rv == S_SUCCESS);
@@ -874,11 +915,20 @@ static bool prv_delete_ble_pairing_by_id(pbl_bt_bonding_id_t bonding) {
 }
 
 void bt_persistent_storage_delete_ble_pairing_by_id(pbl_bt_bonding_id_t bonding) {
+  // Read this BEFORE the delete -- the record is gone afterwards. supports_ancs is set equal to
+  // is_gateway when a bond is stored, so this answers "was this the phone?".
+  const bool was_gateway = bt_persistent_storage_is_ble_ancs_bonding(bonding);
+
   if (!prv_delete_ble_pairing_by_id(bonding)) {
     return;
   }
-  // TODO: Make sure this matches what we have stored
-  shared_prf_storage_erase_ble_pairing_data();
+
+  // Only the gateway (phone) is mirrored into shared PRF storage, so only its deletion should clear
+  // that slot. Erasing on a non-gateway delete wiped the phone's PRF pairing when the pump was
+  // forgotten -- self-healing at the next boot, but leaving PRF/recovery unpaired until then.
+  if (was_gateway) {
+    shared_prf_storage_erase_ble_pairing_data();
+  }
 }
 
 typedef struct {
@@ -1059,6 +1109,48 @@ bool bt_persistent_storage_is_ble_ancs_bonding(pbl_bt_bonding_id_t bonding) {
     return data.ble_data.supports_ancs;
   }
   return false;
+}
+
+typedef struct {
+  uint8_t gateway;
+  uint8_t non_gateway;
+} BleBondingCountsItrData;
+
+static bool prv_count_ble_bondings_itr(SettingsFile *file, SettingsRecordInfo *info,
+                                       void *context) {
+  if (info->val_len == 0 || info->key_len != sizeof(pbl_bt_bonding_id_t)) {
+    return true;
+  }
+
+  BtPersistBondingData stored_data;
+  info->get_val(file, (uint8_t *)&stored_data, MIN((unsigned)info->val_len, sizeof(stored_data)));
+  if (stored_data.type != BtPersistBondingTypeBLE) {
+    return true;
+  }
+
+  BleBondingCountsItrData *itr_data = context;
+  if (stored_data.ble_data.is_gateway) {
+    itr_data->gateway++;
+  } else {
+    itr_data->non_gateway++;
+  }
+  return true;
+}
+
+void bt_persistent_storage_get_ble_bonding_counts(uint8_t *gateway_out, uint8_t *non_gateway_out,
+                                                  uint8_t *non_gateway_deleted_out) {
+  BleBondingCountsItrData itr_data = {0};
+  prv_file_each(prv_count_ble_bondings_itr, &itr_data);
+
+  if (gateway_out) {
+    *gateway_out = itr_data.gateway;
+  }
+  if (non_gateway_out) {
+    *non_gateway_out = itr_data.non_gateway;
+  }
+  if (non_gateway_deleted_out) {
+    *non_gateway_deleted_out = s_non_gateway_deletes;
+  }
 }
 
 bool bt_persistent_storage_has_ble_ancs_bonding(void) {
@@ -1441,6 +1533,10 @@ void bt_persistent_storage_set_cached_system_capabilities(
 void bt_persistent_storage_init(void) {
   // Note: this gets called well before the BT stack is initialized, make sure there is no code
   // that tries to use the BT stack in this path.
+
+  // Reset BEFORE the prune below, so a non-gateway bond eaten by the boot prune is counted. That
+  // distinction -- pruned versus never stored -- is the whole value of the counter.
+  s_non_gateway_deletes = 0;
 
   prv_load_data_from_prf();
 

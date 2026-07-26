@@ -897,3 +897,228 @@ void test_bluetooth_persistent_storage__ble_serialized_data(void) {
   cl_assert_equal_i(data_len, data_size);
   cl_assert_equal_m(expected_raw_data, data, sizeof(expected_raw_data));
 }
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//! Gateway / non-gateway bond coexistence
+//!
+//! A non-gateway BLE bond (the MiniMed pump) must not be destroyed by machinery that assumes every
+//! BLE bond is the phone. In stock builds every BLE bond is a gateway, so none of this fires.
+
+// A non-gateway bond (the MiniMed pump) must survive a gateway (phone) bond being stored. Before
+// this fix the prune deleted every other BLE bond unconditionally, so pairing the phone destroyed
+// the pump bond and the pump had to be re-paired after every flash.
+void test_bluetooth_persistent_storage__non_gateway_survives_gateway_store(void) {
+  struct pbl_bt_sm_pairing_info pump = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xaa, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xaa, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xaa, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = true,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t pump_id = bt_persistent_storage_store_ble_pairing(
+      &pump, false /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+  cl_assert(pump_id != PBL_BT_BONDING_ID_INVALID);
+
+  struct pbl_bt_sm_pairing_info phone = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xbb, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xbb, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xbb, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = false,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t phone_id = bt_persistent_storage_store_ble_pairing(
+      &phone, true /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+  cl_assert(phone_id != PBL_BT_BONDING_ID_INVALID);
+
+  // Both must still be there.
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(pump_id, nullptr, nullptr, nullptr));
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(phone_id, nullptr, nullptr, nullptr));
+}
+
+// The other direction: storing a second gateway still evicts the first. Stock single-phone policy
+// must be unchanged -- this fix must not turn the watch into a multi-phone device.
+void test_bluetooth_persistent_storage__gateway_still_evicts_gateway(void) {
+  struct pbl_bt_sm_pairing_info phone_1 = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xc1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xc1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xc1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = false,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t id_1 = bt_persistent_storage_store_ble_pairing(
+      &phone_1, true /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+
+  struct pbl_bt_sm_pairing_info phone_2 = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xc2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xc2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xc2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = false,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t id_2 = bt_persistent_storage_store_ble_pairing(
+      &phone_2, true /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(id_1, nullptr, nullptr, nullptr));
+  cl_assert(bt_persistent_storage_get_ble_pairing_by_id(id_2, nullptr, nullptr, nullptr));
+}
+
+// Forgetting the PUMP must not wipe the PHONE's shared-PRF pairing slot. The erase was
+// unconditional, so pressing DOWN (forget pump) on the watch -- a routine step in the FE81/FE82
+// reconciliation -- left the phone unpaired in PRF until the next boot repaired it.
+void test_bluetooth_persistent_storage__deleting_non_gateway_keeps_prf(void) {
+  struct pbl_bt_sm_pairing_info pump = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xd1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xd1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xd1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = true,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t pump_id = bt_persistent_storage_store_ble_pairing(
+      &pump, false /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+
+  fake_shared_prf_storage_reset_counts();
+  bt_persistent_storage_delete_ble_pairing_by_id(pump_id);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(pump_id, nullptr, nullptr, nullptr));
+  cl_assert_equal_i(fake_shared_prf_storage_get_ble_delete_count(), 0);
+}
+
+// Deleting the phone must still erase the PRF slot -- stock behaviour, unchanged.
+void test_bluetooth_persistent_storage__deleting_gateway_erases_prf(void) {
+  struct pbl_bt_sm_pairing_info phone = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xd2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xd2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xd2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = false,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t phone_id = bt_persistent_storage_store_ble_pairing(
+      &phone, true /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+
+  fake_shared_prf_storage_reset_counts();
+  bt_persistent_storage_delete_ble_pairing_by_id(phone_id);
+
+  cl_assert(!bt_persistent_storage_get_ble_pairing_by_id(phone_id, nullptr, nullptr, nullptr));
+  cl_assert_equal_i(fake_shared_prf_storage_get_ble_delete_count(), 1);
+}
+
+// The bond inventory is the on-watch diagnostic for the coexistence work: it distinguishes "the
+// pump bond was pruned" from "the pump bond was never stored", which otherwise look identical on
+// the watch. The delete counter is reset at the top of bt_persistent_storage_init, before the boot
+// prune runs, so a bond eaten by that prune is counted -- that is the whole point.
+void test_bluetooth_persistent_storage__ble_bonding_counts(void) {
+  uint8_t gateway = 0xff, non_gateway = 0xff, deleted = 0xff;
+
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 0);
+  cl_assert_equal_i(non_gateway, 0);
+  cl_assert_equal_i(deleted, 0);
+
+  struct pbl_bt_sm_pairing_info pump = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xe1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xe1, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xe1, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = true,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  pbl_bt_bonding_id_t pump_id = bt_persistent_storage_store_ble_pairing(
+      &pump, false /* is_gateway */, nullptr, false /* requires_address_pinning */,
+      false /* auto_accept_re_pairing */);
+
+  struct pbl_bt_sm_pairing_info phone = (struct pbl_bt_sm_pairing_info){
+    .irk =
+        (struct pbl_bt_sm_key){
+          .data =
+              {0xe2, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0xe2, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+               0x0f, 0x00}
+        },
+    .identity =
+        (struct pbl_bt_device_internal){
+          .address = (struct pbl_bt_addr){.octets = {0xe2, 0x12, 0x13, 0x14, 0x15, 0x16}},
+          .is_classic = false,
+          .is_random_address = false,
+        },
+    .is_remote_identity_info_valid = true,
+  };
+  bt_persistent_storage_store_ble_pairing(&phone, true /* is_gateway */, nullptr,
+                                          false /* requires_address_pinning */,
+                                          false /* auto_accept_re_pairing */);
+
+  // This is the passing state on the watch after a reboot: one of each, nothing deleted.
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 1);
+  cl_assert_equal_i(non_gateway, 1);
+  cl_assert_equal_i(deleted, 0);
+
+  // Deleting the pump must be counted, so a failure reads as "pruned" not "never stored".
+  bt_persistent_storage_delete_ble_pairing_by_id(pump_id);
+  bt_persistent_storage_get_ble_bonding_counts(&gateway, &non_gateway, &deleted);
+  cl_assert_equal_i(gateway, 1);
+  cl_assert_equal_i(non_gateway, 0);
+  cl_assert_equal_i(deleted, 1);
+
+  // All out-params are optional.
+  bt_persistent_storage_get_ble_bonding_counts(nullptr, nullptr, nullptr);
+}
