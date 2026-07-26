@@ -5,7 +5,6 @@
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
 
-#include "applib/ui/vibes.h"
 #include "kernel/event_loop.h"
 #include "kernel/pbl_malloc.h"
 
@@ -52,9 +51,6 @@ static void prv_append_cb(void *data) {
   kernel_free(msg);
 }
 
-static void prv_vibe_short_cb(void *data) { vibes_short_pulse(); }
-static void prv_vibe_double_cb(void *data) { vibes_double_pulse(); }
-
 static const char *prv_stage_text(MinimedSakeStage stage) {
   switch (stage) {
     case MinimedSakeStageAdvertising:  return "advertising";
@@ -78,14 +74,11 @@ void minimed_sake_log(const char *msg) {
   launcher_task_add_callback(prv_append_cb, copy);
 }
 
-void minimed_sake_spike_report(MinimedSakeStage stage) {
-  minimed_sake_log(prv_stage_text(stage));
-  if (stage == MinimedSakeStageWrote || stage == MinimedSakeStageHandshakeComplete) {
-    launcher_task_add_callback(prv_vibe_double_cb, NULL);
-  } else if (stage == MinimedSakeStageConnected || stage == MinimedSakeStageSubscribed) {
-    launcher_task_add_callback(prv_vibe_short_cb, NULL);
-  }
-}
+// Deliberately silent. These stages used to buzz the motor (short on connect/subscribe, double on
+// the handshake milestones) back when reaching them at all was the news. Now the pump re-handshakes
+// on every reconnect, so a night of dropouts is a night of buzzing -- and these are raw vibes_*
+// calls that ignore Quiet Time. The on-watch log is the debugging channel.
+void minimed_sake_spike_report(MinimedSakeStage stage) { minimed_sake_log(prv_stage_text(stage)); }
 
 MinimedSakeMode minimed_sake_get_mode(void) { return s_mode; }
 

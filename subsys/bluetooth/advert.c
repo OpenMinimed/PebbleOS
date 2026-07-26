@@ -35,6 +35,11 @@ static uint16_t s_pairing_conn_handle;
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
 static uint16_t s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+// A pump connection we rejected in NORMAL (terminated on connect). Its connect was NOT routed to
+// the Pebble stack, so its disconnect must not be either -- the stack would dereference a
+// GAPLEConnection that was never created (NULL -> hard fault). Tracked so the disconnect handler
+// can recognise and swallow it.
+static uint16_t s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
 
 // Re-advertise under the current mode after a mode toggle or forget-pump. The advert payload is
 // mode-dependent (Medtronic in SPIKE via the set_advertising_data hijack, Pebble in NORMAL), but
@@ -114,6 +119,16 @@ bool pbl_bt_advert_set_advertising_data(const struct pbl_bt_ad_data *ad_data) {
       PBL_LOG_ERR("SAKE: failed to set Medtronic advert (0x%04x)", (uint16_t)rc);
       return false;
     }
+    // Clear any scan response left over from NORMAL. This branch used to return without touching
+    // it, so the watch kept answering active scans with Pebble's manufacturer data (company
+    // 0x0eea) carrying its serial number -- i.e. announcing itself as a Pebble in the same breath
+    // as claiming to be a Medtronic peripheral. Observed on air with a laptop scanner. NULL/0 is
+    // the documented way to clear it (NimBLE only rejects NULL with a nonzero length).
+    rc = ble_gap_adv_rsp_set_data(NULL, 0);
+    if (rc != 0) {
+      PBL_LOG_ERR("SAKE: failed to clear scan response (0x%04x)", (uint16_t)rc);
+      return false;
+    }
     // DIAGNOSTIC (v29): dump the actual bytes pushed, so FE82/FE81 is read from the wire payload
     // (b[5]b[6]) rather than inferred from the paired flag.
     char line[32];
@@ -153,15 +168,22 @@ bool pbl_bt_advert_set_advertising_data(const struct pbl_bt_ad_data *ad_data) {
   return true;
 }
 
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+// Connection interval / peripheral latency / supervision timeout, in milliseconds, to the on-watch
+// log. Interval x (latency + 1) is how often the radio actually has to wake.
+static void prv_log_conn_params(const struct ble_gap_conn_desc *desc) {
+  char line[32];
+  snprintf(line, sizeof(line), "prm %ums lat%u sv%ums",
+           (unsigned)(desc->conn_itvl * BLE_HCI_CONN_ITVL / 1000), (unsigned)desc->conn_latency,
+           (unsigned)(desc->supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS));
+  minimed_sake_log(line);
+}
+#endif
+
 static void prv_handle_connection_event(struct ble_gap_event *event) {
   // we only want to notify on a successful connection
   if (event->connect.status != 0)
     return;
-
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-  s_sake_conn_handle = event->connect.conn_handle;
-  minimed_sake_spike_report(MinimedSakeStageConnected);
-#endif
 
   struct ble_gap_conn_desc desc;
   if (ble_gap_conn_find(event->connect.conn_handle, &desc) != 0) {
@@ -170,9 +192,37 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   }
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
-  // DIAGNOSTIC (v29): label the connection PUMP vs phone (by the identity captured at handshake),
-  // in which mode, with two address bytes for continuity with older logs. A PUMP connection while
-  // m=N is a pump reconnecting in NORMAL -- the open question we're chasing.
+  // The bonded pump reconnects by identity address regardless of the advertised payload (it holds
+  // the bond + our IRK -- HW-confirmed: it handshakes in NORMAL even though we advertise a plain
+  // Pebble payload). In NORMAL we advertise for the phone, so a pump connection here would run SAKE
+  // and squat the single connection slot, blocking the phone (the re-pair papercut). Reject it: the
+  // freed slot lets the phone win, and once the phone holds the single slot the pump is locked out.
+  // In SPIKE the pump is exactly who we want, so only gate NORMAL.
+  if (minimed_sake_get_mode() != MinimedSakeModeSpike &&
+      minimed_sake_addr_is_pump(&desc.peer_id_addr)) {
+    minimed_sake_log("pump conn in NORMAL -> drop");
+    s_rejected_pump_conn = event->connect.conn_handle;  // so its disconnect is swallowed, not routed
+    int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0) {
+      // Surface it: the pump may squat the slot until the link drops on its own. But KEEP the
+      // marker. It records "this connect was never routed to the fw stack", which is true whether
+      // or not the terminate succeeded (we return either way, so no GAPLEConnection exists). The
+      // connection always ends eventually, and routing that disconnect would deref a NULL
+      // GAPLEConnection in gap_le_connect.c -- the exact v31 hard fault. Clearing it here re-armed
+      // that crash for e.g. a link that died in the window before the terminate reached the
+      // controller. Handle reuse is not a risk: with a single slot no other central can take this
+      // handle until this connection's own disconnect arrives and clears the marker.
+      char line[32];
+      snprintf(line, sizeof(line), "pump drop FAIL 0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+    }
+    return;
+  }
+
+  s_sake_conn_handle = event->connect.conn_handle;
+  minimed_sake_spike_report(MinimedSakeStageConnected);
+
+  // Label the connection PUMP vs phone (by the identity captured at handshake) and mode.
   {
     char line[32];
     bool is_pump = minimed_sake_addr_is_pump(&desc.peer_id_addr);
@@ -180,6 +230,11 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
              minimed_sake_get_mode() == MinimedSakeModeSpike ? 'S' : 'N',
              desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
     minimed_sake_log(line);
+
+    // The pump dictates these and we never renegotiate, so they set the watch's idle radio duty
+    // cycle for as long as the link is up -- the prime suspect for the battery drain. Surface them
+    // on-watch (the PBL_LOG copy needs a tethered console) so the numbers can just be read off.
+    prv_log_conn_params(&desc);
   }
 #endif
 
@@ -252,6 +307,16 @@ static void prv_end_pairing(uint16_t conn_handle, bool success) {
 
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (event->disconnect.conn.conn_handle == s_rejected_pump_conn) {
+    // A pump connection we rejected in NORMAL. The stack never saw it connect, so do NOT route its
+    // disconnect (that path derefs a never-created GAPLEConnection -> NULL crash). The controller
+    // stopped advertising when this connected and the scheduler was never told, so force the Pebble
+    // advert back on air here -- otherwise we sit off-air and the phone can't take the freed slot.
+    s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
+    gap_le_advert_force_data_refresh();
+    minimed_sake_log("pump drop done -> re-advertise");
+    return;
+  }
   s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
   minimed_sake_read_stop();  // stop CGM polling; the link is gone
   {
@@ -319,6 +384,9 @@ static void prv_handle_conn_params_updated_event(struct ble_gap_event *event) {
       "itvl=%u ms, latency=%u, spvn timeout=%u ms",
       desc.conn_itvl * BLE_HCI_CONN_ITVL / 1000, desc.conn_latency,
       desc.supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+  prv_log_conn_params(&desc);  // the link's duty cycle changed; keep the on-watch record current
+#endif
 
   struct pbl_bt_conn_update_complete_event conn_params_update_event = {
     .status = PBL_BT_HCI_STATUS_SUCCESS,

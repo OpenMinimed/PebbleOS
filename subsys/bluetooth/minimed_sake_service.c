@@ -351,10 +351,19 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
   // what an already-bonded pump scans for; it ignores the rest of the payload then).
   // Manufacturer data: Medtronic company 0x01f9, payload = 0x00 + "Mobile PB" + 0x00.
   // Matches the working Android bridge; the pump reads the name from mfr data, not the GAP name.
+  //
+  // Do NOT lengthen the name without testing pairing on hardware. "Mobile Pebble" was tried in v34
+  // and the pump then reported "device not found", even though a laptop scanner confirmed the
+  // advert was well-formed (FE82 present, flags 0x06, -34 dBm) and the name is legal per
+  // Documentation/bluetooth.md ("Mobile " + 0-7 chars). Reverted to these exact bytes, which have
+  // paired reliably since v10. Unexplained, so treat the payload as load-bearing.
   static const uint8_t adv[] = {
       0x02, 0x01, 0x06,
       0x03, 0x03, 0x82, 0xfe,
-      0x0e, 0xff, 0xf9, 0x01, 0x00, 'M', 'o', 'b', 'i', 'l', 'e', ' ', 'P', 'B', 0x00,
+      // mfr data (company 0x01f9): 0x00 + name + 0x00. Name "Mobile PB" (9 chars) -> payload
+      // len 0x0e.
+      0x0e, 0xff, 0xf9, 0x01, 0x00,
+      'M', 'o', 'b', 'i', 'l', 'e', ' ', 'P', 'B', 0x00,
   };
   if (buf_len < sizeof(adv)) {
     return 0;
