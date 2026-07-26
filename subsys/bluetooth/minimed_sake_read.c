@@ -12,6 +12,7 @@
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 
+#include "drivers/rtc.h"
 #include "minimed_iob.h"
 #include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
@@ -70,6 +71,15 @@ static uint8_t s_rec_len;
 static uint8_t s_srcp[24];
 static uint8_t s_srcp_len;
 
+// Distinguishes a genuinely new sensor reading from a re-poll of the same one. The CGM record's
+// Time Offset (bytes 4-5, minutes since session start) is the only new-reading signal available --
+// the value alone is not, since consecutive readings are often identical. Without this the BG
+// timestamp would advance on every 60 s poll, so a stalled sensor would look permanently fresh on
+// the watchface, and the graph would fill with duplicate points.
+static uint16_t s_last_offset;
+static bool s_have_offset;
+static uint32_t s_reading_ts;  // wall-clock time we first saw the current reading
+
 // Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer mg/dL. Returns INT32_MIN for the
 // NaN/NRes/Inf sentinels (no usable value). Glucose normally has exponent 0.
 static int32_t prv_decode_medfloat16(uint16_t raw) {
@@ -98,6 +108,11 @@ static void prv_parse_and_show(void) {
   int32_t mgdl = prv_decode_medfloat16(raw);
   char line[32];
   if (mgdl == INT32_MIN) {
+    // Warmup / no usable value. Forget the tracked offset: a sentinel run usually means a new
+    // sensor session, whose offsets restart from zero and could otherwise happen to land on the
+    // previous session's last value -- which would read as a re-poll and pair a fresh reading with
+    // an hours-old timestamp.
+    s_have_offset = false;
     minimed_sake_log("SG: no value (warmup?)");
     return;
   }
@@ -106,12 +121,32 @@ static void prv_parse_and_show(void) {
   // pump's own display (differs at rounding boundaries, e.g. 100 mg/dL -> 5.5, not 5.6). Scaled
   // integer math (no float printf on the watch); +90091 = 180182/2 for round-half-up.
   int32_t tenths = (mgdl * 100000 + 90091) / 180182;
-  snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10), (long)(tenths % 10));
+
+  const uint16_t offset = (uint16_t)(s_rec[4] | (s_rec[5] << 8));
+  const bool is_new = (!s_have_offset || offset != s_last_offset);
+  if (is_new) {
+    s_last_offset = offset;
+    s_have_offset = true;
+    s_reading_ts = (uint32_t)rtc_get_time();
+    minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
+    snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
+             (long)(tenths % 10));
+  } else {
+    // Same reading re-polled. Worth a line so the log still shows the link is alive, and the age
+    // makes a stalled sensor obvious instead of looking like fresh data. Clamp at 0 rather than
+    // letting an RTC step backwards print a nonsense six-digit age.
+    const uint32_t now = (uint32_t)rtc_get_time();
+    const uint32_t age_min = (now > s_reading_ts) ? (now - s_reading_ts) / 60 : 0;
+    snprintf(line, sizeof(line), "BG %ld.%ld same %lum", (long)(tenths / 10), (long)(tenths % 10),
+             (unsigned long)age_min);
+  }
   minimed_sake_log(line);
 
   char bg_str[12];
   snprintf(bg_str, sizeof(bg_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
-  minimed_sake_sender_send_bg(bg_str);  // forward to the watchface (no-op if it isn't running)
+  // Forward to the watchface (no-op if it isn't running). Timestamped when the reading first
+  // appeared, not now, so the watchface's "N min ago" reflects the sensor, not our poll.
+  minimed_sake_sender_send_bg(bg_str, s_reading_ts);
 }
 
 // Parse a reassembled SRCP IOB response and forward it to the watchface. On a parse failure log
@@ -490,6 +525,10 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_idd_start = s_idd_end = s_h_srcp = 0;
   s_rec_len = 0;
   s_srcp_len = 0;
+  // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
+  // monotonic within a sensor session, so keeping it means the first read after a brief dropout is
+  // recognised as the reading we already have, rather than being re-timestamped and re-plotted. A
+  // new sensor session restarts the offset, which reads as a new value anyway.
   ble_npl_callout_reset(&s_read_co, ble_npl_time_ms_to_ticks32(250));
 }
 
