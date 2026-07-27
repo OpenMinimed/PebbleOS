@@ -35,10 +35,13 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
-- **ON THE WATCH NOW: v36** (`build/sake-spike-v36-bond-coexistence.pbz`, 2026-07-26).
-  **Working:** pump pairs, BG + IOB correct, and **neither bond is ever lost again** — reboot and
-  phone re-pair both verified. **Still broken (pre-existing, unrelated):** the real watchface
-  crashes on launch, so the Spike app is still what's on screen. v36 = v35 + bond coexistence.
+- **BUILT 2026-07-27, awaiting flash: v40 pump push** (`build/sake-spike-v40-pump-push.pbz`,
+  pushed to the phone's Downloads). Event-driven reads via `0x101` + Reset Status + 6-min
+  fallback — HW checklist in the v40 version-log entry.
+- **ON THE WATCH NOW: v39** (2026-07-26; = v36 + passive `0x101` subscription + probes, see the
+  version log). Everything v36 verified still holds: pump pairs, BG + IOB correct, **neither bond
+  is ever lost** — reboot and phone re-pair both verified (v36, 2026-07-26). The watchface launch
+  crash did NOT reproduce on v36+ (see OPEN→DORMANT below).
 - v35 (`build/sake-spike-v35-scanrsp-and-name-revert.pbz`, 2026-07-26, superseded by v36).
   **Working:** pump pairs, BG + IOB correct on the SAKE Spike app display. **Broken:** the real
   watchface crashes on launch (see the OPEN section below) — Morten is wearing it with the Spike app
@@ -286,36 +289,18 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: pump push (handoff brief, written 2026-07-27)
+## → NEXT UP: flash v40 (pump push) and run its HW checklist
 
-**The job: replace the 60 s CGM poll with event-driven reads via IDD Status Changed `0x101`.**
-Decided 2026-07-27. Read in this order: remaining-work **item 3b** (the mechanism, fully researched
-— read this before touching code), then item 6 (why this is *not* a battery fix), then the two
-"ON THE WATCH" version-log entries for v39.
+**Pump push is BUILT (v40, 2026-07-27) — awaiting flash.** The 60 s CGM poll is replaced by
+event-driven reads via IDD Status Changed `0x101` with Reset Status write-back, ported from the
+bridge per Morten's instruction (its tuned 6-min fallback included). Spec:
+`docs/superpowers/specs/2026-07-27-pump-push-design.md`; plan:
+`docs/superpowers/plans/2026-07-27-pump-push.md`; details + the HW checklist in the v40
+version-log entry below. Freshness win, not battery (item 6 has the battery story). The old
+handoff brief's research content lives in remaining-work item 3b.
 
-**Use the bridge as the template — Morten's explicit instruction.** It has a week of soak and
-robustness tuning behind it, including a tuned fallback poll rate, and those numbers were earned,
-not guessed. Port the shape, don't reinvent it. Start from
-`../minimed-pebble-bridge/glycemicgpt/plugins/shipped/medtronic/src/main/java/com/glycemicgpt/mobile/ble/read/IddStatusReader.kt`
-(the Reset Status write is at :129-135) and `../minimed-pebble-bridge/app/src/main/java/com/
-mortenfyhn/minimedpebble/BridgeForegroundService.kt` (subscribe at :242-254, flags parse at
-:260-272, bit reactions at :943-959, fallback timer at :197-212). Bridge gotchas are in
-`../minimed-pebble-bridge/docs/PUMP-DATA.md:33-38`.
-
-**Expectation management, already agreed with Morten:** this is a **freshness** win, not a battery
-win. A reading arrives when the sensor produces it instead of up to 60 s later. The 60 s poll is
-~10 GATT PDUs/min riding connection events that happen ~8×/second anyway — under 1% of the link's
-cost. Do not sell this as battery work; item 6 has the real battery story.
-
-**What is already done:** v39 subscribes to `0x101` passively and logs decoded flags plus raw
-plaintext. Discovery, subscribe and decrypt are proven on hardware. The remaining work is the Reset
-Status write-back and the serialisation state machine — see item 3b, which also records that the
-SAKE cipher is *not* a blocker (that was the feared one, and it is settled).
-
-**Test loop is cheap now — use it.** A flash costs no pairings (v36), and
-`tools/dump_flash_logs.py` reads a whole SPIKE session back afterwards. Morten's steer 2026-07-26:
-don't over-verify upfront when testing is this cheap. Keep adversarial review for changes that can
-hard-fault or wedge the watch; a read-path change that degrades to the existing poll is not that.
+After HW confirms: record the Reset Status response bytes in `../Documentation/idd-service.md`
+(the request extension is documented there; the response is not) and mark item 3b Stage B done.
 
 ## Hardware facts
 
@@ -396,7 +381,35 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
-- v39 (2026-07-26, **ON THE WATCH, soaking overnight — results pending**): v38 + **passive
+- v40 (2026-07-27, **BUILT, awaiting flash** — `build/sake-spike-v40-pump-push.pbz`, pushed to
+  the phone): **pump push — event-driven reads via IDD Status Changed `0x101`** (remaining-work
+  item 3b Stage B; spec `docs/superpowers/specs/2026-07-27-pump-push-design.md`, plan
+  `docs/superpowers/plans/2026-07-27-pump-push.md`). Ported from the bridge: bit 18 → CGM read,
+  bit 17 → IOB read, then **Reset Status (SRCP `0x030C` + the accumulated flag union)** after
+  every indication so the latches re-arm. The three exchanges (CGM, IOB, reset) are serialised
+  behind a pending-mask dispatcher (one in flight; writes always issued off a callout so they
+  can't overtake an indication confirmation; 10 s op timeout unwedges a lost indication; the
+  reassembly buffers now reset at issue time, closing the overlap-truncation hazard). On the
+  first real indication the 60 s poll becomes a **6-min dead-man fallback** (the bridge's tuned
+  number), re-armed by every indication and completed CGM exchange — so a missing `0x101` char,
+  failed subscribe, or silently dead push all degrade to a poll, never to "no data". Freshness
+  win only (a reading reaches the watchface ~1 s after the sensor produces it, and BG age is now
+  accurate to ~1 s); NOT battery — see item 6. New pure module `minimed_idd_flags.{c,h}`
+  (parse + Reset-operand encode, continuation bits recomputed for mixed-width unions); host
+  tests 60/60. Log vocabulary: `0x101 <16hex>` (flags), `push mode (6m fallback)` (first
+  indication), `rst resp <n>:<hex>` (Reset Status response — **record these bytes**, expected
+  `03030c03<result>`, then document in `../Documentation/idd-service.md`), `fallback poll`
+  (push went quiet), `op timeout 0xNN`, `SRCP unsolicited`.
+  **HW checklist:**
+  1. SPIKE session: `polling BG + IOB` → `0x101 sub rc=0` → first `0x101 …` ~1 s later →
+     `push mode (6m fallback)` → reads → `rst resp …`.
+  2. **The decisive check: a second `0x101` ~5 min later** (v39's latch made that impossible),
+     with BG following within seconds.
+  3. Overnight soak: indications all night, `fallback poll` rare/absent, watchface BG age
+     staying under ~1 min.
+  Fallback if it misbehaves: reflash v39 (passive push, 60 s poll).
+- v39 (2026-07-26, **ON THE WATCH; overnight results now in item 3b** — Stage A answered NO, latch
+  confirmed strict): v38 + **passive
   subscription to IDD Status Changed `0x101`**, the pump's push channel. Logs the decoded flags and
   the raw plaintext; acts on nothing. Deliberately fire-and-forget *after* `prv_start_polling`
   rather than chained into discovery, so a failed subscribe cannot cost a night of BG.
@@ -901,7 +914,9 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    state, reservoir, sensor state via IDD Status `0x102` encrypted read; SmartGuard via TAS
    `0x03FD`) — same IDD machinery now proven by IOB, plus watchface status key 15. Ref: bridge
    `.../ble/read/IddStatusReader.kt`, `Documentation/idd-service.md`.
-3b. **Event-driven push instead of the 60 s poll — RESEARCHED 2026-07-26, Stage A soaking in v39.**
+3b. **Event-driven push instead of the 60 s poll — Stage B BUILT in v40 (2026-07-27), awaiting
+   HW.** Stage C (act on more bits: therapy/status/fingerstick) remains open and overlaps item 3.
+   The researched facts below are the reference material behind the v40 design.
    The mechanism is **IDD Status Changed `0x101`** (vendor UUID, IDD service `0x100`, Read +
    **Indicate**), the same service we already discover for IOB. Three things the obvious mental
    model gets wrong:
