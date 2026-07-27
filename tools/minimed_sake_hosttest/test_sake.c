@@ -11,6 +11,7 @@
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_aes.h"
 #include "minimed_graph.h"
+#include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 
 static int g_pass, g_fail;
@@ -371,6 +372,66 @@ static void section_graph(void) {
   printf("\n");
 }
 
+// --- Section 6: IDD Status Changed flags (parse + Reset Status encode) -----
+// The 0x101 flag field is self-extending: LE 16-bit blocks, bit 15/31 of a block = "another
+// block follows" (Documentation/idd-service.md). parse returns the raw word INCLUDING the
+// continuation bits (the bridge echoes them back to Reset Status verbatim); encode recomputes
+// them from the width, because pending resets accumulate as a union whose observations may have
+// had different widths.
+
+static void section_idd_flags(void) {
+  printf("--- IDD Status Changed flags ---\n");
+  uint8_t out[6];
+
+  // The vector observed on this pump overnight 2026-07-26/27 (PROGRESS.md item 3b).
+  const uint8_t observed[] = {0xef, 0x81, 0x4f, 0x00};
+  check("parse of observed HW vector ef814f00",
+        minimed_idd_flags_parse(observed, sizeof(observed)) == 0x004f81efULL);
+
+  const uint8_t one_block[] = {0x08, 0x00};
+  check("parse 16-bit block (bit 3 only)",
+        minimed_idd_flags_parse(one_block, sizeof(one_block)) == 0x0008ULL);
+
+  // A clear continuation bit ends the field even if more bytes follow (e.g. E2E trailer bytes
+  // that a non-780G model would append).
+  const uint8_t trailing[] = {0x08, 0x00, 0xff, 0xff};
+  check("parse stops at clear continuation bit",
+        minimed_idd_flags_parse(trailing, sizeof(trailing)) == 0x0008ULL);
+
+  check("parse of empty buffer is 0", minimed_idd_flags_parse(NULL, 0) == 0);
+  const uint8_t one_byte[] = {0xef};
+  check("parse of 1-byte buffer is 0 (no whole block)",
+        minimed_idd_flags_parse(one_byte, 1) == 0);
+
+  check("encode 16-bit width", minimed_idd_flags_encode(0x0008ULL, out) == 2
+        && out[0] == 0x08 && out[1] == 0x00);
+
+  // encode(parse(x)) == x for the observed vector.
+  uint16_t n = minimed_idd_flags_encode(0x004f81efULL, out);
+  check("encode round-trips observed vector",
+        n == 4 && memcmp(out, observed, 4) == 0);
+
+  // Continuation bits are recomputed from width: the same real bits with a stale/absent
+  // continuation bit encode identically (a 16-bit and a 32-bit observation were unioned).
+  n = minimed_idd_flags_encode(0x004f01efULL, out);
+  check("encode recomputes continuation bits",
+        n == 4 && memcmp(out, observed, 4) == 0);
+
+  // 48-bit width: bit 33 forces three blocks; bits 15 and 31 set, block 2 terminal.
+  const uint8_t want48[] = {0x01, 0x80, 0x04, 0x80, 0x02, 0x00};
+  n = minimed_idd_flags_encode((1ULL << 33) | (1ULL << 18) | 1ULL, out);
+  check("encode 48-bit width", n == 6 && memcmp(out, want48, 6) == 0);
+
+  // Bit 47 is the (unused) continuation position of the last block -- structural, never a real
+  // flag; it must be masked, not encoded as a flag to clear.
+  n = minimed_idd_flags_encode((1ULL << 47) | 1ULL, out);
+  check("structural bit 47 is masked", n == 2 && out[0] == 0x01 && out[1] == 0x00);
+
+  check("encode of 0 is one empty block", minimed_idd_flags_encode(0, out) == 2
+        && out[0] == 0x00 && out[1] == 0x00);
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -378,6 +439,7 @@ int main(void) {
   section_seqcrypt();
   section_iob();
   section_graph();
+  section_idd_flags();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;
