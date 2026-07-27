@@ -1034,6 +1034,15 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
      is NOT explained by the connection interval alone: 125 ms at latency 0 is only ~1.4× the wake
      rate of the stock phone link (45 ms, latency 3 → 180 ms effective), nowhere near 5×. Something
      else contributes and we do not know what.
+     **Link stability that night, which rules #2 out as the explanation:** exactly one pump outage,
+     05:20:00 → 05:30:57 (~11 min), in a 7 h session — so the watch was fast-advertising for ~2.6%
+     of the night and connected for the rest. The 875 µA is therefore the cost of the **connected**
+     state, not of advertising or of reconnect churn. Reducing reconnections is a *conditional*
+     lever: worth something on a bad night (an all-night outage is an all-night fast-advertise, the
+     #2 entry below), worth almost nothing on a good one. Two loose observations from the same
+     capture, neither chased: the reconnect took ~11 min against the 1–2 min this file documents
+     elsewhere, and the pump disconnect logged `reason=0x216` (HCI 0x16, *terminated by local host*)
+     with `master=1`, which is odd for a link we did not knowingly drop at 05:20 while asleep.
      **Cheapest next step, no code: a control night in NORMAL with the phone only.** Same watch,
      same firmware, no pump link. If the draw falls to stock levels the pump link owns the gap and
      lever (b) is the answer; if it does not, the cost is in our firmware and NOS would be optimising
