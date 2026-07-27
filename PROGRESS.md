@@ -35,6 +35,9 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
+- **BUILT 2026-07-27 evening, awaiting flash: v41 pump status** (`build/sake-spike-v41-pump-status.pbz`,
+  pushed to the phone). Full bridge status mirror: status band on the watchface (key 15),
+  warm-up/temp-target/suspend countdowns, BG "---" blanking — HW checklist in the v41 entry.
 - **ON THE WATCH NOW: v40 pump push — HW-VERIFIED with a 10 h soak** (2026-07-27,
   `build/sake-spike-v40-pump-push.pbz`). Event-driven reads via `0x101` + Reset Status + 6-min
   fallback; soak numbers in the version log. Everything v36 verified still holds: pump pairs,
@@ -288,14 +291,14 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: pick from the remaining-work list
+## → NEXT UP: flash v41 (pump status) and run its HW checklist
 
-**Pump push (v40) is DONE — HW-verified with a 10-hour workday soak 2026-07-27** (see the v40
-version-log entry for the numbers; item 3b closed). The Documentation/ upstreaming of everything
-learned is in progress with Morten. The cheapest pending experiment is item 6's **control night
-in NORMAL** (no code: same watch, phone only, no pump link — decides whether the pump link owns
-the battery gap before anything gets built for battery). Item 3 (pump status on the watchface),
-item 4 (graph backfill) and item 5 (dual connection) are the feature-shaped candidates.
+**Pump status (v41) is BUILT — the full bridge status mirror** (item 3; checklist in the v41
+version-log entry). v40 pump push is DONE (HW-verified, 10 h soak; item 3b closed).
+Documentation/ upstreaming: 11 commits staged locally, awaiting Morten's review + push. The
+cheapest pending experiment remains item 6's **control night in NORMAL** (no code — decides
+whether the pump link owns the battery gap). After that: item 4 (graph backfill) and item 5
+(dual connection) are the feature-shaped candidates.
 
 ## Hardware facts
 
@@ -376,6 +379,34 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
+- v41 (2026-07-27, **BUILT, awaiting flash** — `build/sake-spike-v41-pump-status.pbz`, pushed to
+  the phone): **pump status on the watchface — the full bridge mirror** (remaining-work item 3).
+  Reads IDD Status `0x102` (encrypted GATT read — the serialiser's first read-shaped op) and Get
+  Therapy Algorithm States (SRCP `0x03FD`→`0x03FE`) as a pair on connect, on fallback polls, and
+  on push bits 0/16; maps them through the bridge's iterated priority chain to the watchface
+  status band (key 15, already on the watchface since the bridge era): SUSPENDED (count-up) /
+  LOAD RESERVOIR / LOW / HIGH / sensor family / WARM-UP with the self-timed 2 h countdown /
+  CALIBRATE / BG REQUIRED / SMARTGUARD OFF / SAFE BASAL / TEMP TARGET (countdown) / "" normal.
+  Countdowns tick via a 60 s local re-send (AppMessage only, no BLE). When status says the pump
+  has no current glucose (GST signal lost / warm-up family), BG blanks to "---" immediately and
+  stale re-polls are suppressed until a genuinely new reading. New pure module
+  `minimed_status.{c,h}` (29 new host checks, 89/89 total — incl. the TAS flag-gated field order
+  and the entry-only warm-up stamping the bridge needed field iteration to learn). New log
+  vocabulary: `st: <label>` / `st: (normal)` (ring), `SAKE: status t=.. o=.. conn=.. msg=..
+  res=..`, `SAKE: tas auto=.. shield=.. ready=.. tt=..`, `SAKE: status label '..' bg_invalid=..`
+  (all three PBL_LOG → flash-visible), `st read err/rc`, `st decrypt failed`, `TAS bad resp`.
+  Failure shape: either read failing just skips its clauses; both failing keeps the last label;
+  no status char = no status line; BG/IOB never blocked.
+  **HW checklist:**
+  1. Flash, SPIKE: expect `st: (normal)` (or the current state) within ~2 s of `polling BG + IOB`,
+     and the flash log's `SAKE: status ...`/`SAKE: tas ...` lines showing sane fields
+     (t=55 RUN, o=96 READY, shield 02 auto-basal in normal operation).
+  2. Provoke: suspend the pump briefly → watch shows `SUSPENDED 0:00` within ~seconds (push bit 0),
+     counting up each minute; resume → band disappears. A temp target set on the pump → `TEMP
+     TARGET H:MM` counting down (bit 16).
+  3. Next sensor change: warm-up should show `WARM-UP 1:59`→counting down ~2 h, BG showing `---`
+     with the band explaining why (this retires the sensor-change-warmup wishlist item).
+  Fallback: reflash v40 (BG/IOB/push, no status line).
 - v40 (2026-07-27, **ON THE WATCH, HW-VERIFIED — 10 h workday soak, all checklist items passed**;
   `build/sake-spike-v40-pump-push.pbz`): **pump push — event-driven reads via IDD Status Changed
   `0x101`**. Soak evidence (flash dump, 07:42–17:54): **569 indications, zero inter-arrival gaps
@@ -914,12 +945,11 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
      our `send_next` — parse to trigger an immediate BG push on watchface launch.
    - Speak the exact key set the bridge sends (see bridge GlucoseFormat / watchface `main.c`).
    Long-term: BLE peripheral APIs in the public SDK (beyond issue #853's client-only ask).
-3. **IOB — DONE, HW-VERIFIED (v30, 2026-07-24).** Reads IOB via IDD SRCP `0x03F3`→`0x03FC`
-   (first confirmed HW use of `sake_encrypt_for_pump`), forwards to watchface key 14; IOB + BG both
-   on the watchface. **Pump status still TODO** (therapy/operational
-   state, reservoir, sensor state via IDD Status `0x102` encrypted read; SmartGuard via TAS
-   `0x03FD`) — same IDD machinery now proven by IOB, plus watchface status key 15. Ref: bridge
-   `.../ble/read/IddStatusReader.kt`, `Documentation/idd-service.md`.
+3. **IOB — DONE, HW-VERIFIED (v30, 2026-07-24). Pump status — BUILT in v41 (2026-07-27),
+   awaiting HW.** IOB reads via IDD SRCP `0x03F3`→`0x03FC`, watchface key 14. Status reads IDD
+   Status `0x102` + TAS `0x03FD` and drives watchface key 15 with the bridge's full label set +
+   countdowns — see the v41 version-log entry. Reservoir IU is parsed and flash-logged but not
+   displayed (bridge parity).
 3b. ✅ **Event-driven push instead of the 60 s poll — DONE, HW-VERIFIED 2026-07-27 (v40, 10 h
    soak).** Stage C (act on more bits: therapy/status/fingerstick) remains open and overlaps
    item 3. The researched facts below are the reference material behind the v40 design.
