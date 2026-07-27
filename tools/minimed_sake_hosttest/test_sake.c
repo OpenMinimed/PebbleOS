@@ -13,6 +13,7 @@
 #include "minimed_graph.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
+#include "minimed_status.h"
 
 static int g_pass, g_fail;
 
@@ -432,6 +433,139 @@ static void section_idd_flags(void) {
   printf("\n");
 }
 
+// --- Section 7: pump status (IDD Status + TAS parse, label mapping, countdowns) ---
+// Ported from the bridge's iterated readStatus/statusForWatch; these tests pin the priority
+// chain and the countdown stamping rules the bridge needed field iteration to get right.
+
+static void section_status(void) {
+  printf("--- pump status ---\n");
+  char out[20];
+
+  // Parse: therapy RUN, op READY, reservoir 140 IU (medfloat32 8c 00 00 00), flags 0x01
+  // (reservoir attached), connectivity 0x03 (on+paired), message NO_MESSAGE.
+  const uint8_t idd_normal[] = {0x55, 0x96, 0x8c, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00};
+  MinimedIddStatus st;
+  check("IDD status parses", minimed_status_parse_idd(idd_normal, sizeof(idd_normal), &st));
+  check("IDD fields decoded", st.valid && st.therapy == 0x55 && st.operational == 0x96 &&
+        st.sensor_conn == 0x03 && st.sensor_msg == 0x00 && st.reservoir_mu == 140000);
+  check("IDD wrong length rejected", !minimed_status_parse_idd(idd_normal, 8, &st));
+
+  // TAS: opcode 0x03FE, flags auto-mode only, shield AUTO_BASAL, readiness NO_ACTION.
+  const uint8_t tas_normal[] = {0xFE, 0x03, 0x01, 0x00, 0x02, 0x00};
+  MinimedTas tas;
+  check("TAS parses", minimed_status_parse_tas(tas_normal, sizeof(tas_normal), &tas));
+  check("TAS fields decoded", tas.valid && tas.has_auto_mode && tas.shield == 0x02 &&
+        tas.readiness == 0x00 && tas.temp_target_min == 0);
+  const uint8_t tas_bad_op[] = {0xFC, 0x03, 0x01, 0x00, 0x02, 0x00};
+  check("TAS wrong opcode rejected", !minimed_status_parse_tas(tas_bad_op, sizeof(tas_bad_op), &tas));
+  // Field-order check: flags auto+LGS+PLGM+temp-target (0x0F). tas.py consumption order is
+  // auto(2B), plgm(1B), lgs(1B), then temp target (2B LE) -- so tt must be read at offset 8.
+  const uint8_t tas_order[] = {0xFE, 0x03, 0x0F, 0x00, 0x02, 0x00, 0x11, 0x22, 0x3C, 0x00};
+  check("TAS flag-gated field order (tt=60 at offset 8)",
+        minimed_status_parse_tas(tas_order, sizeof(tas_order), &tas) && tas.temp_target_min == 60);
+  // Trailing bytes tolerated (bridge behaviour; a stray E2E trailer must not kill the parse).
+  const uint8_t tas_trail[] = {0xFE, 0x03, 0x01, 0x00, 0x02, 0x00, 0xAA, 0xBB, 0xCC};
+  check("TAS trailing bytes tolerated", minimed_status_parse_tas(tas_trail, sizeof(tas_trail), &tas));
+
+  // Mapping: normal -> "" (nothing shown).
+  minimed_status_reset();
+  minimed_status_parse_idd(idd_normal, sizeof(idd_normal), &st);
+  minimed_status_parse_tas(tas_normal, sizeof(tas_normal), &tas);
+  minimed_status_update(&st, &tas, 1000);
+  check("normal composes to empty", minimed_status_compose(1000, out, sizeof(out)) && out[0] == '\0');
+  check("normal does not tick", !minimed_status_ticking());
+  check("normal BG valid", !minimed_status_bg_invalid());
+
+  // Suspended: therapy STOP + op READY -> "SUSPENDED", count-up from entry.
+  minimed_status_reset();
+  MinimedIddStatus sus = st;
+  sus.therapy = 0x33;
+  minimed_status_update(&sus, &tas, 1000);
+  minimed_status_compose(1000, out, sizeof(out));
+  check("suspend at entry", strcmp(out, "SUSPENDED 0:00") == 0);
+  minimed_status_update(&sus, &tas, 1000 + 300);  // still suspended 5 min later
+  minimed_status_compose(1000 + 300, out, sizeof(out));
+  check("suspend counts up (not restamped)", strcmp(out, "SUSPENDED 0:05") == 0);
+  check("suspend ticks", minimed_status_ticking());
+
+  // Load reservoir outranks plain suspend: therapy STOP but op mid-procedure.
+  MinimedIddStatus load = sus;
+  load.operational = 0x5A;  // PRIMING
+  minimed_status_update(&load, &tas, 2000);
+  minimed_status_compose(2000, out, sizeof(out));
+  check("load reservoir label", strcmp(out, "LOAD RESERVOIR") == 0);
+
+  // Warm-up: self-timed 2 h countdown, stamped on entry only.
+  minimed_status_reset();
+  MinimedIddStatus warm = st;
+  warm.sensor_msg = 0x08;  // WARM_UP
+  minimed_status_update(&warm, &tas, 10000);
+  minimed_status_compose(10000 + 60, out, sizeof(out));
+  check("warm-up countdown after 1 min", strcmp(out, "WARM-UP 1:59") == 0);
+  minimed_status_update(&warm, &tas, 10000 + 600);  // re-read 10 min in: must NOT restart the clock
+  minimed_status_compose(10000 + 600, out, sizeof(out));
+  check("warm-up expiry not restamped", strcmp(out, "WARM-UP 1:50") == 0);
+  check("warm-up means BG invalid", minimed_status_bg_invalid());
+  minimed_status_update(&st, &tas, 10000 + 700);  // sensor live again
+  check("warm-up exit clears BG-invalid", !minimed_status_bg_invalid());
+  minimed_status_update(&warm, &tas, 20000);  // re-enter: fresh 2 h
+  minimed_status_compose(20000, out, sizeof(out));
+  check("warm-up re-entry restamps", strcmp(out, "WARM-UP 2:00") == 0);
+
+  // GST signal lost (connectivity bit 2) invalidates BG even with no sensor message.
+  minimed_status_reset();
+  MinimedIddStatus lost = st;
+  lost.sensor_conn = 0x07;  // on + paired + signal lost
+  minimed_status_update(&lost, &tas, 3000);
+  check("GST signal lost means BG invalid", minimed_status_bg_invalid());
+
+  // SG off-scale beats the sensor-family labels.
+  MinimedIddStatus low = st;
+  low.sensor_msg = 0x09;  // SG_BELOW_LOWER_LIMIT
+  minimed_status_update(&low, &tas, 3100);
+  minimed_status_compose(3100, out, sizeof(out));
+  check("SG below lower limit -> LOW", strcmp(out, "LOW") == 0);
+
+  // Temp target: restamped from the pump's live minutes each read; counts down.
+  minimed_status_reset();
+  MinimedTas tt = tas;
+  tt.temp_target_min = 60;
+  minimed_status_update(&st, &tt, 5000);
+  minimed_status_compose(5000 + 120, out, sizeof(out));
+  check("temp target countdown", strcmp(out, "TEMP TARGET 0:58") == 0);
+  check("temp target ticks", minimed_status_ticking());
+
+  // SmartGuard off / safe basal from the shield; BG REQUIRED outranks them.
+  minimed_status_reset();
+  MinimedTas open = tas;
+  open.shield = 0x01;  // OPEN_LOOP
+  minimed_status_update(&st, &open, 6000);
+  minimed_status_compose(6000, out, sizeof(out));
+  check("open loop -> SMARTGUARD OFF", strcmp(out, "SMARTGUARD OFF") == 0);
+  open.readiness = 1;  // BG_REQUIRED
+  minimed_status_update(&st, &open, 6100);
+  minimed_status_compose(6100, out, sizeof(out));
+  check("BG required outranks loop state", strcmp(out, "BG REQUIRED") == 0);
+
+  // Both reads failed: previous state survives untouched.
+  MinimedIddStatus bad_st = {.valid = false};
+  MinimedTas bad_tas = {.valid = false};
+  minimed_status_update(&bad_st, &bad_tas, 6200);
+  minimed_status_compose(6200, out, sizeof(out));
+  check("double read failure keeps last label", strcmp(out, "BG REQUIRED") == 0);
+
+  // TAS-only (IDD read failed): loop-state clauses still fire.
+  minimed_status_reset();
+  minimed_status_update(&bad_st, &open, 6300);
+  minimed_status_compose(6300, out, sizeof(out));
+  check("TAS-only read still maps", strcmp(out, "BG REQUIRED") == 0);
+
+  // Nothing ever seen: compose refuses.
+  minimed_status_reset();
+  check("compose refuses before first data", !minimed_status_compose(0, out, sizeof(out)));
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -440,6 +574,7 @@ int main(void) {
   section_iob();
   section_graph();
   section_idd_flags();
+  section_status();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

@@ -9,7 +9,7 @@
 
 MOD := ../../src/bluetooth-fw/nimble
 CFLAGS := -std=c99 -Wall -Wextra -O2 -DSAKE_TEST_HOOKS -I$(MOD)
-SRC := $(MOD)/minimed_sake_aes.c $(MOD)/minimed_sake_crypto.c $(MOD)/minimed_iob.c $(MOD)/minimed_graph.c $(MOD)/minimed_idd_flags.c test_sake.c
+SRC := $(MOD)/minimed_sake_aes.c $(MOD)/minimed_sake_crypto.c $(MOD)/minimed_iob.c $(MOD)/minimed_graph.c $(MOD)/minimed_idd_flags.c $(MOD)/minimed_status.c test_sake.c
 
 test_sake: $(SRC)
 	$(CC) $(CFLAGS) $(SRC) -o $@
