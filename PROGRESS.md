@@ -35,13 +35,12 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
-- **BUILT 2026-07-27, awaiting flash: v40 pump push** (`build/sake-spike-v40-pump-push.pbz`,
-  pushed to the phone's Downloads). Event-driven reads via `0x101` + Reset Status + 6-min
-  fallback — HW checklist in the v40 version-log entry.
-- **ON THE WATCH NOW: v39** (2026-07-26; = v36 + passive `0x101` subscription + probes, see the
-  version log). Everything v36 verified still holds: pump pairs, BG + IOB correct, **neither bond
-  is ever lost** — reboot and phone re-pair both verified (v36, 2026-07-26). The watchface launch
-  crash did NOT reproduce on v36+ (see OPEN→DORMANT below).
+- **ON THE WATCH NOW: v40 pump push — HW-VERIFIED with a 10 h soak** (2026-07-27,
+  `build/sake-spike-v40-pump-push.pbz`). Event-driven reads via `0x101` + Reset Status + 6-min
+  fallback; soak numbers in the version log. Everything v36 verified still holds: pump pairs,
+  BG + IOB correct, **neither bond is ever lost** — reboot and phone re-pair both verified
+  (v36, 2026-07-26). The watchface launch crash did NOT reproduce on v36+ (see OPEN→DORMANT
+  below).
 - v35 (`build/sake-spike-v35-scanrsp-and-name-revert.pbz`, 2026-07-26, superseded by v36).
   **Working:** pump pairs, BG + IOB correct on the SAKE Spike app display. **Broken:** the real
   watchface crashes on launch (see the OPEN section below) — Morten is wearing it with the Spike app
@@ -289,18 +288,14 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: flash v40 (pump push) and run its HW checklist
+## → NEXT UP: pick from the remaining-work list
 
-**Pump push is BUILT (v40, 2026-07-27) — awaiting flash.** The 60 s CGM poll is replaced by
-event-driven reads via IDD Status Changed `0x101` with Reset Status write-back, ported from the
-bridge per Morten's instruction (its tuned 6-min fallback included). Spec:
-`docs/superpowers/specs/2026-07-27-pump-push-design.md`; plan:
-`docs/superpowers/plans/2026-07-27-pump-push.md`; details + the HW checklist in the v40
-version-log entry below. Freshness win, not battery (item 6 has the battery story). The old
-handoff brief's research content lives in remaining-work item 3b.
-
-After HW confirms: record the Reset Status response bytes in `../Documentation/idd-service.md`
-(the request extension is documented there; the response is not) and mark item 3b Stage B done.
+**Pump push (v40) is DONE — HW-verified with a 10-hour workday soak 2026-07-27** (see the v40
+version-log entry for the numbers; item 3b closed). The Documentation/ upstreaming of everything
+learned is in progress with Morten. The cheapest pending experiment is item 6's **control night
+in NORMAL** (no code: same watch, phone only, no pump link — decides whether the pump link owns
+the battery gap before anything gets built for battery). Item 3 (pump status on the watchface),
+item 4 (graph backfill) and item 5 (dual connection) are the feature-shaped candidates.
 
 ## Hardware facts
 
@@ -381,8 +376,19 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
-- v40 (2026-07-27, **BUILT, awaiting flash** — `build/sake-spike-v40-pump-push.pbz`, pushed to
-  the phone): **pump push — event-driven reads via IDD Status Changed `0x101`** (remaining-work
+- v40 (2026-07-27, **ON THE WATCH, HW-VERIFIED — 10 h workday soak, all checklist items passed**;
+  `build/sake-spike-v40-pump-push.pbz`): **pump push — event-driven reads via IDD Status Changed
+  `0x101`**. Soak evidence (flash dump, 07:42–17:54): **569 indications, zero inter-arrival gaps
+  over 6 min** (the fallback never had cause to fire), zero decrypt failures, zero unexpected
+  responses, pump link up all day. Reset Status response confirmed on HW: `03 03 0c 03 0f` =
+  Response Code + echoed `0x030C` + Success (now in `../Documentation/idd-service.md`). A 4 IU
+  lunch bolus produced 9 indications at exactly 2 s spacing (bits 17+6+2, final one +7) — the
+  serialiser sustained back-to-back pushes (12 pairs arrived 0 s apart) and the watch tracked
+  each 0.5 IU step live. Flags histogram: ~137 CGM-family (≈4.5 min cadence), 195 IOB-only,
+  ~135 reservoir/history (SmartGuard microbolus heartbeat). **Flash-dump gotcha discovered:**
+  `minimed_sake_log` ring lines (`rst resp`, `fallback poll`, `op timeout`, `push mode`) do NOT
+  go to flash — only `PBL_LOG` does — so a future soak that needs those in the dump must add
+  `PBL_LOG_DBG` mirrors. Original design/build notes follow. (remaining-work
   item 3b Stage B; spec `docs/superpowers/specs/2026-07-27-pump-push-design.md`, plan
   `docs/superpowers/plans/2026-07-27-pump-push.md`). Ported from the bridge: bit 18 → CGM read,
   bit 17 → IOB read, then **Reset Status (SRCP `0x030C` + the accumulated flag union)** after
@@ -914,9 +920,9 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    state, reservoir, sensor state via IDD Status `0x102` encrypted read; SmartGuard via TAS
    `0x03FD`) — same IDD machinery now proven by IOB, plus watchface status key 15. Ref: bridge
    `.../ble/read/IddStatusReader.kt`, `Documentation/idd-service.md`.
-3b. **Event-driven push instead of the 60 s poll — Stage B BUILT in v40 (2026-07-27), awaiting
-   HW.** Stage C (act on more bits: therapy/status/fingerstick) remains open and overlaps item 3.
-   The researched facts below are the reference material behind the v40 design.
+3b. ✅ **Event-driven push instead of the 60 s poll — DONE, HW-VERIFIED 2026-07-27 (v40, 10 h
+   soak).** Stage C (act on more bits: therapy/status/fingerstick) remains open and overlaps
+   item 3. The researched facts below are the reference material behind the v40 design.
    The mechanism is **IDD Status Changed `0x101`** (vendor UUID, IDD service `0x100`, Read +
    **Indicate**), the same service we already discover for IOB. Three things the obvious mental
    model gets wrong:
