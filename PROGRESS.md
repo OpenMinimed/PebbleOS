@@ -286,6 +286,37 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
+## → NEXT UP: pump push (handoff brief, written 2026-07-27)
+
+**The job: replace the 60 s CGM poll with event-driven reads via IDD Status Changed `0x101`.**
+Decided 2026-07-27. Read in this order: remaining-work **item 3b** (the mechanism, fully researched
+— read this before touching code), then item 6 (why this is *not* a battery fix), then the two
+"ON THE WATCH" version-log entries for v39.
+
+**Use the bridge as the template — Morten's explicit instruction.** It has a week of soak and
+robustness tuning behind it, including a tuned fallback poll rate, and those numbers were earned,
+not guessed. Port the shape, don't reinvent it. Start from
+`../minimed-pebble-bridge/glycemicgpt/plugins/shipped/medtronic/src/main/java/com/glycemicgpt/mobile/ble/read/IddStatusReader.kt`
+(the Reset Status write is at :129-135) and `../minimed-pebble-bridge/app/src/main/java/com/
+mortenfyhn/minimedpebble/BridgeForegroundService.kt` (subscribe at :242-254, flags parse at
+:260-272, bit reactions at :943-959, fallback timer at :197-212). Bridge gotchas are in
+`../minimed-pebble-bridge/docs/PUMP-DATA.md:33-38`.
+
+**Expectation management, already agreed with Morten:** this is a **freshness** win, not a battery
+win. A reading arrives when the sensor produces it instead of up to 60 s later. The 60 s poll is
+~10 GATT PDUs/min riding connection events that happen ~8×/second anyway — under 1% of the link's
+cost. Do not sell this as battery work; item 6 has the real battery story.
+
+**What is already done:** v39 subscribes to `0x101` passively and logs decoded flags plus raw
+plaintext. Discovery, subscribe and decrypt are proven on hardware. The remaining work is the Reset
+Status write-back and the serialisation state machine — see item 3b, which also records that the
+SAKE cipher is *not* a blocker (that was the feared one, and it is settled).
+
+**Test loop is cheap now — use it.** A flash costs no pairings (v36), and
+`tools/dump_flash_logs.py` reads a whole SPIKE session back afterwards. Morten's steer 2026-07-26:
+don't over-verify upfront when testing is this cheap. Keep adversarial review for changes that can
+hard-fault or wedge the watch; a read-path change that degrades to the existing poll is not that.
+
 ## Hardware facts
 
 - Pebble 2 Duo = board **`asterix`** (nRF52840, B&W 144x168). BLE = **NimBLE**
@@ -902,10 +933,22 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    for a different reason than we wrote down. Related: NimBLE sends an indication's confirmation
    *after* the handler returns, so a gattc write issued synchronously from a push handler goes out
    ahead of the confirmation the pump is waiting for — keep using the callout defer.
-   **Stage A (v39, soaking):** does the pump notify CGM `0x2AA7` unsolicited? We have been
-   subscribed since v11, so if it does, event-driven BG needs *no new code* and only IOB would want
-   `0x101`. **Stage B:** the port proper (~a few hundred lines). **Stage C:** act on more bits,
-   which overlaps with pump status in item 3.
+   **Stage A — ANSWERED NO (overnight capture 2026-07-26/27).** The pump does **not** notify CGM
+   unsolicited: all 427 measurement notifications arrived within 0–3 s of one of our 428 RACP polls,
+   and zero arrived on their own. There is no free shortcut; event-driven BG requires the `0x101`
+   machinery. (Analysis trap worth avoiding on a re-run: pair notifications to polls in *file* order,
+   not by sorting timestamps — same-second events sort `notify` before `poll` and every notification
+   then appears to belong to the poll 59 s earlier, which reads convincingly like unsolicited pushes.)
+   **`0x101` latch behaviour CONFIRMED on this pump, and it is stricter than "once".** Exactly two
+   indications all night — one per pump connection, each ~1 s after subscribing, both carrying
+   identical flags — and nothing at all during steady state. So without Reset Status you get one
+   indication *per subscription*, not one per session, carrying the accumulated latched bits.
+   Observed value: raw `ef 81 4f 00` → bits {0,1,2,3,5,6,7,8, 16,17,18,19,22} (remember bits 15/31
+   are the block-continuation markers, not real flags). That covers therapy-control (0), annunciation
+   (3), therapy-algorithm (16), IOB (17), new-CGM (18), 19 (rides every CGM push) and sensor
+   connectivity (22) — exactly the "nothing has ever been cleared" set.
+   **Stage B:** the port proper (~a few hundred lines). **Stage C:** act on more bits, which overlaps
+   with pump status in item 3.
 4. **Graph — DONE in v34 (awaiting HW); BACKFILL still deferred.** The graph is now drawn from
    readings the watch accumulates itself, so a cold start begins empty and fills over ~2 h. That
    was the cheap 90%: no new pump protocol, no new failure mode, and it made the staleness fix
@@ -981,10 +1024,20 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
      (`(1+4) × 125 × 2 = 1250 ms` against a 3000 ms timeout), so this reads as pump policy, not a
      malformed ask — and it suggests the NOS Observation Mode exists precisely because the generic
      mechanism is blocked. Recorded upstream in `../Documentation/bluetooth.md`.
-     v37 leaves the request in place as a **probe at latency 1** (the smallest ask that still halves
-     wakeups): if that is refused too, the pump refuses the mechanism outright, so delete the
-     function and do lever (b). Untried variation worth one attempt: offering an interval *range*
-     instead of `itvl_min == itvl_max`.
+     **Latency 1 was refused too (overnight 2026-07-26/27), on both of the night's pump
+     connections, with the same `0x3B`. So the pump refuses the MECHANISM, not the value.**
+     `ble_gap_update_params` can never help here; the request code is deleted. Lever (a) is closed.
+     Untried variation, low expectation: offering an interval *range* instead of
+     `itvl_min == itvl_max`.
+     **Measured baseline to beat (same capture): 80% → 76% over 5 h 33 m ≈ 0.72 %/h at a steady
+     875 µA — about 6 days per charge**, against ~30 days for this watch in ordinary use. That gap
+     is NOT explained by the connection interval alone: 125 ms at latency 0 is only ~1.4× the wake
+     rate of the stock phone link (45 ms, latency 3 → 180 ms effective), nowhere near 5×. Something
+     else contributes and we do not know what.
+     **Cheapest next step, no code: a control night in NORMAL with the phone only.** Same watch,
+     same firmware, no pump link. If the draw falls to stock levels the pump link owns the gap and
+     lever (b) is the answer; if it does not, the cost is in our firmware and NOS would be optimising
+     the wrong thing. Do this before building anything for battery.
      Lever (b), now the likely real answer: the NOS service "Observation Mode" write carries
      min/max interval, slave latency and supervision timeout (`../Documentation/nos-service.md`).
      Needs its own discovery + a SAKE-encrypted write, and every field's unit is `???` in the doc,
