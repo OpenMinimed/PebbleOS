@@ -16,6 +16,7 @@
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "minimed_sake_sender.h"
+#include "minimed_status.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
 #include <system/logging.h>
@@ -49,6 +50,11 @@ static const ble_uuid128_t s_idd_srcp_uuid =
 static const ble_uuid128_t s_idd_status_changed_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00);
+// IDD Status 0x102 (read, SAKE-encrypted): therapy/operational state, reservoir, sensor state --
+// the record behind the watchface status line (v41). Parsed in minimed_status.{c,h}.
+static const ble_uuid128_t s_idd_status_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00);
 
 // SRCP "Get Insulin On Board" request: little-endian opcode 0x03F3. NOT E2E-CRC-wrapped -- the
 // 780G leaves E2E protection off for the IDD service (Documentation/idd-service.md), matching the
@@ -59,6 +65,10 @@ static const uint8_t SRCP_GET_IOB[] = {0xF3, 0x03};
 // like 0x101's (minimed_idd_flags_encode). Clears indication latches only -- the pump keeps each
 // 0x101 bit latched until reset, so this is what makes a second indication ever arrive.
 static const uint8_t SRCP_RESET_STATUS[] = {0x0C, 0x03};
+
+// SRCP "Get Therapy Algorithm States": little-endian opcode 0x03FD -> response 0x03FE. Carries
+// the SmartGuard shield/readiness and temp-target minutes, none of which are in IDD Status.
+static const uint8_t SRCP_GET_TAS[] = {0xFD, 0x03};
 
 // Re-poll the latest record on this cadence. The sensor updates ~every 5 min; polling faster just
 // re-shows the current value and keeps the on-watch reading fresh within one interval.
@@ -75,14 +85,17 @@ static struct ble_npl_callout s_read_co;
 static struct ble_npl_callout s_poll_co;
 
 // Exchange serialiser (spec: docs/superpowers/specs/2026-07-27-pump-push-design.md). The pump
-// exchanges (CGM poll, SRCP IOB read, SRCP Reset Status) each span a write plus terminating
-// indication(s), share the two reassembly buffers, and can now be triggered asynchronously by
-// 0x101 pushes -- so exactly one is in flight at a time. s_op holds the in-flight op's PEND_ bit
-// (0 = idle) and doubles as the SRCP-response disambiguator: the same char carries both the IOB
-// response (complete at >= 7 bytes) and the short Reset Status response.
+// exchanges (CGM poll, SRCP IOB read, IDD Status read, SRCP TAS read, SRCP Reset Status) each
+// span a request plus its response, share the reassembly buffers, and can be triggered
+// asynchronously by 0x101 pushes -- so exactly one is in flight at a time. s_op holds the
+// in-flight op's PEND_ bit (0 = idle) and doubles as the SRCP-response disambiguator: the same
+// char carries the IOB response (complete at >= 7 bytes), the TAS response, and the short Reset
+// Status response.
 #define PEND_CGM 0x01
 #define PEND_IOB 0x02
 #define PEND_RESET 0x04
+#define PEND_STATUS 0x08
+#define PEND_TAS 0x10
 static uint8_t s_pending;
 static uint8_t s_op;
 static uint64_t s_reset_flags;  // union of received 0x101 flags awaiting a Reset Status write
@@ -99,14 +112,31 @@ static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating in
 
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
+static void prv_status_publish_if_done(uint8_t completed_op);
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
+static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                  struct ble_gatt_attr *attr, void *arg);
 
 static uint16_t s_conn;
 static uint16_t s_cgm_start, s_cgm_end;
 static uint16_t s_h_measurement, s_h_feature, s_h_racp;
 static uint16_t s_idd_start, s_idd_end, s_h_srcp;
 static uint16_t s_h_status_changed;
+static uint16_t s_h_idd_status;
+
+// Latest parsed status pair, one-shot per read cycle: invalidated after each publish so a failed
+// read next cycle is not papered over with the previous cycle's fields (mirrors the bridge
+// passing null for a failed read). The *label* state that survives across cycles lives in
+// minimed_status.c.
+static MinimedIddStatus s_idd_st;
+static MinimedTas s_tas;
+
+// Re-compose the status string every minute while a countdown/count-up label is active
+// (WARM-UP / TEMP TARGET / SUSPENDED), so it ticks on the watchface. Local AppMessage only --
+// no BLE traffic.
+#define STATUS_TICK_SECS 60
+static struct ble_npl_callout s_status_tick_co;
 
 // Reassembly buffer for a (decrypted) CGM Measurement record. The record's byte 0 is its total
 // length, so accumulate decrypted fragments until we have that many bytes.
@@ -187,6 +217,13 @@ static void prv_parse_and_show(void) {
     const uint32_t age_min = (now > s_reading_ts) ? (now - s_reading_ts) / 60 : 0;
     snprintf(line, sizeof(line), "BG %ld.%ld same %lum", (long)(tenths / 10), (long)(tenths % 10),
              (unsigned long)age_min);
+    if (minimed_status_bg_invalid()) {
+      // The pump has no current glucose (per the status read) and this is just the last stored
+      // record re-polled: keep the "---" the status publish sent rather than flipping the stale
+      // number back on. A genuinely NEW reading (branch above) always shows.
+      minimed_sake_log(line);
+      return;
+    }
   }
   minimed_sake_log(line);
 
@@ -268,6 +305,10 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
 
     uint8_t req = 0;
     if (flags & MINIMED_IDD_FLAG_NEW_CGM) req |= PEND_CGM;
+    if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
+      // Suspend/resume or SmartGuard/temp-target changed: re-read the status pair (bridge bits).
+      req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
+    }
     if (s_h_srcp != 0) {
       if (flags & MINIMED_IDD_FLAG_IOB) req |= PEND_IOB;
       s_reset_flags |= flags;
@@ -327,6 +368,18 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       prv_op_complete();
       return true;
     }
+    if (s_op == PEND_TAS) {
+      // Single short indication (max ~14 plaintext bytes); no reassembly needed.
+      if (!minimed_status_parse_tas(plain, plain_len, &s_tas)) {
+        minimed_sake_log("TAS bad resp");
+      } else {
+        PBL_LOG_INFO("SAKE: tas auto=%d shield=%02x ready=%02x tt=%u", (int)s_tas.has_auto_mode,
+                     s_tas.shield, s_tas.readiness, (unsigned)s_tas.temp_target_min);
+      }
+      prv_status_publish_if_done(PEND_TAS);
+      prv_op_complete();
+      return true;
+    }
     if (s_op != PEND_IOB) {
       minimed_sake_log("SRCP unsolicited");
       return true;
@@ -367,6 +420,65 @@ static void prv_op_complete(void) {
   if (s_pending != 0) {
     ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
   }
+}
+
+// Called when a STATUS or TAS exchange finishes (success, failure, or timeout). The two are
+// always requested as a pair when both chars exist; publish once the pair's other read is no
+// longer queued -- ops are serialised, so "not pending" means "done or never requested". A read
+// that failed leaves its struct invalid, and the mapping just skips its clauses.
+static void prv_status_publish_if_done(uint8_t completed_op) {
+  const uint8_t other = (completed_op == PEND_STATUS) ? PEND_TAS : PEND_STATUS;
+  if (s_pending & other) return;
+  const uint32_t now = (uint32_t)rtc_get_time();
+  minimed_status_update(&s_idd_st, &s_tas, now);
+  char label[20];
+  if (minimed_status_compose(now, label, sizeof(label))) {
+    minimed_sake_sender_send_status(label);
+    char line[32];
+    snprintf(line, sizeof(line), "st: %s", label[0] != '\0' ? label : "(normal)");
+    minimed_sake_log(line);
+    PBL_LOG_INFO("SAKE: status label '%s' bg_invalid=%d", label,
+                 (int)minimed_status_bg_invalid());
+    if (minimed_status_bg_invalid()) {
+      // The pump has no valid glucose right now (warm-up, signal lost, ...): blank the BG
+      // immediately, stamped now so the watchface shows a current "---" like the pump does,
+      // instead of an old number with a climbing age. The next real reading overwrites it.
+      minimed_sake_sender_send_bg("---", now);
+    }
+  }
+  s_idd_st.valid = false;
+  s_tas.valid = false;
+}
+
+// IDD Status (0x102) is a plain encrypted READ -- the one exchange that completes in its own
+// GATT callback rather than via an indication.
+static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                  struct ble_gatt_attr *attr, void *arg) {
+  if (s_op != PEND_STATUS) return 0;  // late/stale callback; a newer op owns the buffers now
+  char line[32];
+  if (error->status == 0 && attr && attr->om) {
+    // Single mbuf fragment is safe here: the value is 12 bytes on the wire (9 + SeqCrypt 3).
+    const uint16_t n = attr->om->om_len;
+    const uint8_t *d = attr->om->om_data;
+    uint8_t plain[24];
+    uint16_t plain_len = 0;
+    if (!minimed_sake_decrypt(d, n, plain, sizeof(plain), &plain_len)) {
+      minimed_sake_log("st decrypt failed");
+    } else if (!minimed_status_parse_idd(plain, plain_len, &s_idd_st)) {
+      snprintf(line, sizeof(line), "st bad len=%u", plain_len);
+      minimed_sake_log(line);
+    } else {
+      PBL_LOG_INFO("SAKE: status t=%02x o=%02x conn=%02x msg=%02x res=%ld mu",
+                   s_idd_st.therapy, s_idd_st.operational, s_idd_st.sensor_conn,
+                   s_idd_st.sensor_msg, (long)s_idd_st.reservoir_mu);
+    }
+  } else {
+    snprintf(line, sizeof(line), "st read err=0x%04x", (uint16_t)error->status);
+    minimed_sake_log(line);
+  }
+  prv_status_publish_if_done(PEND_STATUS);
+  prv_op_complete();
+  return 0;
 }
 
 // Queue work and kick the dispatcher. Callers guard on the handles they need (PEND_IOB and
@@ -414,6 +526,37 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
       prv_op_complete();
       return;
     }
+  } else if (s_pending & PEND_STATUS) {
+    s_pending &= ~PEND_STATUS;
+    s_op = PEND_STATUS;
+    int rc = ble_gattc_read(s_conn, s_h_idd_status, prv_idd_status_read_cb, NULL);
+    if (rc != 0) {
+      snprintf(line, sizeof(line), "st read rc=0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+      prv_status_publish_if_done(PEND_STATUS);
+      prv_op_complete();
+      return;
+    }
+  } else if (s_pending & PEND_TAS) {
+    s_pending &= ~PEND_TAS;
+    s_op = PEND_TAS;
+    uint8_t enc[sizeof(SRCP_GET_TAS) + 3];
+    uint16_t enc_len = 0;
+    if (!minimed_sake_encrypt(SRCP_GET_TAS, sizeof(SRCP_GET_TAS), enc, &enc_len)) {
+      minimed_sake_log("TAS encrypt failed");
+      prv_status_publish_if_done(PEND_TAS);
+      prv_op_complete();
+      return;
+    }
+    s_srcp_len = 0;
+    int rc = ble_gattc_write_flat(s_conn, s_h_srcp, enc, enc_len, prv_srcp_write_cb, NULL);
+    if (rc != 0) {
+      snprintf(line, sizeof(line), "TAS write rc=0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+      prv_status_publish_if_done(PEND_TAS);
+      prv_op_complete();
+      return;
+    }
   } else if (s_pending & PEND_RESET) {
     s_pending &= ~PEND_RESET;
     s_op = PEND_RESET;
@@ -449,27 +592,51 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
   char line[32];
   snprintf(line, sizeof(line), "op timeout 0x%02x", s_op);
   minimed_sake_log(line);
+  const uint8_t op = s_op;
   s_rec_len = 0;
   s_srcp_len = 0;
   s_op = 0;
+  if (op == PEND_STATUS || op == PEND_TAS) {
+    // The timed-out read stays invalid; publish whatever the pair's other half delivered.
+    prv_status_publish_if_done(op);
+  }
   if (s_pending != 0) {
     ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
   }
 }
 
+// Everything a full poll reads, gated on the handles that were actually discovered.
+static uint8_t prv_full_poll_mask(void) {
+  return PEND_CGM | (s_h_srcp != 0 ? (PEND_IOB | PEND_TAS) : 0) |
+         (s_h_idd_status != 0 ? PEND_STATUS : 0);
+}
+
 static void prv_poll_timer_cb(struct ble_npl_event *ev) {
   if (s_push_mode) minimed_sake_log("fallback poll");
-  prv_request(PEND_CGM | (s_h_srcp != 0 ? PEND_IOB : 0));
+  prv_request(prv_full_poll_mask());
   const uint32_t secs = s_push_mode ? FALLBACK_AFTER_SECS : POLL_INTERVAL_SECS;
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(secs * 1000));
+}
+
+// While a countdown/count-up status is showing, re-compose and re-send it every minute so it
+// ticks on the watchface. Purely local (AppMessage injection) -- costs no BLE traffic.
+static void prv_status_tick_cb(struct ble_npl_event *ev) {
+  if (minimed_status_ticking()) {
+    char label[20];
+    if (minimed_status_compose((uint32_t)rtc_get_time(), label, sizeof(label))) {
+      minimed_sake_sender_send_status(label);
+    }
+  }
+  ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
 }
 
 // Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
 // (s_h_srcp != 0); a missing/failed IDD discovery leaves BG working, just without IOB.
 static void prv_start_polling(void) {
   minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
-  prv_request(PEND_CGM | (s_h_srcp != 0 ? PEND_IOB : 0));
+  prv_request(prv_full_poll_mask());
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
+  ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
@@ -495,7 +662,8 @@ static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
     minimed_sake_log(line);
     // No terminating indication will come for a failed write; skip the exchange now rather
     // than stalling the serialiser until the op timeout.
-    if (s_op == PEND_IOB || s_op == PEND_RESET) prv_op_complete();
+    if (s_op == PEND_TAS) prv_status_publish_if_done(PEND_TAS);
+    if (s_op == PEND_IOB || s_op == PEND_RESET || s_op == PEND_TAS) prv_op_complete();
   }
   return 0;
 }
@@ -521,6 +689,8 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
       s_h_srcp = chr->val_handle;
     } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_changed_uuid.u) == 0) {
       s_h_status_changed = chr->val_handle;  // subscribed after polling starts; see prv_start_polling
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_uuid.u) == 0) {
+      s_h_idd_status = chr->val_handle;  // encrypted read; drives the watchface status line
     }
     return 0;
   }
@@ -723,6 +893,7 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_poll_co, nimble_port_get_dflt_eventq(), prv_poll_timer_cb, NULL);
   ble_npl_callout_init(&s_dispatch_co, nimble_port_get_dflt_eventq(), prv_dispatch_cb, NULL);
   ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
+  ble_npl_callout_init(&s_status_tick_co, nimble_port_get_dflt_eventq(), prv_status_tick_cb, NULL);
 }
 
 void minimed_sake_read_start(uint16_t conn_handle) {
@@ -734,12 +905,17 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_h_measurement = s_h_feature = s_h_racp = 0;
   s_idd_start = s_idd_end = s_h_srcp = 0;
   s_h_status_changed = 0;  // re-discovered per connection; a stale handle could alias a new one
+  s_h_idd_status = 0;
   s_rec_len = 0;
   s_srcp_len = 0;
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
   s_push_mode = false;  // a reconnect re-subscribes and must re-prove push
+  s_idd_st.valid = false;
+  s_tas.valid = false;
+  // minimed_status.c state deliberately survives the reconnect (a warm-up countdown keeps
+  // counting through a pump dropout); only the per-cycle parse structs reset here.
   // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
   // monotonic within a sensor session, so keeping it means the first read after a brief dropout is
   // recognised as the reading we already have, rather than being re-timestamped and re-plotted. A
@@ -752,4 +928,5 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_poll_co);
   ble_npl_callout_stop(&s_dispatch_co);
   ble_npl_callout_stop(&s_op_timeout_co);
+  ble_npl_callout_stop(&s_status_tick_co);
 }
