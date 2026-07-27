@@ -36,16 +36,18 @@ static const Uuid s_watchface_uuid = {
 #define KEY_BG_TIMESTAMP 10
 #define KEY_BG_STRING 11
 #define KEY_IOB_STRING 14
+#define KEY_STATUS_STRING 15
 #define KEY_GRAPH_DATA 17
 
-#define BG_STR_MAX 8   // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
-#define IOB_STR_MAX 8  // "N.N"/"NN.N" IU
+#define BG_STR_MAX 8      // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
+#define IOB_STR_MAX 8     // "N.N"/"NN.N" IU
+#define STATUS_STR_MAX 20  // watchface s_status_string is 20; longest label "TEMP TARGET H:MM"
 
-// Largest dictionary we serialize. The graph blob dominates; the rest is the BG/IOB strings, the
-// timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 7 + blob). Sized with
-// room to spare -- an undersized buffer is a silent "wf dict fail", not a crash, but it would also
-// mean no data reaches the watchface at all.
-#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 96)
+// Largest dictionary we serialize. The graph blob dominates; the rest is the BG/IOB/status
+// strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
+// blob). Sized with room to spare -- an undersized buffer is a silent "wf dict fail", not a
+// crash, but it would also mean no data reaches the watchface at all.
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 128)
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
@@ -58,6 +60,7 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
+static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
 
 static MinimedGraph s_graph;
 
@@ -169,10 +172,12 @@ static void prv_push_bg_cb(void *unused) {
   // Pointer locals: an array would trip -Werror=address in TupletCString's NULL check.
   const char *bg = s_bg_str;
   const char *iob = s_iob_str;
+  const char *status = s_status_str;
   const Tuplet tuplets[] = {
       TupletInteger(KEY_BG_TIMESTAMP, s_bg_timestamp),
       TupletCString(KEY_BG_STRING, bg),
       TupletCString(KEY_IOB_STRING, iob),  // empty until the first IOB read; watchface blanks it
+      TupletCString(KEY_STATUS_STRING, status),  // "" = normal; watchface hides the band
       // Graph rides every push rather than only on change: this transport is a memcpy, not a
       // radio, so re-sending ~100 B costs nothing and keeps the watchface in sync after a relaunch.
       TupletBytes(KEY_GRAPH_DATA, graph, graph_len),
@@ -248,6 +253,13 @@ void minimed_sake_sender_send_iob(const char *iob_str) {
   // update must not make a stale BG look fresh (the watchface keys staleness off the BG timestamp).
   strncpy(s_iob_str, iob_str, sizeof(s_iob_str) - 1);
   s_iob_str[sizeof(s_iob_str) - 1] = '\0';
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_status(const char *status_str) {
+  // Same lock-free discipline as send_iob; likewise leaves s_bg_timestamp alone.
+  strncpy(s_status_str, status_str, sizeof(s_status_str) - 1);
+  s_status_str[sizeof(s_status_str) - 1] = '\0';
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
