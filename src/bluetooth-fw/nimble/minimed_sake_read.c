@@ -43,11 +43,9 @@ static const ble_uuid128_t s_idd_svc_uuid =
 static const ble_uuid128_t s_idd_srcp_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00);
-// IDD Status Changed 0x101 (read + indicate): the pump's "something changed" push. Subscribed
-// PASSIVELY for now -- we log what arrives and act on nothing. Note the pump LATCHES each bit until
-// an explicit Reset Status (SRCP 0x030C + the bits to clear), so without that write-back expect one
-// indication and then silence. Whether a *newly* set bit re-indicates while others stay latched is
-// exactly what an overnight capture answers.
+// IDD Status Changed 0x101 (read + indicate): the pump's "something changed" push, the event
+// source that replaced the 60 s poll (v40). Each bit LATCHES until an SRCP Reset Status
+// (0x030C + the bits to clear), so every received indication queues a reset write-back.
 static const ble_uuid128_t s_idd_status_changed_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00);
@@ -65,6 +63,13 @@ static const uint8_t SRCP_RESET_STATUS[] = {0x0C, 0x03};
 // Re-poll the latest record on this cadence. The sensor updates ~every 5 min; polling faster just
 // re-shows the current value and keeps the on-watch reading fresh within one interval.
 #define POLL_INTERVAL_SECS 60
+
+// Push mode: once a 0x101 indication has actually arrived (not merely been subscribed to), the
+// poll callout becomes a dead-man fallback at the bridge's tuned rate. CGM should push every
+// ~5 min, so 6 min of silence means push is late or dead -- do one full read and re-arm. A
+// silently dead push thus degrades to a 6-minute poll, the bridge's soaked trade-off.
+#define FALLBACK_AFTER_SECS (6 * 60)
+static bool s_push_mode;  // false until the first indication of this connection proves push
 
 static struct ble_npl_callout s_read_co;
 static struct ble_npl_callout s_poll_co;
@@ -236,9 +241,6 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
     return true;
   }
   if (s_h_status_changed != 0 && attr_handle == s_h_status_changed) {
-    // Passive: decode and log, act on nothing. Flags are little-endian 16-bit blocks where bit 15
-    // of a block means "another block follows" (Documentation/idd-service.md), so the field is
-    // 16/32/48 bits wide and self-describing. Observed on the bridge: 4 plaintext bytes.
     uint8_t plain[24];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
@@ -247,29 +249,39 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       return true;
     }
 
-    uint64_t flags = 0;
-    unsigned blocks = 0;
-    for (unsigned i = 0; i + 1 < plain_len && blocks < 3; i += 2) {
-      const uint16_t block = (uint16_t)(plain[i] | (plain[i + 1] << 8));
-      flags |= (uint64_t)block << (16 * blocks);
-      blocks++;
-      if ((block & 0x8000) == 0) {
-        break;  // no continuation bit: this was the last block
-      }
-    }
+    // The pump's push channel. React like the bridge: targeted read(s) for the bits we display,
+    // then queue a Reset Status for EVERYTHING received -- the pump latches each bit until
+    // reset, so unlatching is what makes the next change indicate at all. The union survives an
+    // in-flight exchange; one reset then covers a whole burst (a fingerstick fires ~5
+    // indications in 15 s).
+    const uint64_t flags = minimed_idd_flags_parse(plain, plain_len);
 
-    // Log the raw plaintext too: the decode above is from documentation we have not yet confirmed
-    // against this pump, so keep the bytes that would let us re-derive it.
+    // The full flag word (incl. continuation bits) stays logged: the higher bits are still
+    // being characterised (Documentation/idd-service.md notes observation contradicting some
+    // documented names), and parse is host-tested to round-trip, so this replaces v39's
+    // raw-bytes line without losing information.
     char line[32];
     snprintf(line, sizeof(line), "0x101 %08x%08x", (unsigned)(flags >> 32), (unsigned)flags);
     minimed_sake_log(line);
-    // Two lines: PBL_LOG allows at most 7 format conversions each.
-    PBL_LOG_INFO("SAKE: 0x101 push flags=0x%08x%08x (%u blocks, %u plaintext bytes)",
-                 (unsigned)(flags >> 32), (unsigned)flags, blocks, (unsigned)plain_len);
-    PBL_LOG_INFO("SAKE: 0x101 raw %02x %02x %02x %02x %02x %02x",
-                 plain_len > 0 ? plain[0] : 0, plain_len > 1 ? plain[1] : 0,
-                 plain_len > 2 ? plain[2] : 0, plain_len > 3 ? plain[3] : 0,
-                 plain_len > 4 ? plain[4] : 0, plain_len > 5 ? plain[5] : 0);
+    PBL_LOG_INFO("SAKE: 0x101 push flags=0x%08x%08x (%u plaintext bytes)",
+                 (unsigned)(flags >> 32), (unsigned)flags, (unsigned)plain_len);
+
+    uint8_t req = 0;
+    if (flags & MINIMED_IDD_FLAG_NEW_CGM) req |= PEND_CGM;
+    if (s_h_srcp != 0) {
+      if (flags & MINIMED_IDD_FLAG_IOB) req |= PEND_IOB;
+      s_reset_flags |= flags;
+      req |= PEND_RESET;  // no SRCP char would mean no reset possible; fallback still covers us
+    }
+
+    if (!s_push_mode) {
+      s_push_mode = true;
+      minimed_sake_log("push mode (6m fallback)");
+    }
+    // Re-arm the dead-man: an indication is proof push is alive.
+    ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(FALLBACK_AFTER_SECS * 1000));
+
+    if (req != 0) prv_request(req);
     return true;
   }
   if (s_h_racp != 0 && attr_handle == s_h_racp) {
@@ -285,7 +297,14 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
     // serialising for NimBLE's sake -- gattc ops queue FIFO (BLE_GATT_MAX_PROCS=8) rather than
     // returning BLE_HS_EBUSY as an older comment here claimed -- but the 30 s unresponsive timer
     // starts at *queue* time, and the two reassembly buffers are single-exchange.
-    if (s_op == PEND_CGM) prv_op_complete();
+    if (s_op == PEND_CGM) {
+      if (s_push_mode) {
+        // A completed CGM exchange also proves the link; keep the dead-man from re-firing
+        // right after a fallback-driven poll.
+        ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(FALLBACK_AFTER_SECS * 1000));
+      }
+      prv_op_complete();
+    }
     return true;
   }
   if (s_h_srcp != 0 && attr_handle == s_h_srcp) {
@@ -439,8 +458,10 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
 }
 
 static void prv_poll_timer_cb(struct ble_npl_event *ev) {
+  if (s_push_mode) minimed_sake_log("fallback poll");
   prv_request(PEND_CGM | (s_h_srcp != 0 ? PEND_IOB : 0));
-  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
+  const uint32_t secs = s_push_mode ? FALLBACK_AFTER_SECS : POLL_INTERVAL_SECS;
+  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(secs * 1000));
 }
 
 // Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
@@ -449,10 +470,10 @@ static void prv_start_polling(void) {
   minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
   prv_request(PEND_CGM | (s_h_srcp != 0 ? PEND_IOB : 0));
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
-  // Passive push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
-  // matters (BG, IOB) is already running by this point, so a failure here -- or no callback at all
-  // -- cannot cost us a reading. That is the whole reason it is not chained into the discovery
-  // sequence above like the other subscribes.
+  // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
+  // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
+  // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
+  // actual indication (see the 0x101 branch of minimed_sake_read_handle_notify).
   if (s_h_status_changed != 0) {
     static const uint8_t indicate[] = {0x02, 0x00};
     const int rc = ble_gattc_write_flat(s_conn, s_h_status_changed + 1, indicate, sizeof(indicate),
@@ -460,7 +481,7 @@ static void prv_start_polling(void) {
     char line[32];
     snprintf(line, sizeof(line), "0x101 sub rc=%d", rc);
     minimed_sake_log(line);
-    PBL_LOG_INFO("SAKE: subscribed IDD Status Changed (0x101) passively: rc=%d", rc);
+    PBL_LOG_INFO("SAKE: subscribed IDD Status Changed (0x101): rc=%d", rc);
   } else {
     PBL_LOG_INFO("SAKE: no IDD Status Changed (0x101) characteristic found");
   }
@@ -718,6 +739,7 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
+  s_push_mode = false;  // a reconnect re-subscribes and must re-prove push
   // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
   // monotonic within a sensor session, so keeping it means the first read after a brief dropout is
   // recognised as the reading we already have, rather than being re-timestamped and re-plotted. A
