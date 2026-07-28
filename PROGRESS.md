@@ -1107,6 +1107,13 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
      same firmware, no pump link. If the draw falls to stock levels the pump link owns the gap and
      lever (b) is the answer; if it does not, the cost is in our firmware and NOS would be optimising
      the wrong thing. Do this before building anything for battery.
+     **Protocol (agreed 2026-07-28, running tonight):** SELECT into NORMAL at bedtime, exit to the
+     glucose watchface (same face as the baseline nights — one variable changes: the pump link),
+     phone stays CONNECTED all night (stock condition; don't tap disconnect), pump stays PAIRED.
+     Known accepted contamination: the pump retries by bonded address all night and the v32 reject
+     bounces each attempt — count the reject cycles in the morning dump; if the result lands
+     between stock and pump-night levels, night two is the same protocol with the pump-side
+     pairing removed.
      Lever (b), now the likely real answer: the NOS service "Observation Mode" write carries
      min/max interval, slave latency and supervision timeout (`../Documentation/nos-service.md`).
      Needs its own discovery + a SAKE-encrypted write, and every field's unit is `???` in the doc,
