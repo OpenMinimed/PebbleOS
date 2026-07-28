@@ -35,15 +35,12 @@ phone-bridge project (`../minimed-pebble-bridge`). This file = current state + h
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
-- **BUILT 2026-07-27 evening, awaiting flash: v41 pump status** (`build/sake-spike-v41-pump-status.pbz`,
-  pushed to the phone). Full bridge status mirror: status band on the watchface (key 15),
-  warm-up/temp-target/suspend countdowns, BG "---" blanking — HW checklist in the v41 entry.
-- **ON THE WATCH NOW: v40 pump push — HW-VERIFIED with a 10 h soak** (2026-07-27,
-  `build/sake-spike-v40-pump-push.pbz`). Event-driven reads via `0x101` + Reset Status + 6-min
-  fallback; soak numbers in the version log. Everything v36 verified still holds: pump pairs,
-  BG + IOB correct, **neither bond is ever lost** — reboot and phone re-pair both verified
-  (v36, 2026-07-26). The watchface launch crash did NOT reproduce on v36+ (see OPEN→DORMANT
-  below).
+- **ON THE WATCH NOW: v41 pump status — HW-VERIFIED 2026-07-28, 23 h soak**
+  (`build/sake-spike-v41-pump-status.pbz`). Full bridge mirror on the watchface: BG + IOB +
+  status band (suspend/temp-target/warm-up countdowns, BG "---" blanking) — details in the
+  version log. Carries v40 pump push (HW-verified, 10 h soak). Everything v36 verified still
+  holds: pump pairs, **neither bond is ever lost** — reboot and phone re-pair both verified.
+  The watchface launch crash did NOT reproduce on v36+ (see OPEN→DORMANT below).
 - v35 (`build/sake-spike-v35-scanrsp-and-name-revert.pbz`, 2026-07-26, superseded by v36).
   **Working:** pump pairs, BG + IOB correct on the SAKE Spike app display. **Broken:** the real
   watchface crashes on launch (see the OPEN section below) — Morten is wearing it with the Spike app
@@ -291,14 +288,18 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: flash v41 (pump status) and run its HW checklist
+## → NEXT UP: battery (item 6), starting with the no-code control night
 
-**Pump status (v41) is BUILT — the full bridge status mirror** (item 3; checklist in the v41
-version-log entry). v40 pump push is DONE (HW-verified, 10 h soak; item 3b closed).
-Documentation/ upstreaming: 11 commits staged locally, awaiting Morten's review + push. The
-cheapest pending experiment remains item 6's **control night in NORMAL** (no code — decides
-whether the pump link owns the battery gap). After that: item 4 (graph backfill) and item 5
-(dual connection) are the feature-shaped candidates.
+**v41 pump status is DONE — HW-verified 2026-07-28** (suspend, temp target, and a full real
+sensor change incl. the 2 h warm-up countdown, accurate to one minute; item 3 closed). v40 pump
+push DONE (item 3b closed). The watch now mirrors the bridge's full display surface.
+**Battery is the declared next fight** (~6 days/charge vs ~30 stock, 875 µA steady): the first
+step is item 6's **control night in NORMAL** (no code — same firmware, phone only, pump link
+off; decides whether the pump link owns the gap before anything is built). If the link owns it,
+the lever is the Medtronic NOS "Observation Mode" write (`../Documentation/nos-service.md`,
+units unknown — doing it is also a doc contribution). Documentation/ upstreaming: 12 commits
+staged locally, awaiting Morten's review + push. Also queued: item 4 (graph backfill),
+item 5 (dual connection).
 
 ## Hardware facts
 
@@ -379,8 +380,16 @@ Submodules must be checked out (skip the huge `third_party/hal_sifli/SiFli-SDK`,
 
 ## Version log (terse; full chronological history in `HISTORY.md`)
 
-- v41 (2026-07-27, **BUILT, awaiting flash** — `build/sake-spike-v41-pump-status.pbz`, pushed to
-  the phone): **pump status on the watchface — the full bridge mirror** (remaining-work item 3).
+- v41 (2026-07-27, **ON THE WATCH, HW-VERIFIED 2026-07-28 — all three checklist items passed in a
+  23 h soak**; `build/sake-spike-v41-pump-status.pbz`): **pump status on the watchface — the full
+  bridge mirror** (remaining-work item 3). Soak evidence (flash dump, 1398 pushes, zero
+  timeouts/errors/fallbacks): suspend + temp-target reacted within seconds of the push and
+  cleared on revert; a real sensor change ran the whole arc — `CHANGE SENSOR` (BG blanked with
+  the reason shown) → `SAFE BASAL` → `WARM-UP 2:00` counting down → band cleared at 1 h 59 m,
+  i.e. the self-timed countdown was accurate to one minute. Bits 25/30 never fired — not even
+  through a physical sensor change (~1400 indications, zero hits; other pump situations remain
+  unsampled) — recorded in `../Documentation/idd-service.md`; the sensor-change wishlist items
+  are all retired.
   Reads IDD Status `0x102` (encrypted GATT read — the serialiser's first read-shaped op) and Get
   Therapy Algorithm States (SRCP `0x03FD`→`0x03FE`) as a pair on connect, on fallback polls, and
   on push bits 0/16; maps them through the bridge's iterated priority chain to the watchface
