@@ -301,6 +301,19 @@ units unknown — doing it is also a doc contribution). Documentation/ upstreami
 staged locally, awaiting Morten's review + push. Also queued: item 4 (graph backfill),
 item 5 (dual connection).
 
+## Known papercut: phone steals the SPIKE slot (diagnosed 2026-07-28, no firmware bug)
+
+Toggling to SPIKE with the phone still connected does NOT hand the slot to the pump: nothing
+rejects the *phone* in SPIKE (the mirror image of the v32 pump-in-NORMAL reject), the phone
+re-grabs the freed slot within ~1 s, and a connected watch stops advertising — so the pump can
+never get in. **The "tap disconnect in the Pebble app before toggling to SPIKE" habit is
+load-bearing.** Second factor: the pump's reconnect scan backs off with outage length (observed
+since v41: 1m40s and 1m48s after brief drops, 6m51s after a ~7 min outage) — after an hour away,
+give it up to ~15 min with the slot actually free before suspecting anything. Diagnosis notes:
+`local_addr.c "No bondings found that require address pinning!"` at SPIKE entry is normal noise
+(fires on working toggles too). Proper fixes, both deferred: reject/deprioritise the phone in
+SPIKE (small, v32-mirror), or dual connection (item 5) which dissolves the whole slot contest.
+
 ## Hardware facts
 
 - Pebble 2 Duo = board **`asterix`** (nRF52840, B&W 144x168). BLE = **NimBLE**
