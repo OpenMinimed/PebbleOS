@@ -288,16 +288,17 @@ Process note for next time: this cost a flash because a cosmetic advert change w
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: battery (item 6), starting with the no-code control night
+## → NEXT UP: battery (item 6) — control night done, next step is a night on stock 4.30.1
 
 **v41 pump status is DONE — HW-verified 2026-07-28** (suspend, temp target, and a full real
 sensor change incl. the 2 h warm-up countdown, accurate to one minute; item 3 closed). v40 pump
 push DONE (item 3b closed). The watch now mirrors the bridge's full display surface.
-**Battery is the declared next fight** (~6 days/charge vs ~30 stock, 875 µA steady): the first
-step is item 6's **control night in NORMAL** (no code — same firmware, phone only, pump link
-off; decides whether the pump link owns the gap before anything is built). If the link owns it,
-the lever is the Medtronic NOS "Observation Mode" write (`../Documentation/nos-service.md`,
-units unknown — doing it is also a doc contribution). Documentation/ upstreaming: 12 commits
+**Battery is the declared next fight** (~5.5–6.5 days/charge vs much longer on older stock):
+the control night in NORMAL is **DONE (2026-07-28/29) and the pump link is largely cleared** —
+0.65 %/h without it vs 0.96/0.63 %/h with it. NOS "Observation Mode" is off the list; the new top
+suspect is the stock **4.24** base (4.30.1 advertises "fewer background wakeups"), so the next
+experiment is a night on stock 4.30.1. Everything battery — numbers, method, confounds, remaining
+experiments — is in **[`BATTERY.md`](BATTERY.md)**. Documentation/ upstreaming: 12 commits
 staged locally, awaiting Morten's review + push. Also queued: item 4 (graph backfill),
 item 5 (dual connection).
 
@@ -791,7 +792,7 @@ New files (all spike-only via wscript/ifdef):
   `send_iob` are separate setters (BG/IOB arrive from different reads); `send_iob` deliberately
   does NOT advance the BG timestamp. `send_next` drains the watchface's outbox: ready ping
   (CMD_PUSH) → ACK + immediate push; its ACKs of our pushes are swallowed (loop guard). Protocol:
-  `minimed-pebble-watchface/docs/PEBBLE_GLUCOSE_PROTOCOL.md`.
+  `pebble-glucose-watchface/docs/PEBBLE_GLUCOSE_PROTOCOL.md`.
 - `src/fw/popups/minimed_sake_spike_ui.{c,h}` — spike core: log ring buffer, mode flag, stage
   reports; declares the app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`,
   `sender_set_mode`).
@@ -845,7 +846,7 @@ Modified:
   creates its layers (it does), a message landing in that launch gap hits any *unguarded*
   `text_layer_set_text(NULL, …)` → `PBL_ASSERTN` hard fault → "slow load then sad-watch", but
   ONLY in SPIKE (NORMAL has no sender, so it looked like a corrupt install). Fix lives in the
-  **watchface** (`minimed-pebble-watchface/src/c/main.c`): NULL-guard the bg/ago/iob text-layer
+  **watchface** (`pebble-glucose-watchface/src/c/main.c`): NULL-guard the bg/ago/iob text-layer
   updates like the graph/status layers already are; `window_load` re-renders them so no data is
   lost. Not a firmware bug — no flash needed, just rebuild+reinstall the `.pbw`. Symmetric latent
   risk on the time/date layers (tick subscribed before window_load) left unguarded for now (a tick
@@ -951,7 +952,7 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
 2. **Real watchface — WORKING (v20, HW-verified): live BG on the actual watchface, screen clean
    (no "not connected").** No connection-event hack needed. Next display work is additive keys:
    IOB/status/graph. Design: firmware injects **local AppMessages** into the existing
-   `../minimed-pebble-watchface`, unmodified — same watchface for phone-bridge and on-watch modes.
+   `../pebble-glucose-watchface`, unmodified — same watchface for phone-bridge and on-watch modes.
    Seam researched (2026-07-22), plan = **copy the QEMU transport pattern**
    (`src/bluetooth-fw/qemu/qemu_transport.c`, the existing phone-less precedent):
    - Once: `comm_session_open()` a synthetic loopback transport (`TransportDestinationHybrid`,
@@ -1079,81 +1080,18 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    `is_gateway` at store time), as long as it is called *after* the iteration returns and not from
    inside the callback — see the non-recursive-mutex Gotcha. Once HW-verified this closes the item;
    the remaining bond work for dual is per-peer `is_gateway`/SM decisions, tracked under item 5.
-6. **Battery — investigated 2026-07-26; drains now ranked, top lever needs one measurement.**
-   v34 logs the numbers on-watch (`prm <itvl>ms lat<N> sv<T>ms` at every connect and param update)
-   so this stops being guesswork. Ranked:
-   - **MEASURED 2026-07-26 (the blocking number, now known): the pump link runs at
-     `itvl=125 ms, slave latency=0, supervision timeout=3000 ms`.** Read out of the flash log
-     (`gap_le_connect.c:372`, `conn_interval_1_25ms=100`) after a normal SPIKE session — no flash
-     needed, and note this FW log already carried the number, so v34's on-watch `prm` line was
-     redundant. The radio therefore wakes **every 125 ms, 24/7**, against the phone link's
-     45 ms × (latency 3 + 1) = 180 ms effective. Headroom for the fix is ample: the constraint
-     `(latency+1) × interval × 2 < supervision timeout` allows latency up to 11, so asking for
-     latency 4 (→ 625 ms effective, ~5× fewer wakeups) or even 7 (→ 1 s) is safely inside it.
-     **Lever (a) TRIED AND REJECTED (v37, 2026-07-26).** A standard peripheral-initiated update
-     asking only for slave latency 4 — keeping the pump's own interval and supervision timeout —
-     came back `Connection parameters update failed: 0x023b`, i.e. HCI `0x3B` *Unacceptable
-     Connection Parameters*. The request was spec-valid with a wide margin
-     (`(1+4) × 125 × 2 = 1250 ms` against a 3000 ms timeout), so this reads as pump policy, not a
-     malformed ask — and it suggests the NOS Observation Mode exists precisely because the generic
-     mechanism is blocked. Recorded upstream in `../Documentation/bluetooth.md`.
-     **Latency 1 was refused too (overnight 2026-07-26/27), on both of the night's pump
-     connections, with the same `0x3B`. So the pump refuses the MECHANISM, not the value.**
-     `ble_gap_update_params` can never help here; the request code is deleted. Lever (a) is closed.
-     Untried variation, low expectation: offering an interval *range* instead of
-     `itvl_min == itvl_max`.
-     **Measured baseline to beat (same capture): 80% → 76% over 5 h 33 m ≈ 0.72 %/h at a steady
-     875 µA — about 6 days per charge**, against ~30 days for this watch in ordinary use. That gap
-     is NOT explained by the connection interval alone: 125 ms at latency 0 is only ~1.4× the wake
-     rate of the stock phone link (45 ms, latency 3 → 180 ms effective), nowhere near 5×. Something
-     else contributes and we do not know what.
-     **Link stability that night, which rules #2 out as the explanation:** exactly one pump outage,
-     05:20:00 → 05:30:57 (~11 min), in a 7 h session — so the watch was fast-advertising for ~2.6%
-     of the night and connected for the rest. The 875 µA is therefore the cost of the **connected**
-     state, not of advertising or of reconnect churn. Reducing reconnections is a *conditional*
-     lever: worth something on a bad night (an all-night outage is an all-night fast-advertise, the
-     #2 entry below), worth almost nothing on a good one. Two loose observations from the same
-     capture, neither chased: the reconnect took ~11 min against the 1–2 min this file documents
-     elsewhere, and the pump disconnect logged `reason=0x216` (HCI 0x16, *terminated by local host*)
-     with `master=1`, which is odd for a link we did not knowingly drop at 05:20 while asleep.
-     **Cheapest next step, no code: a control night in NORMAL with the phone only.** Same watch,
-     same firmware, no pump link. If the draw falls to stock levels the pump link owns the gap and
-     lever (b) is the answer; if it does not, the cost is in our firmware and NOS would be optimising
-     the wrong thing. Do this before building anything for battery.
-     **Protocol (agreed 2026-07-28, running tonight):** SELECT into NORMAL at bedtime, exit to the
-     glucose watchface (same face as the baseline nights — one variable changes: the pump link),
-     phone stays CONNECTED all night (stock condition; don't tap disconnect), pump stays PAIRED.
-     Known accepted contamination: the pump retries by bonded address all night and the v32 reject
-     bounces each attempt — count the reject cycles in the morning dump; if the result lands
-     between stock and pump-night levels, night two is the same protocol with the pump-side
-     pairing removed.
-     Lever (b), now the likely real answer: the NOS service "Observation Mode" write carries
-     min/max interval, slave latency and supervision timeout (`../Documentation/nos-service.md`).
-     Needs its own discovery + a SAKE-encrypted write, and every field's unit is `???` in the doc,
-     so doing it would also be a documentation contribution.
-   - **#1 The pump link's connection parameters are never negotiated.** Structural, not incidental:
-     Pebble only issues a param update on a *consumer-driven* state change (`bt_conn_mgr.c`), and
-     every consumer (PPoGATT, GATT discovery, AMS, pairing service) is on the phone path — the
-     spike does raw `ble_gattc_*` calls and registers none. So the pump link runs at whatever the
-     pump chose, **peripheral latency 0, 24/7**. Compare the stock phone link: 30–45 ms interval
-     *with latency 3* → ~180 ms effective. Plausibly a 25–50% battery-life hit on its own.
-     Levers, once the logged interval is known: (a) `ble_gap_update_params()` right after
-     `SAKE_RESULT_DONE` to ask for peripheral latency — even at an unchanged interval, latency 4
-     cuts radio wakeups ~5×; (b) the pump-sanctioned route, the Medtronic **NOS service**
-     "Observation Mode" write, which carries min/max interval, slave latency and supervision
-     timeout (`Documentation/nos-service.md`) — presumably how the official app does it.
-     Mind the constraint `(latency+1) × interval × 2 < supervision timeout`.
-   - **#2 SPIKE advertising is ~8.5× stock, forever, while the pump is away.** The clamp is
-     100–140 ms with `BLE_HS_FOREVER` (`advert.c`), vs stock 20 ms for 30 s then **1022 ms**
-     indefinitely (`gap_le_advert.c`). Only bites during outages (advertising stops while
-     connected), but an all-night outage is an all-night drain. Lever: make the clamp a *term
-     schedule* (bursts of fast advert alternating with slow) — pump reconnect latency is already
-     1–2 min, so little is lost.
-   - **#3 Vibrations** — fixed in v34; the motor cost more per reconnect than the whole handshake.
-   - **Not a lever: the 60 s poll.** ~10 GATT PDUs/min riding connection events that happen
-     thousands of times a minute anyway — well under 1% of the link's keep-alive cost. Stretching
-     it to 5 min saves essentially nothing. (The SAKE Spike *app*'s 400 ms refresh timer does cost
-     something, but only while it is the foreground app.)
+6. **Battery — the top suspect has been measured and largely cleared. Full write-up:
+   [`BATTERY.md`](BATTERY.md).** Drain is ~0.65–0.75 %/h ≈ 5.5–6.5 days/charge and is roughly the
+   same with the pump link up or down (control night in NORMAL, 2026-07-28/29: 0.65 %/h against
+   0.96 %/h for the preceding pump night and 0.63 %/h for a day of ordinary SPIKE use). So NOS
+   "Observation Mode" is **not** worth building for battery reasons, and `ble_gap_update_params` was
+   already closed (pump refuses the mechanism with HCI `0x3B`). New top suspect: the **stock 4.24
+   base** we forked from — 4.30.1's release notes claim "better battery life through fewer
+   background wakeups", and Morten remembers much better life on an older stock build. Next
+   experiment is a night on stock 4.30.1; ranked hypotheses, method (the flash log carries a
+   complete 1%-per-line discharge curve, `tools/dump_flash_logs.py`) and confounds all live in
+   `BATTERY.md`. Note the old "875 µA steady" figure was a misreading — that field has an ~876 µA
+   LSB.
 7. **Phone-bond papercut** (re-pair dance between test cycles) — CONFIRMED on HW (v23): phone
    bond breaks on every SPIKE→NORMAL cycle. v24 attempts a fix (scope repeat-pairing recovery to
    the pump only). If that's not enough, root-cause why the phone re-initiates pairing (diagnostic
@@ -1161,6 +1099,8 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
 
 ## References
 
+- `BATTERY.md` — battery drain: measurements, how to run a drain test off the flash log, remaining
+  experiments. Also the place for `tools/dump_flash_logs.py` usage.
 - `../Documentation/` — protocol source of truth. **Update eagerly** with confirmed facts.
 - `../minimed-pebble-bridge/glycemicgpt/plugins/shipped/medtronic/` — the working Kotlin impl to
   port (peripheral, SAKE, reads, history parser) + tests.
