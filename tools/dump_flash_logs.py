@@ -20,6 +20,10 @@ Usage (needs the USB tunnel and Developer Connection, same as `pebble logs`):
     tools/dump_flash_logs.py -g 1         # previous boot
     tools/dump_flash_logs.py -g 0 -o /tmp/boot.log
 
+libpebble2 lives in the pebble-tool venv, not in the system python, so `python3 tools/...` fails
+with ModuleNotFoundError. Run it as above (the shebang resolves) or explicitly with
+`~/.local/share/uv/tools/pebble-tool/bin/python3`.
+
 Protocol: endpoint 2002, request 0x10 <generation:u8> <cookie:u32>; the watch replies with 0x80
 per line, then 0x81 when done or 0x82 if that generation holds nothing
 (see src/fw/debug/debug.c).
