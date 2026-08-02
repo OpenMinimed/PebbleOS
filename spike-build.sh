@@ -47,6 +47,13 @@ out="build/sake-spike-v${next_ver}-${desc}.pbz"
 cp "$fresh" "$out"
 echo ">> $out"
 
+# Keep this build's loghash dictionary next to the .pbz. PBL_LOG lines are stored hashed, and the
+# hashes change between builds -- so without the matching dict, tools/dump_flash_logs.py cannot
+# read back a log written by an older firmware. Costs a few hundred KB per flash.
+if [ -f build/pebbleos_loghash_dict.json ]; then
+  cp build/pebbleos_loghash_dict.json "build/sake-spike-v${next_ver}-${desc}.loghash.json"
+fi
+
 if [ "$push" = 1 ]; then
   n=$(adb devices | grep -cw device || true)
   if [ "$n" = 1 ]; then
