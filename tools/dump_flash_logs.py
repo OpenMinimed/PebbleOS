@@ -20,9 +20,8 @@ Usage (needs the USB tunnel and Developer Connection, same as `pebble logs`):
     tools/dump_flash_logs.py -g 1         # previous boot
     tools/dump_flash_logs.py -g 0 -o /tmp/boot.log
 
-libpebble2 lives in the pebble-tool venv, not in the system python, so `python3 tools/...` fails
-with ModuleNotFoundError. Run it as above (the shebang resolves) or explicitly with
-`~/.local/share/uv/tools/pebble-tool/bin/python3`.
+libpebble2 lives in the pebble-tool venv, not in the system python. This script re-executes itself
+with that interpreter when the import fails, so any python3 works.
 
 Protocol: endpoint 2002, request 0x10 <generation:u8> <cookie:u32>; the watch replies with 0x80
 per line, then 0x81 when done or 0x82 if that generation holds nothing
@@ -37,6 +36,40 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "log_hashing"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "libs", "pebble-loghash"))
+
+
+def _reexec_with_pebble_tool_python():
+    """Re-run under the interpreter that has libpebble2, i.e. the pebble-tool venv.
+
+    Nobody installs libpebble2 system-wide, so `python3 tools/dump_flash_logs.py` -- and the
+    `#!/usr/bin/env python3` shebang -- both land on an interpreter without it. Rather than make
+    everyone remember the venv path, find it and exec into it once.
+    """
+    import shutil
+
+    if os.environ.get("_DUMP_FLASH_LOGS_REEXEC"):
+        return  # Already tried; let the ImportError speak for itself.
+
+    candidates = []
+    pebble = shutil.which("pebble")
+    if pebble:
+        # The pebble-tool launcher's shebang points straight at its venv interpreter.
+        with open(pebble, "rb") as f:
+            first = f.readline().decode("utf-8", "replace").strip()
+        if first.startswith("#!"):
+            candidates.append(first[2:].split()[0])
+    candidates.append(os.path.expanduser("~/.local/share/uv/tools/pebble-tool/bin/python3"))
+
+    for python in candidates:
+        if python and python != sys.executable and os.access(python, os.X_OK):
+            os.environ["_DUMP_FLASH_LOGS_REEXEC"] = "1"
+            os.execv(python, [python, os.path.abspath(__file__)] + sys.argv[1:])
+
+
+try:
+    import libpebble2  # noqa: F401
+except ImportError:
+    _reexec_with_pebble_tool_python()
 
 from libpebble2.communication import PebbleConnection
 from libpebble2.communication.transports.websocket import WebsocketTransport
