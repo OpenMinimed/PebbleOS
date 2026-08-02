@@ -291,6 +291,40 @@ static void prv_record_metrics(struct native_heartbeat_record *record, bool rese
   }
 }
 
+/* Log the drain-relevant subset of the heartbeat, so a battery test can be read off the flash
+ * log alone — the DLS record needs a phone session, which is exactly what is missing overnight
+ * and in pump mode. Hourly, so INFO is affordable.
+ *
+ * PBL_LOG allows at most 7 format conversions per line, hence the split and the `cpct`
+ * (centi-percent, i.e. the raw scale-100 value) shorthand on everything but the headline SoC.
+ * Timers are per-heartbeat and printed in seconds. */
+static void prv_log_heartbeat(const struct native_heartbeat_record *record) {
+  PBL_LOG_INFO("hb bat soc %" PRIu32 ".%02" PRIu32 " drop %" PRIu32 ".%02" PRIu32 " mv %" PRIu32
+               " tte %" PRIu32 "m",
+               record->metric_battery_soc_pct / 100, record->metric_battery_soc_pct % 100,
+               record->metric_battery_soc_pct_drop / 100, record->metric_battery_soc_pct_drop % 100,
+               record->metric_battery_voltage, record->metric_battery_tte_s / 60);
+
+  PBL_LOG_INFO("hb cpu cpct run %" PRIu32 " slp %" PRIu32 "/%" PRIu32 "/%" PRIu32 " idle %" PRIu32,
+               record->metric_cpu_running_pct, record->metric_cpu_sleep0_pct,
+               record->metric_cpu_sleep1_pct, record->metric_cpu_sleep2_pct,
+               record->metric_task_cpu_idle_pct);
+
+  PBL_LOG_INFO("hb ble advs %" PRIu32 "/%" PRIu32 " conns %" PRIu32 "/%" PRIu32 "/%" PRIu32
+               " cpct host %" PRIu32 " ctlr %" PRIu32,
+               record->metric_ble_adv_short_intvl_time_ms / 1000,
+               record->metric_ble_adv_long_intvl_time_ms / 1000,
+               record->metric_ble_conn_itvl_min_time_ms / 1000,
+               record->metric_ble_conn_itvl_mid_time_ms / 1000,
+               record->metric_ble_conn_itvl_max_time_ms / 1000,
+               record->metric_task_cpu_bt_host_pct, record->metric_task_cpu_bt_controller_pct);
+
+  PBL_LOG_INFO("hb ble disc spvn %" PRIu32 " remterm %" PRIu32 " other %" PRIu32,
+               record->metric_ble_disconnect_conn_spvn_tmo_count,
+               record->metric_ble_disconnect_rem_user_term_count,
+               record->metric_ble_disconnect_other_count);
+}
+
 void pbl_analytics__native_init(void) {
   s_mutex = mutex_create();
   PBL_ASSERTN(s_mutex != NULL);
@@ -302,6 +336,8 @@ void pbl_analytics__native_heartbeat(void) {
   mutex_lock(s_mutex);
   prv_record_metrics(&record, true);
   mutex_unlock(s_mutex);
+
+  prv_log_heartbeat(&record);
 
   if (s_dls_session == NULL) {
     Uuid system_uuid = UUID_SYSTEM;
