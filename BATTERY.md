@@ -1,6 +1,6 @@
 # Battery drain on the SAKE-spike firmware
 
-Why this file exists: the on-watch spike burns roughly **5–6 days per charge** where stock
+Why this file exists: the on-watch spike burns roughly **6–8 days per charge** where stock
 PebbleOS on this same Pebble 2 Duo gave Morten *much* longer. That gap is the last big open item
 (`PROGRESS.md` item 6), the obvious suspect (the pump link) has now been measured and largely
 cleared, and the measurements are subtle enough to get wrong. This file holds the numbers, the
@@ -9,8 +9,10 @@ facts still belong in `../Documentation/`.
 
 ## The short version
 
-- Measured drain is **~0.65–0.75 %/h ≈ 5.5–6.5 days/charge**, and it is roughly the same whether
-  the pump link is up or not.
+- Measured drain is **~0.5–0.75 %/h ≈ 5.5–8 days/charge**, and it is roughly the same whether the
+  pump link is up or not. The spread is mostly **SoC-dependent**, not condition-dependent: within
+  a single 33 h pump-connected window the rate climbed 0.34 → 0.64 %/h as the battery went from
+  93% to 76%. Only ever compare runs over the same SoC band.
 - **The pump link is not a 5× factor.** A control night in NORMAL with no pump link came in at
   0.65 %/h against 0.96 %/h for the previous pump night and 0.63 %/h for a day of ordinary SPIKE
   use — i.e. within the spread of the measurement, at most a modest effect (see the confounds
@@ -19,7 +21,7 @@ facts still belong in `../Documentation/`.
   investigation was heading toward — would be optimising something that is not the problem.
   Deprioritised, not because it wouldn't work, but because there is nothing there to win.
 - The remaining suspects are **our firmware diff** and, newly, **the stock 4.24 base we forked
-  from**. The watch runs `v4.24.0-48-g5f10b8b3c`; the Core app currently offers **v4.30.1**, whose
+  from**. The watch runs `v4.24.0-48-g5f10b8b3c`; the Core app currently offers **v4.31.1** (latest as of 2026-08-02), whose
   release notes read *"Better battery life through fewer background wakeups."* Morten's memory of
   much better life on an older stock build is consistent with either.
 - **How good are these numbers?** Endpoints are exact if you anchor on the logged 1% steps, but the
@@ -46,6 +48,23 @@ same firmware (v41) and same battery throughout — the cleanest comparison we h
 Earlier, separate capture (2026-07-26, also SPIKE with one 11-min pump outage in 7 h):
 80 → 76% over 5 h 33 m = **0.72 %/h**. Consistent with the table.
 
+Later capture (2026-08-02, v41, one flash-log generation, SPIKE with the pump connected throughout
+— 2688 `minimed_sake_read.c` lines), and it is the most informative one so far:
+
+| Window | Range | Duration | Rate |
+|---|---|---|---|
+| whole window | 93 → 76% | 33 h 23 m | **0.51 %/h ≈ 8.2 days** |
+| first day | 93 → 89% | 11 h 48 m | 0.34 %/h |
+| night | 89 → 83% | 10 h 28 m | 0.57 %/h |
+| next day | 82 → 76% | 9 h 24 m | 0.64 %/h |
+
+Two conclusions. **The 5.7-day figure above is pessimistic** — a full day and a half with the pump
+connected came in at 8.2 days-equivalent, which matches Morten's own "roughly a week" impression.
+And **the rate rises monotonically as SoC falls**, 0.34 → 0.57 → 0.64 %/h on one firmware, one
+battery, and a comparable day-night mix. That is the model nonlinearity below, demonstrated rather
+than suspected: it nearly doubles across a 17-point SoC span, which is larger than most effects we
+are trying to measure. Any comparison between two runs in different SoC bands is worthless.
+
 Per-1%-step rates inside those windows ranged from **0.38 to 2.07 %/h**. That spread is the
 single most important thing to know before designing another experiment — see below.
 
@@ -68,11 +87,12 @@ log at all. The pump appears not to have looked for the watch. Good for the cont
 worth remembering separately, since it also means "pump gives up while we're in NORMAL" is a
 thing that can happen.
 
-## Measuring drain: three instruments
+## Measuring drain: the instruments
 
-The watch already carries everything needed. **No firmware change is required to run a battery
+The watch already measures everything needed. **No firmware change is required to run a battery
 test** — which is worth knowing before anyone builds instrumentation for it (v34 did, and its
-`prm` line turned out to duplicate a stock log).
+`prm` line turned out to duplicate a stock log). What v43 added is not new measurement but a
+retrieval path: it prints metrics the firmware already collected to a log we can actually get at.
 
 ### 1. The flash log's 1%-step curve — what we have actually used
 
@@ -100,10 +120,44 @@ session). Reproduce the condition, then pull the history afterwards:
   every `.pbz`); with the wrong dict the lines stay as raw `NL:xxxx`.
 - Output has HH:MM:SS and no date. Reconstruct dates by walking the file in order and incrementing
   the day on each backwards time jump.
-- `libpebble2` lives in the pebble-tool venv, not the system python: run the script directly
-  (shebang) or via `~/.local/share/uv/tools/pebble-tool/bin/python3`, else ModuleNotFoundError.
+- `libpebble2` lives in the pebble-tool venv, not the system python. The script now re-executes
+  itself with the venv interpreter when the import fails, so any `python3` works. (Before
+  2026-08-02 this was a ModuleNotFoundError; the old advice to "run it via the shebang" was wrong,
+  since `#!/usr/bin/env python3` is exactly the interpreter that lacks the module.)
 
-### 2. The hourly analytics heartbeat — better, and not yet used
+### 1b. The hourly heartbeat log lines (v43+) — instrument 1's resolution problem, solved
+
+v43 logs the drain-relevant subset of the analytics heartbeat (instrument 2 below) straight to the
+flash log, once an hour, four lines:
+
+    hb bat soc 63.42 drop 0.71 mv 3912 tte 486m
+    hb cpu cpct run 213 slp 1231/4005/4519 idle 9622
+    hb ble advs 0/3600 conns 3600/0/0 cpct host 42 ctlr 110
+    hb ble disc spvn 1 remterm 0 other 0
+
+Read it as: SoC and the drop since the previous heartbeat in percent (0.01% resolution, so an
+hourly drain rate directly); `cpct` = centi-percent, i.e. `run 213` is 2.13% CPU; `advs` =
+seconds advertising at the short/long interval; `conns` = seconds at the min/mid/max connection
+interval; `host`/`ctlr` = BT host and controller task CPU; `disc` = disconnects by reason
+(supervision timeout, remote terminate, other).
+
+Why this and not the DLS decoder the earlier version of this file proposed: DLS records need a
+phone session to retrieve, and the Core app is the other consumer — it empties the session when it
+takes them. A SPIKE night's records would likely be gone before we could download. The flash log
+has neither problem. Retrieval is exactly the `dump_flash_logs.py` recipe above, then
+`grep 'hb '`.
+
+Two caveats. `advs` counts the *time* correctly but labels it by the advertising job's nominal
+short/long interval, not SPIKE's 100–140 ms clamp. And `soc`/`drop` still come from the fuel-gauge
+model, so the nonlinearity in "How accurate is any of this?" applies unchanged — what this buys is
+hourly granularity and the causes beside the drain, not a better absolute number.
+
+v43 also fixes a gap that would have left `conns` at 0/0/0 for the pump: the connection-interval
+timers were only started by a parameter-*update* event, so a link whose master never renegotiates
+— which is exactly the pump — was never counted. They now also start at connection establishment
+(`gap_le_connect.c`, slave connections). Stock bug, not spike-specific.
+
+### 2. The hourly analytics heartbeat — the source of the above, still undecoded on the DLS side
 
 Every hour (`HEARTBEAT_PERIOD_SEC 3600`, `src/fw/services/analytics/analytics.c`) the firmware
 snapshots ~91 metrics into a 523-byte record and logs it to the **data logging service**
@@ -195,15 +249,15 @@ what the watch was doing** — so precision is not the thing to improve, experim
   add uncompared load; note the SoC range with every number; and treat one night as one sample —
   the 0.96 vs 0.65 split in the table above is exactly the size of effect this method should not be
   trusted on alone.
-- **The way out, when we need better:** instrument 2. Hourly `battery_soc_pct_drop` at 0.01%
-  resolution, with CPU-sleep and BLE-interval time in the same record, is both finer and
-  self-explaining — it can attribute an hour's drain instead of just measuring it. That decoder is
-  the highest-value piece of tooling left in this area.
+- **The way out, when we need better:** instrument 1b, shipped in v43. Hourly
+  `battery_soc_pct_drop` at 0.01% resolution, with CPU-sleep and BLE-interval time on the same
+  lines, is both finer and self-explaining — it can attribute an hour's drain instead of just
+  measuring it. It does not fix the model nonlinearity above; it fixes everything else.
 
 ## Ranked drain hypotheses
 
 - **#0 (new, now top) The stock 4.24 base.** Morten observed much longer life on an older stock
-  build; 4.30.1's own release notes claim fewer background wakeups. If stock 4.24 also drains
+  build; 4.31.1's release notes claim fewer background wakeups. If stock 4.24 also drains
   ~0.7 %/h then our diff is innocent and the fix is a rebase, not an optimisation hunt. Nothing in
   the current data distinguishes "our code" from "our base".
 - **#1 The pump link's connection parameters** (125 ms, slave latency 0, 3000 ms supervision,
@@ -228,24 +282,25 @@ what the watch was doing** — so precision is not the thing to improve, experim
 Ordered by information per unit of effort. None of them needs new firmware instrumentation — the
 watch already records everything (see "Measuring drain").
 
-0. **Two zero-cost things to do alongside whatever else runs.** (a) Leave the app's battery feature
-   on and check after the next SPIKE stretch whether its graph backfills the gap — settles the one
-   open question the firmware can't answer. (b) Write the heartbeat-record decoder (layout generated
-   from `analytics.def`); it upgrades every later experiment from one number per night to an hourly
-   table with CPU-sleep and BLE-interval time beside the drain.
-1. **A night on stock 4.30.1** (Morten has offered, and the app is already prompting to update).
+0. **One zero-cost thing to do alongside whatever else runs:** leave the app's battery feature on
+   and check after the next SPIKE stretch whether its graph backfills the gap — settles the one
+   open question the firmware can't answer. (The other item here, the heartbeat decoder, was done
+   differently in v43 — see instrument 1b.)
+1. **A night on stock 4.31.1** (Morten has offered, and the app is already prompting to update).
    Decides #0 outright. If stock is ~0.15 %/h then the whole gap is ours to fix; if stock is also
-   ~0.7 %/h the gap was never ours. Cost: reflashing the spike afterwards — which since v36 costs
-   zero pairings, so this is cheap now. Two cautions: dump `-g 0` **before** updating, and stock
-   will not have the spike's dict, so read its lines with `build/pebbleos_loghash_dict.json`.
-2. **If stock 4.30.1 is good: a night on stock 4.24** (or just diff the two upstream trees for the
-   wakeup change). Separates "upstream fixed it in 4.25–4.30" from "our diff". The former means
+   ~0.6 %/h the gap was never ours. Cost: reflashing the spike afterwards — which since v36 costs
+   zero pairings, so this is cheap now. Three cautions: **start the night at ~90% SoC** so it
+   covers the 89 → 83% band where we have a matched spike number (0.57 %/h) — a stock night in a
+   different band cannot be compared to anything; dump `-g 0` **before** updating; and stock will
+   not have the spike's dict, so read its lines with `build/pebbleos_loghash_dict.json`.
+2. **If stock 4.31.1 is good: a night on stock 4.24** (or just diff the two upstream trees for the
+   wakeup change). Separates "upstream fixed it in 4.25–4.31" from "our diff". The former means
    rebase; the latter means bisect our own commits.
 3. **NORMAL vs SPIKE over matched SoC ranges.** Repeat the control against a pump night that
    *starts at the same percentage*, both ≥8 h, to find out whether the 0.96 vs 0.65 split is real
    or an artifact of the model nonlinearity. This is below the resolving power of the 1%-step method
-   (see accuracy), so do it with the heartbeat decoder or not at all. Only worth doing if #1/#2
-   leave the pump link implicated.
+   (see accuracy), so do it on v43 with the hourly `hb` lines or not at all. Only worth doing if
+   #1/#2 leave the pump link implicated.
 4. **Outage-mode advertising (#2 lever).** Cheap to build, but only pays off on bad nights — hold
    until the baseline question is settled, then decide with real numbers on how often all-night
    outages actually happen.
