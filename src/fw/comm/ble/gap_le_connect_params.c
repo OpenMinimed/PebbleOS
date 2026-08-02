@@ -120,7 +120,7 @@ static ResponseTimeState prv_classify_conn_interval(uint16_t conn_interval_1_25m
   return ResponseTimeMax;
 }
 
-static void prv_analytics_update_conn_interval(uint16_t conn_interval_1_25ms) {
+void gap_le_connect_params_analytics_update_interval(uint16_t conn_interval_1_25ms) {
   prv_analytics_stop_conn_interval_timers();
 
   switch (prv_classify_conn_interval(conn_interval_1_25ms)) {
@@ -324,7 +324,7 @@ void bt_driver_handle_le_conn_params_update_event(const BleConnectionUpdateCompl
   const bool local_is_master = connection->local_is_master;
   if (!local_is_master) {
      bluetooth_analytics_handle_connection_params_update(params);
-     prv_analytics_update_conn_interval(params->conn_interval_1_25ms);
+     gap_le_connect_params_analytics_update_interval(params->conn_interval_1_25ms);
   }
 
   prv_evaluate(connection, desired_state);

@@ -22,3 +22,9 @@ typedef struct GAPLEConnectRequestParams {
 //! devices, this does not always happen.
 void gap_le_connect_params_request(GAPLEConnection *connection,
                                    ResponseTimeState desired_state);
+
+//! Starts the analytics timer for the bucket the given connection interval falls into, stopping
+//! the other two. Called on parameter updates and on connection establishment — without the
+//! latter, a link whose master never renegotiates is never counted at all.
+//! @param conn_interval_1_25ms The actual connection interval, in 1.25 ms units.
+void gap_le_connect_params_analytics_update_interval(uint16_t conn_interval_1_25ms);
