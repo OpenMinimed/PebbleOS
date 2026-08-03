@@ -117,6 +117,34 @@ log at all. The pump appears not to have looked for the watch. Good for the cont
 worth remembering separately, since it also means "pump gives up while we're in NORMAL" is a
 thing that can happen.
 
+### The first v44 day with hourly attribution (2026-08-03)
+
+Worn workday, SPIKE, pump connected except for one 55-minute dropout. 08:08 78% → 16:06 72% =
+**0.75 %/h**. What the `hb` lines say:
+
+- **CPU, tasks and flash writes are innocent.** ~98% of every hour in nRF stop-mode sleep
+  (`slp1`), 0.8% running, `main`/`bg`/`tmr` all ≤ 0.01%, app ≤ 0.1%, and 2–9 KB of flash writes per
+  hour. Whatever costs the 4× does not run code.
+- **Both of our radio states cost the same.** The hour containing the dropout logged
+  `advs 0/3218` — 54 min advertising at the 100–140 ms SPIKE clamp, only 381 s connected — and
+  drained 0.80 %/h, indistinguishable from the fully-connected hours (0.62–1.06). We are always in
+  one state or the other, and neither is cheap.
+- **The pump link is 125 ms at slave latency 0**, supervision 3000 ms (`gap_le_connect.c:372`:
+  `master=0, 100, slave lat=0`). Stock's phone link is 45 ms at latency 3 = 180 ms effective — the
+  same 45 ms our own phone link gets (recovered from the stock night's raw args,
+  `NL:5695 1 0 0 24 0 1f4 59`). That is 1.4× the wake rate, which does **not** by itself explain
+  4×.
+- `stat 0`/`lowp 0` every hour, but the watch was *worn* — stationary mode is not supposed to engage.
+  That column only means something overnight, and is still worth checking there.
+- Hourly `drop` ranged 0.13 to 1.06 %/h across hours with **identical** metrics
+  (`conns 0/0/3600`, `advs 0/0`). The instrument is fine; the fuel-gauge model is the noise. One
+  hour is still one sample.
+
+Caveat on the stock comparison, stated rather than buried: that night produced ~15 log lines and
+has a reconnect at 03:34, so we cannot tell how much of it the phone link was actually **up**. If
+the phone was away for hours, stock spent them advertising at 1022 ms — nearly free — and part of
+the 4× is that rather than a per-event efficiency difference.
+
 ## Measuring drain: the instruments
 
 The watch already measures everything needed. **No firmware change is required to run a battery
@@ -318,10 +346,18 @@ what the watch was doing** — so precision is not the thing to improve, experim
 Ordered by information per unit of effort. The baseline question is answered; what is left is
 finding which part of our diff costs the 3.5–4×.
 
-1. **A v44 night, charged to 80%, matching the stock night exactly.** Same band, same anchor (the
-   79% step), phone connected, glucose watchface in front. Gives both a matched drain number and
-   the hourly `hb` lines. Read `hb sys stat` first: if stationary seconds are near zero while
-   stock would have been in stationary all night, that is the answer on its own.
+0. **Use the second watch (arrived 2026-08-03; a third comes with the dev kit).** Running stock and
+   our build **simultaneously** removes the confound that limits every measurement above — SoC band,
+   daily activity, ambient temperature — because both watches see the same night. Do one
+   calibration night with the *same* firmware on both first, to measure how much the two batteries
+   differ on their own; only then is a stock-vs-ours pair worth trusting to better than 1.5×.
+1. **A v44 night in NORMAL, charged to 80%, matching the stock night exactly.** Same band, same
+   anchor (the 79% step), phone connected, glucose watchface in front. This is the decisive one:
+   same firmware, stock-like radio config. Near 0.165 %/h means the whole cost is SPIKE's radio
+   configuration — the advertising clamp and the 125 ms latency-0 link — and the advertising half is
+   ours to fix without the pump's cooperation. Near 0.7 %/h means the cost is in the base or in
+   something of ours that is active even in NORMAL. Also read `hb sys stat`: overnight, stationary
+   seconds near zero would be a finding in itself.
 2. **Then bisect our diff against whatever the lines implicate.** The three shapes to expect:
    never entering stationary/low-power mode (`hb sys stat`/`lowp`), a task of ours running
    constantly (`hb task main`/`bg`/`tmr`), or our own logging writing flash all night
