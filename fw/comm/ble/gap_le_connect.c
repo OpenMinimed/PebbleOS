@@ -446,6 +446,8 @@ void pbl_bt_handle_le_connection_complete_event(const struct pbl_bt_conn_complet
 
       if (!local_is_master) { // At the moment we don't grab analytics for connections we generate
         bluetooth_analytics_handle_connect(&event->peer_address, &event->conn_params);
+        gap_le_connect_params_analytics_update_params(event->conn_params.conn_interval_1_25ms,
+                                                      event->conn_params.slave_latency_events);
       }
 
       if (!found_match) {
