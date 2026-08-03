@@ -319,6 +319,17 @@ static void prv_log_heartbeat(const struct native_heartbeat_record *record) {
                record->metric_ble_conn_itvl_max_time_ms / 1000,
                record->metric_task_cpu_bt_host_pct, record->metric_task_cpu_bt_controller_pct);
 
+  PBL_LOG_INFO("hb task cpct main %" PRIu32 " bg %" PRIu32 " tmr %" PRIu32 " app %" PRIu32,
+               record->metric_task_cpu_kernel_main_pct,
+               record->metric_task_cpu_kernel_background_pct,
+               record->metric_task_cpu_new_timers_pct, record->metric_task_cpu_app_pct);
+
+  PBL_LOG_INFO("hb sys stat %" PRIu32 " lowp %" PRIu32 " flashw %" PRIu32 "k flashe %" PRIu32
+               "k up %" PRIu32 "m",
+               record->metric_stationary_time_ms / 1000, record->metric_low_power_time_ms / 1000,
+               record->metric_flash_spi_write_bytes / 1024,
+               record->metric_flash_spi_erase_bytes / 1024, record->metric_uptime_s / 60);
+
   PBL_LOG_INFO("hb ble disc spvn %" PRIu32 " remterm %" PRIu32 " other %" PRIu32,
                record->metric_ble_disconnect_conn_spvn_tmo_count,
                record->metric_ble_disconnect_rem_user_term_count,
