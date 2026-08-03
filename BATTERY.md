@@ -1,10 +1,10 @@
 # Battery drain on the SAKE-spike firmware
 
 Why this file exists: the on-watch spike burns roughly **6–8 days per charge** where stock
-PebbleOS on this same Pebble 2 Duo gave Morten *much* longer. That gap is the last big open item
-(`PROGRESS.md` item 6), the obvious suspect (the pump link) has now been measured and largely
-cleared, and the measurements are subtle enough to get wrong. This file holds the numbers, the
-method, and what is left to try. It is about **our firmware's power behaviour**; pump *protocol*
+PebbleOS on this same Pebble 2 Duo runs **3.5–4× longer** — measured, not remembered
+(2026-08-03). That gap is the last big open item (`PROGRESS.md` item 6), the obvious suspect (the
+pump link) has been measured and largely cleared, and the measurements are subtle enough to get
+wrong. This file holds the numbers, the method, and what is left to try. It is about **our firmware's power behaviour**; pump *protocol*
 facts still belong in `../Documentation/`.
 
 ## The short version
@@ -20,10 +20,10 @@ facts still belong in `../Documentation/`.
 - So the Medtronic **NOS "Observation Mode"** connection-parameter write — the lever this
   investigation was heading toward — would be optimising something that is not the problem.
   Deprioritised, not because it wouldn't work, but because there is nothing there to win.
-- The remaining suspects are **our firmware diff** and, newly, **the stock 4.24 base we forked
-  from**. The watch runs `v4.24.0-48-g5f10b8b3c`; the Core app currently offers **v4.31.1** (latest as of 2026-08-02), whose
-  release notes read *"Better battery life through fewer background wakeups."* Morten's memory of
-  much better life on an older stock build is consistent with either.
+- **It is our diff, and we now know the size of it.** A controlled night on stock 4.31.1
+  (2026-08-02/03) drained **0.165 %/h** against 0.57–0.72 %/h for our firmware in nearby bands —
+  **3.5–4×**. The 4.24 base is exonerated too: Morten has seen comparable life on the stock builds
+  he ran before. So the work left is finding what in our diff keeps the watch awake, not a rebase.
 - **How good are these numbers?** Endpoints are exact if you anchor on the logged 1% steps, but the
   method still can't resolve a difference smaller than ~1.5×, because one percent is not a fixed
   amount of energy. Good enough for "is the pump link a 5× factor"; not good enough for the 0.96 vs
@@ -67,6 +67,36 @@ are trying to measure. Any comparison between two runs in different SoC bands is
 
 Per-1%-step rates inside those windows ranged from **0.38 to 2.07 %/h**. That spread is the
 single most important thing to know before designing another experiment — see below.
+
+### The stock 4.31.1 night (2026-08-02/03) — the decisive one
+
+Protocol: charged to exactly 80%, updated to stock 4.31.1 (booted 22:44), phone connected all
+night, glucose watchface in front, no pump link. Controlled charge because of the SoC dependence
+above.
+
+| Step | Time |
+|---|---|
+| 80% | 22:44:58 (charge ended) |
+| 79% | 00:52:00 |
+| 78% | 06:55:00 |
+
+**79 → 78% took 6 h 03 m = 0.165 %/h ≈ 25 days.** Against our firmware in the nearest bands —
+0.64 %/h (82→76%), 0.57 %/h (89→83%, also a night), 0.72 %/h (80→76%) — **stock is roughly
+3.5–4× better**, far above the ~1.5× this method can resolve.
+
+Three caveats, none of which overturn it. It is **one step**, so the rate is exact for that
+interval but is a single interval. The band-matched spike numbers come from worn days, so the
+fairest single comparison is the 89→83% spike *night* at 0.57 %/h — still ~3.5×. And stock
+4.31.1 differs from our build in two ways at once, base version and our diff.
+
+**The second one is settled by Morten's own experience**: he has seen similar battery life on the
+stock builds he ran before, including 4.24-era ones. So the base is exonerated and **the drain is
+in our diff**. Nothing left to learn from a stock 4.24 night.
+
+Retrieval note: stock's log lines cannot be dehashed — Core Devices' build has its own loghash
+dictionary that we don't have, so `Percent:` comes back as `NL:115f6 4f f5e 36b 73a1 'no' 'no'`.
+The args are still there in hex, in order: pct, mV, µA, mC, charging, plugged. That is enough to
+read a discharge curve off any stock build.
 
 ### The control night, and why it counts as a control
 
@@ -256,10 +286,16 @@ what the watch was doing** — so precision is not the thing to improve, experim
 
 ## Ranked drain hypotheses
 
-- **#0 (new, now top) The stock 4.24 base.** Morten observed much longer life on an older stock
-  build; 4.31.1's release notes claim fewer background wakeups. If stock 4.24 also drains
-  ~0.7 %/h then our diff is innocent and the fix is a rebase, not an optimisation hunt. Nothing in
-  the current data distinguishes "our code" from "our base".
+- **#0 The stock 4.24 base — REJECTED (2026-08-03).** Stock 4.31.1 drains 0.165 %/h against our
+  0.57–0.72 %/h, and Morten has seen comparable life on the stock builds he ran before, 4.24-era
+  included. So the gap is neither the hardware nor the base: **it is our diff**, and the fix is an
+  optimisation hunt, not a rebase.
+- **#0b (now top) Something in our diff keeps the watch awake.** The 3.5–4× is far too large for
+  the pump link alone (#1, largely cleared) and larger than the advertising clamp can explain on a
+  good night (#2). The candidates that fit an always-on cost are: the watch never entering
+  stationary/low-power mode, a timer of ours running far more often than stock's, and the flash
+  writes our own logging generates. v44 prints all three hourly (`hb task`, `hb sys`), so the next
+  spike night should name the culprit rather than narrow the field.
 - **#1 The pump link's connection parameters** (125 ms, slave latency 0, 3000 ms supervision,
   never negotiated because every param-update consumer in `bt_conn_mgr.c` is on the phone path).
   **Largely cleared as the main cost** by the control night, and both levers for it are
@@ -279,34 +315,26 @@ what the watch was doing** — so precision is not the thing to improve, experim
 
 ## Remaining experiments
 
-Ordered by information per unit of effort. None of them needs new firmware instrumentation — the
-watch already records everything (see "Measuring drain").
+Ordered by information per unit of effort. The baseline question is answered; what is left is
+finding which part of our diff costs the 3.5–4×.
 
-0. **One zero-cost thing to do alongside whatever else runs:** leave the app's battery feature on
+1. **A v44 night, charged to 80%, matching the stock night exactly.** Same band, same anchor (the
+   79% step), phone connected, glucose watchface in front. Gives both a matched drain number and
+   the hourly `hb` lines. Read `hb sys stat` first: if stationary seconds are near zero while
+   stock would have been in stationary all night, that is the answer on its own.
+2. **Then bisect our diff against whatever the lines implicate.** The three shapes to expect:
+   never entering stationary/low-power mode (`hb sys stat`/`lowp`), a task of ours running
+   constantly (`hb task main`/`bg`/`tmr`), or our own logging writing flash all night
+   (`hb sys flashw`/`flashe` — 2688 pump-read lines in a day is not free).
+3. **Outage-mode advertising (#2 lever).** Cheap to build, but only pays off on bad nights — decide
+   with real numbers on how often all-night outages actually happen once `hb ble advs` has
+   reported a few nights.
+4. **NORMAL vs SPIKE over matched SoC ranges**, if the pump link is still implicated after the
+   above. Both ≥8 h from the same start percentage, read off the `hb` lines rather than the 1%
+   steps.
+5. **One zero-cost thing to do alongside whatever else runs:** leave the app's battery feature on
    and check after the next SPIKE stretch whether its graph backfills the gap — settles the one
-   open question the firmware can't answer. (The other item here, the heartbeat decoder, was done
-   differently in v43 — see instrument 1b.)
-1. **A night on stock 4.31.1** (Morten has offered, and the app is already prompting to update).
-   Decides #0 outright. If stock is ~0.15 %/h then the whole gap is ours to fix; if stock is also
-   ~0.6 %/h the gap was never ours. Cost: reflashing the spike afterwards — which since v36 costs
-   zero pairings, so this is cheap now. Three cautions: **start the night at ~90% SoC** so it
-   covers the 89 → 83% band where we have a matched spike number (0.57 %/h) — a stock night in a
-   different band cannot be compared to anything; dump `-g 0` **before** updating; and stock will
-   not have the spike's dict, so read its lines with `build/pebbleos_loghash_dict.json`.
-2. **If stock 4.31.1 is good: a night on stock 4.24** (or just diff the two upstream trees for the
-   wakeup change). Separates "upstream fixed it in 4.25–4.31" from "our diff". The former means
-   rebase; the latter means bisect our own commits.
-3. **NORMAL vs SPIKE over matched SoC ranges.** Repeat the control against a pump night that
-   *starts at the same percentage*, both ≥8 h, to find out whether the 0.96 vs 0.65 split is real
-   or an artifact of the model nonlinearity. This is below the resolving power of the 1%-step method
-   (see accuracy), so do it on v43 with the hourly `hb` lines or not at all. Only worth doing if
-   #1/#2 leave the pump link implicated.
-4. **Outage-mode advertising (#2 lever).** Cheap to build, but only pays off on bad nights — hold
-   until the baseline question is settled, then decide with real numbers on how often all-night
-   outages actually happen.
-5. **Idle-wakeup audit of our own code**, if #1/#2 point at our diff: what runs on a timer in
-   SPIKE with no pump connected, and how often does the KernelBG/stationary service actually let
-   the CPU sleep. Do this last — it is the most work and the least guided.
+   open question the firmware can't answer.
 
-Not on the list any more: NOS Observation Mode (nothing to win), `ble_gap_update_params`
-(mechanism refused by the pump).
+Not on the list any more: a night on stock 4.24 (the base is exonerated — see #0), NOS Observation
+Mode (nothing to win), `ble_gap_update_params` (mechanism refused by the pump).
