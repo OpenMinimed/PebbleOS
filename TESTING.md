@@ -1,7 +1,7 @@
 # On-Watch SAKE Spike — Build, Flash & Test
 
 The streamlined loop for iterating on the spike firmware. See `PROGRESS.md` for status/code map,
-`HISTORY.md` for the dev history.
+`VERSIONS.md` for the build and dev history.
 
 ## Build + deploy (one command)
 
