@@ -5,6 +5,39 @@ holds the launch-crash saga (currently dormant) and the launch-gap gotcha behind
 architecture is in `PROGRESS.md`; the wire format is
 `../pebble-glucose-watchface/docs/PEBBLE_GLUCOSE_PROTOCOL.md`.
 
+## The "failed screen" is usually an app FETCH failure, not a crash (root-caused 2026-08-03)
+
+**Symptom:** launching the watchface shows a progress bar (it normally launches with no visible
+bar at all), then the Pebble failure screen. In NORMAL it launches fine; in SPIKE it does not.
+
+**Cause:** the progress bar is the app-*fetch* UI (`app_fetch_ui.c`). The watchface binary was not
+resident on the watch, so launching it made the watch ask the phone to send it — and SPIKE has no
+phone. The log is unambiguous:
+
+    Sent request for app with uuid: {567a3f6e-…} and app_id: 41   (app_fetch_endpoint/service.c:269)
+    Put bytes failure                                             (…:166)
+    App Fetch: prv_app_fetch_failure: 6                           (app_fetch_ui.c:182)
+    Default watchface fetch failed, setting INVALID as default     (app_fetch_ui.c:193)
+
+The binary stops being resident after a **firmware flash**, and after the phone runs an **AppDB
+flush** (`app_db.c:383` `AppDB Flush initiated`) — a full app re-sync, which is what the phone does
+when the firmware changes. App *metadata* survives (`Found 2 apps. Next ID: 41`), so the launcher
+still lists the watchface; only the binary is missing.
+
+**So, after every flash: launch the watchface once in NORMAL, with the phone connected, before
+toggling to SPIKE.** That fetches and caches the binary and SPIKE works from then on. This is the
+same "workaround" that seemed to fix the 2026-07-26 crash — because it was never a workaround, it
+was the fix.
+
+**Grep for it before assuming a crash:** a real crash logs `Watchface crashed (id=…)`
+(`app_manager.c:502`) and the fault handler logs `PC:`/`LR:` (`fault_handling.c:105-108`). If those
+are absent and `app_fetch` errors are present, it is this, and no code is at fault.
+
+**The v34/v35 "launch crash" below was probably this all along** — unproven, since those log
+generations are gone, but everything fits: it appeared right after flashes, every audit of the
+watchface came up clean, the emulator could never reproduce it, and it went dormant on v36, which
+is when the app would have been fetched once with a phone attached and stayed resident.
+
 ## Gotcha: the on-watch sender crashes an under-hardened watchface on launch (FIXED 2026-07-23)
 
   local sender injects a BG AppMessage with ~zero latency (loopback), unlike a phone whose reply
