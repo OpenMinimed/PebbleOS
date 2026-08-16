@@ -328,6 +328,15 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    Numbers, method, confounds and remaining experiments: [`BATTERY.md`](BATTERY.md).
 7. **Phone-bond papercut** (re-pair dance between test cycles) — see
    [`CONNECTIVITY.md`](CONNECTIVITY.md).
+9. **Retire the "spike" terminology (queued cleanup, agreed 2026-08-16).** The feasibility
+   question was answered around v20; this is the product now, and "SPIKE mode" actively misleads
+   — the toggle means "pump holds the BLE slot" vs "phone holds it", nothing about feasibility.
+   Cheap now: the SPIKE/NORMAL mode labels (→ e.g. PUMP/PHONE) and the "SAKE Spike" app title.
+   Defer the plumbing (`CONFIG_MINIMED_SAKE_SPIKE`, `spike-build.sh`, `sake-spike-vN` bundle
+   names, "spike" through the docs) to a natural boundary — the upstream-isolation cleanup or
+   the library factoring — since renaming mid-flight breaks grep-continuity with the dev log and
+   the loghash dicts are keyed to old bundle names. Do NOT touch `minimed_sake_build_adv`'s
+   advertised name bytes (load-bearing, see the v34/v35 lesson).
 8. ✅ **Full phone+pump bond coexistence — DONE, HW-VERIFIED 2026-07-26 (v36).** A flash now costs
    zero pairings. Detail in [`CONNECTIVITY.md`](CONNECTIVITY.md).
 
