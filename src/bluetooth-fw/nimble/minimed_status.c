@@ -225,8 +225,10 @@ bool minimed_status_compose(uint32_t now, char *out, uint16_t cap) {
       break;
     case LABEL_NORMAL: out[0] = '\0'; break;
     case LABEL_LOAD_RESERVOIR: snprintf(out, cap, "LOAD RESERVOIR"); break;
-    case LABEL_SG_LOW: snprintf(out, cap, "LOW"); break;
-    case LABEL_SG_HIGH: snprintf(out, cap, "HIGH"); break;
+    // Off-scale SG: the BG number shows LO/HI (like the pump), so a band would only repeat it
+    // and cover the graph's low/high region.
+    case LABEL_SG_LOW: out[0] = '\0'; break;
+    case LABEL_SG_HIGH: out[0] = '\0'; break;
     case LABEL_SENSOR_UPDATING: snprintf(out, cap, "SENSOR UPDATING"); break;
     case LABEL_SEARCHING: snprintf(out, cap, "SEARCHING"); break;
     case LABEL_NO_SIGNAL: snprintf(out, cap, "NO SIGNAL"); break;
@@ -248,6 +250,9 @@ bool minimed_status_ticking(void) {
 }
 
 bool minimed_status_bg_invalid(void) { return s_bg_invalid; }
+
+bool minimed_status_sg_below(void) { return s_label == LABEL_SG_LOW; }
+bool minimed_status_sg_above(void) { return s_label == LABEL_SG_HIGH; }
 
 void minimed_status_reset(void) {
   s_label = LABEL_UNSET;

@@ -519,12 +519,24 @@ static void section_status(void) {
   minimed_status_update(&lost, &tas, 3000);
   check("GST signal lost means BG invalid", minimed_status_bg_invalid());
 
-  // SG off-scale beats the sensor-family labels.
+  // SG off-scale: no band (the BG shows LO/HI instead, so the band would only cover the graph);
+  // the accessors report which side; BG stays valid so LO/HI isn't blanked to "---".
   MinimedIddStatus low = st;
   low.sensor_msg = 0x09;  // SG_BELOW_LOWER_LIMIT
   minimed_status_update(&low, &tas, 3100);
   minimed_status_compose(3100, out, sizeof(out));
-  check("SG below lower limit -> LOW", strcmp(out, "LOW") == 0);
+  check("SG below composes to empty", out[0] == '\0');
+  check("SG below reported", minimed_status_sg_below() && !minimed_status_sg_above());
+  check("SG below keeps BG valid", !minimed_status_bg_invalid());
+  MinimedIddStatus high = st;
+  high.sensor_msg = 0x0A;  // SG_ABOVE_UPPER_LIMIT
+  minimed_status_update(&high, &tas, 3200);
+  minimed_status_compose(3200, out, sizeof(out));
+  check("SG above composes to empty", out[0] == '\0');
+  check("SG above reported", minimed_status_sg_above() && !minimed_status_sg_below());
+  minimed_status_update(&st, &tas, 3300);
+  check("off-scale clears on return to normal",
+        !minimed_status_sg_below() && !minimed_status_sg_above());
 
   // Temp target: restamped from the pump's live minutes each read; counts down.
   minimed_status_reset();
