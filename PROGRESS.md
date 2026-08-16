@@ -40,6 +40,10 @@ how to build and test, the code map, and what is left. Topic detail lives in its
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
+- **v45 BUILT 2026-08-16, awaiting flash** (`build/sake-spike-v45-sg-markers.pbz`): 0 mg/dL CGM
+  records are markers, not readings — off-scale shows LO/HI (band dropped), other sensor states
+  let the BG go stale instead of showing 0.0 / graphing a 0-cliff. HW checklist in the
+  VERSIONS.md v45 entry (a CHANGE SENSOR state is live right now — good first test).
 - **ON THE WATCH NOW: v41 pump status — HW-VERIFIED 2026-07-28, 23 h soak**
   (`build/sake-spike-v41-pump-status.pbz`). Full bridge mirror on the watchface: BG + IOB +
   status band (suspend/temp-target/warm-up countdowns, BG "---" blanking) — details in the

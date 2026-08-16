@@ -5,6 +5,32 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v45 (2026-08-16, BUILT, awaiting flash; `build/sake-spike-v45-sg-markers.pbz`, pushed to phone
+  Download): **0 mg/dL marker handling** — fixes the false "0.0" BG + 0-point graph cliff seen
+  on HW 2026-08-16 during SG-below-range (09:15, msg=09) and "sensor updating" (18:10, msg=02).
+  Root cause: those states deliver plain 0 mg/dL CGM records with advancing time offsets (not
+  the SFLOAT sentinels), so they counted as real new readings (now in
+  `../Documentation/cgm-service.md`). New behavior: 0 mg/dL is a marker, never shown or graphed
+  as a number. Off-scale (msg=09/0x0A) shows **LO**/**HI** as the BG with a fresh timestamp,
+  graphs at the scale edge (50/400 mg/dL = 2.8/22.2), and the LOW/HIGH status band is gone (it
+  only repeated the BG and covered the graph). Any other state skips the record entirely — BG
+  goes stale with a climbing age and the band explains why; this also closes the hole where a
+  *new* 0-record bypassed the `bg_invalid` "---" blanking (e.g. during CHANGE SENSOR). HI is an
+  assumption (no HIGH capture yet — pump may send 0 or a real 400+); every new 0-or-≥400 record
+  flash-logs `SAKE: CGM edge rec ... side=N` so a future capture can correct it. Onset race:
+  the CGM read runs before the status read on the same push, so the first off-scale record can
+  lag one cycle (≤5 min, skipped-not-zero) before LO/HI appears. New host checks for the
+  off-scale accessors/empty band (94/94). Changes: `minimed_sake_read.c` (marker branch +
+  SG_FLOOR/CEILING), `minimed_status.{c,h}` (`minimed_status_sg_below/above()`, LOW/HIGH compose
+  to ""), tests, docs.
+  **HW checklist:**
+  1. Flash, SPIKE while the pump shows a sensor state (CHANGE SENSOR now): band shows the state,
+     BG stays stale/`---` — no 0.0, no new graph points, `SG: 0 marker, skip` in the ring and
+     `SAKE: CGM edge rec ... side=0` in flash (if 0-records still flow in this state).
+  2. Next real LOW: BG shows `LO` fresh-stamped, graph hugs the bottom at 2.8, no LOW band,
+     flash has `CGM edge rec ... side=1`.
+  3. Someday HIGH: check flash `CGM edge rec` lines to confirm or correct the 0-assumption.
+  Fallback: reflash v44 (heartbeat logging, pre-marker behavior).
 - v41 (2026-07-27, **ON THE WATCH, HW-VERIFIED 2026-07-28 — all three checklist items passed in a
   23 h soak**; `build/sake-spike-v41-pump-status.pbz`): **pump status on the watchface — the full
   bridge mirror** (remaining-work item 3). Soak evidence (flash dump, 1398 pushes, zero
