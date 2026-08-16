@@ -5,6 +5,20 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v46 **HW-VERIFIED 2026-08-16 through a full sensor change** (19:52 CHANGE SENSOR → transmitter
+  charge → 20:18 warm-up → 22:16:56 first reading, 155 mg/dL at offset 120 = warm-up estimate
+  right again at 1 h 59 m). v45 marker fix verified: the CHANGE SENSOR 0-record with a fresh
+  offset was skipped (`CGM edge rec 0e c3 00 00 bc 20 side=0`), no 0.0, no graph point. Capture
+  findings (now in `../Documentation/cgm-service.md`): **zero SFLOAT sentinels the whole arc** —
+  change-sensor and all of warm-up send plain 0 mg/dL records, new-session offsets restart near
+  zero, and no records flow while the transmitter charges; so the sentinel branch
+  (`SG: no value`) may be dead code on the 780G. Sensor Connectivity showed an undocumented
+  **bit 3** (conn 0x0b right after removal — signal-lost bit 2 only joined ~6 min later, 0x0f —
+  cleared at reconnect); this change was a sensor-death one and Morten was slow to swap, so the
+  pump fell out of SmartGuard (shield=03 throughout, BG REQUIRED + fingerstick after warm-up) —
+  bit 3 may relate to that, unconfirmed. Push bits at the transitions: removal 22+21, reconnect
+  22 alone, warm-up start 21, then 20/27 minutes later and 26 only at first readings — order of
+  20/26/27 differs from the bridge-era capture; 25/30 still never fired.
 - v46 (2026-08-16, BUILT for the sensor-change capture; `build/sake-spike-v46-sensor-change-capture.pbz`,
   pushed to phone Download — flash this instead of v45, it contains it): two flash mirrors in
   `prv_parse_and_show` so a dump can verify the Documentation `sensor-change` branch claims:
