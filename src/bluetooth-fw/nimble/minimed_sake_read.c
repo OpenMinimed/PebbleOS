@@ -196,6 +196,10 @@ static void prv_parse_and_show(void) {
     // an hours-old timestamp.
     s_have_offset = false;
     minimed_sake_log("SG: no value (warmup?)");
+    // Raw bytes to flash: which sentinel the pump uses (and that records flow at all) during
+    // warm-up / transmitter charging is undocumented.
+    PBL_LOG_INFO("SAKE: CGM sentinel rec %02x %02x %02x %02x %02x %02x",
+                 s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5]);
     return;
   }
   const uint16_t offset = (uint16_t)(s_rec[4] | (s_rec[5] << 8));
@@ -249,6 +253,9 @@ static void prv_parse_and_show(void) {
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
              (long)(tenths % 10));
+    // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor
+    // state, and at what offset, is otherwise invisible in a dump.
+    PBL_LOG_INFO("SAKE: BG new %ld mg/dL offset=%u", (long)mgdl, (unsigned)offset);
   } else {
     // Same reading re-polled. Worth a line so the log still shows the link is alive, and the age
     // makes a stalled sensor obvious instead of looking like fresh data. Clamp at 0 rather than

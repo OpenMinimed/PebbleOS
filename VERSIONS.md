@@ -5,6 +5,13 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v46 (2026-08-16, BUILT for the sensor-change capture; `build/sake-spike-v46-sensor-change-capture.pbz`,
+  pushed to phone Download — flash this instead of v45, it contains it): two flash mirrors in
+  `prv_parse_and_show` so a dump can verify the Documentation `sensor-change` branch claims:
+  `SAKE: BG new <N> mg/dL offset=<M>` on every genuinely new reading (when readings resume after
+  warm-up, previously ring-only), and `SAKE: CGM sentinel rec ...` raw bytes when the record
+  decodes to an SFLOAT sentinel (which sentinel warm-up/charging uses is undocumented; also shows
+  whether records flow at all while the transmitter charges). No behavior change over v45.
 - v45 (2026-08-16, BUILT, awaiting flash; `build/sake-spike-v45-sg-markers.pbz`, pushed to phone
   Download): **0 mg/dL marker handling** — fixes the false "0.0" BG + 0-point graph cliff seen
   on HW 2026-08-16 during SG-below-range (09:15, msg=09) and "sensor updating" (18:10, msg=02).
