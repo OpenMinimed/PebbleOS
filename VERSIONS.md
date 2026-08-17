@@ -5,6 +5,26 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v48 (2026-08-17, BUILT, awaiting flash; `build/sake-spike-v48-pump-alerts.pbz`, adb push
+  pending): **pump alarms as native watch notifications.** On a 0x101 annunciation push (bit 3)
+  the watch reads the new IDD history records (IDD RACP 0x2A52 + History Data 0x108, both newly
+  discovered/subscribed), decodes Annunciation Consolidated (0xf010) events
+  (`minimed_annunciation.{c,h}`, pure + host-tested), maps the type code to a name
+  (PythonPumpConnector's AnnunciationType; unknown codes show "Pump alert 0xNNN"), and posts a
+  native notification (`minimed_alert_popup.{c,h}` → `notifications_add_notification`): popup,
+  vibe, notification list, watch-local dismiss. Raise-only (cleared events skipped); silenced
+  raises (event-flag bit 6, e.g. night mode) are skipped to mirror the pump's own alerting; dedup
+  per annunciation instance id. Baseline "report last record" per connection (never notifies), so
+  alarms raised while disconnected are dropped by design. Host tests 108/108.
+  HW checklist: (1) baseline line `SAKE: annunc baseline seq=N` after connect; (2) trigger an
+  alert (easiest: a Personal Reminder on the pump, or wait for a real one) → notification pops
+  with the right name + `SAKE: annunc type=...` in flash logs; (3) no re-buzz when the same alarm
+  re-logs (status change/clear); (4) the catch-up RACP request uses an open-ended max seq
+  (33 5a 0f lo..ffffffff) — if the pump rejects it, expect `IDD RACP resp ...` in the ring log and
+  no notification: then the range needs a real upper bound (report-number-of-records first);
+  (5) a silenced-hours alert (night mode almost-low) should log `sil=1` and NOT notify — this also
+  verifies the ALERT_SILENCED bit on HW; (6) fragment framing: `bad hist rec` lines would mean the
+  ATT-MTU record-delimiting rule is wrong on this link.
 - v47 (2026-08-17, BUILT for tomorrow's reservoir-change capture;
   `build/sake-spike-v47-reservoir-battery.pbz`, adb push pending — phone was disconnected):
   two logging additions to verify Documentation PRs #1 and #2, no behavior change.

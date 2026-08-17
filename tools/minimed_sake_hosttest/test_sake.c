@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "minimed_annunciation.h"
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_aes.h"
 #include "minimed_graph.h"
@@ -579,6 +580,77 @@ static void section_status(void) {
   printf("\n");
 }
 
+// --- Section 8: pump annunciations (history record parse + name table) ---
+// Record layout and the consolidated-event fields follow PythonPumpConnector history/data.py
+// (AnnunciationData); vectors are synthetic per that format. The one field-confirmed code is
+// 0x054 = insert battery (bridge capture 2026-07-20, status=0x0f while raised).
+
+static void section_annunciation(void) {
+  printf("--- annunciations ---\n");
+  MinimedAnnunciation a;
+
+  // Consolidated LOW_SG_SUSPEND_ALERT (raw type 0xf323): header(8) + flags/id/type/status/
+  // timestamp(10) + aux sg+time(4). Flags 0x0f = auxinfo1-4 present, not silenced.
+  const uint8_t low_sg[] = {0x10, 0xf0, 0x40, 0xe2, 0x01, 0x00, 0x58, 0x02,
+                            0x0f, 0x42, 0x00, 0x23, 0xf3, 0x33, 0x78, 0x56,
+                            0x34, 0x12, 0x2c, 0x01, 0x05, 0x02};
+  check("consolidated parses",
+        minimed_annunciation_parse_record(low_sg, sizeof(low_sg), &a) == MinimedAnnuncRecordYes);
+  check("consolidated fields", a.seq == 123456 && a.type == 0x323 && a.id == 0x42 &&
+        a.status == 0x33 && !a.silenced);
+
+  // Silenced INSERT_BATTERY_ALERT (flags bit 6), no aux beyond the timestamp, len exactly 18.
+  const uint8_t silenced[] = {0x10, 0xf0, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x43, 0x07, 0x00, 0x54, 0xf0, 0x0f, 0x00, 0x00, 0x00, 0x00};
+  check("silenced flag decoded",
+        minimed_annunciation_parse_record(silenced, sizeof(silenced), &a) ==
+            MinimedAnnuncRecordYes && a.type == 0x054 && a.status == 0x0f && a.silenced);
+
+  // Minimum-length consolidated: complete through the status byte (14 bytes), timestamp absent.
+  const uint8_t min_len[] = {0x10, 0xf0, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
+                             0x03, 0x01, 0x00, 0x54, 0xf0, 0x33};
+  check("14-byte consolidated parses",
+        minimed_annunciation_parse_record(min_len, sizeof(min_len), &a) ==
+            MinimedAnnuncRecordYes && a.seq == 5 && a.type == 0x054);
+  check("13 bytes is bad",
+        minimed_annunciation_parse_record(min_len, 13, &a) == MinimedAnnuncRecordBad);
+  check("bad still yields seq", a.seq == 5);
+
+  // Another event type (SG Measurement 0xf00c): skipped, but its seq still advances the cursor.
+  const uint8_t sg_meas[] = {0x0c, 0xf0, 0x99, 0x00, 0x00, 0x00, 0x00, 0x00,
+                             0x05, 0x00, 0x7a, 0x00, 0xff, 0x03, 0x01, 0x00};
+  check("other event type is Other",
+        minimed_annunciation_parse_record(sg_meas, sizeof(sg_meas), &a) ==
+            MinimedAnnuncRecordOther && a.seq == 0x99);
+
+  // Annunciation Cleared (0xf00f) is deliberately Other: raise-only notifications.
+  const uint8_t cleared[] = {0x0f, 0xf0, 0x9a, 0x00, 0x00, 0x00, 0x00, 0x00,
+                             0x54, 0xf0, 0x07, 0x00};
+  check("cleared event is Other",
+        minimed_annunciation_parse_record(cleared, sizeof(cleared), &a) ==
+            MinimedAnnuncRecordOther && a.seq == 0x9a);
+
+  // Consolidated whose type field lacks the 0xf000 nibble: misaligned/garbled, rejected.
+  const uint8_t bad_nibble[] = {0x10, 0xf0, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                0x03, 0x01, 0x00, 0x54, 0x00, 0x33, 0x00, 0x00, 0x00, 0x00};
+  check("type without 0xf000 nibble is bad",
+        minimed_annunciation_parse_record(bad_nibble, sizeof(bad_nibble), &a) ==
+            MinimedAnnuncRecordBad);
+
+  check("shorter than a header is bad",
+        minimed_annunciation_parse_record(low_sg, 7, &a) == MinimedAnnuncRecordBad);
+
+  // Name table: the field-confirmed code, the one alert Morten cares most about, and a resume.
+  check("0x054 named", minimed_annunciation_name(0x054) != NULL &&
+        strcmp(minimed_annunciation_name(0x054), "Insert battery") == 0);
+  check("0x323 named", minimed_annunciation_name(0x323) != NULL &&
+        strcmp(minimed_annunciation_name(0x323), "Low SG suspend") == 0);
+  check("0x33b named", minimed_annunciation_name(0x33b) != NULL &&
+        strcmp(minimed_annunciation_name(0x33b), "Severe low SG") == 0);
+  check("unknown code has no name", minimed_annunciation_name(0x999) == NULL);
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -588,6 +660,7 @@ int main(void) {
   section_graph();
   section_idd_flags();
   section_status();
+  section_annunciation();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

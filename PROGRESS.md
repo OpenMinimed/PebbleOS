@@ -40,6 +40,9 @@ how to build and test, the code map, and what is left. Topic detail lives in its
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
+- **v48 BUILT 2026-08-17, awaiting flash** (`build/sake-spike-v48-pump-alerts.pbz`): pump
+  alarms as native watch notifications (annunciations via IDD history reads on the 0x101
+  annunciation bit; raise-only, silenced skipped). HW checklist in the VERSIONS.md v48 entry.
 - **v45 BUILT 2026-08-16, awaiting flash** (`build/sake-spike-v45-sg-markers.pbz`): 0 mg/dL CGM
   records are markers, not readings — off-scale shows LO/HI (band dropped), other sensor states
   let the BG go stale instead of showing 0.0 / graphing a 0-cliff. HW checklist in the
@@ -157,6 +160,14 @@ New files (all spike-only via wscript/ifdef):
     parse_response` → `send_iob`. NO byte-0 length prefix (unlike CGM). All IDD-discovery failures
     fall back to BG-only polling (`s_h_srcp==0`). Shared inbound `client_crypt` stays in sync
     because CGM→IOB is serialized per poll.
+- `minimed_annunciation.{c,h}` — **pure** decode of IDD History Data records for pump
+  annunciations (alarms/alerts): record header + Annunciation Consolidated (0xf010) fields
+  (type/id/status/silenced) + the type→name table (from PythonPumpConnector AnnunciationType).
+  Host-tested. The BLE side lives in `minimed_sake_read.c` (v48): IDD RACP 0x2A52 + History
+  Data 0x108 subscription, per-connection "last record" baseline, 0x101-bit-3-triggered
+  catch-up reads, dedup by instance id; notifications via `src/fw/popups/minimed_alert_popup.{c,h}`
+  (BT task → KernelMain → `notifications_add_notification`, native popup/vibe, raise-only,
+  silenced raises skipped).
 - `minimed_sake_sender.c` — the **watchface local-sender**: loopback CommSession (QEMU-transport
   pattern) opened in SPIKE mode only (would compete with the real phone session in NORMAL);
   injects `[PP hdr 0x0030][CMD_PUSH][watchface UUID][dict: key 10 ts, key 11 BG "N.N", key 14 IOB

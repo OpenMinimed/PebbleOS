@@ -13,8 +13,10 @@
 #include "nimble/nimble_port.h"
 
 #include "drivers/rtc.h"
+#include "minimed_annunciation.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
+#include "popups/minimed_alert_popup.h"
 #include "minimed_sake_sender.h"
 #include "minimed_status.h"
 #include "minimed_sake_service.h"
@@ -55,6 +57,13 @@ static const ble_uuid128_t s_idd_status_changed_uuid =
 static const ble_uuid128_t s_idd_status_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00);
+// IDD History Data 0x108 (notify, SAKE-encrypted per fragment): the event log, read via the IDD
+// service's own RACP (SIG 0x2A52, plaintext, write + indicate). Used for pump annunciations
+// (alarms/alerts): the 0x101 annunciation bit only says "changed"; the reason lives here as
+// Annunciation Consolidated records (minimed_annunciation.{c,h}).
+static const ble_uuid128_t s_idd_hist_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x08, 0x01, 0x00, 0x00);
 
 // SRCP "Get Insulin On Board" request: little-endian opcode 0x03F3. NOT E2E-CRC-wrapped -- the
 // 780G leaves E2E protection off for the IDD service (Documentation/idd-service.md), matching the
@@ -96,6 +105,7 @@ static struct ble_npl_callout s_poll_co;
 #define PEND_RESET 0x04
 #define PEND_STATUS 0x08
 #define PEND_TAS 0x10
+#define PEND_ANNUNC 0x20
 static uint8_t s_pending;
 static uint8_t s_op;
 static uint64_t s_reset_flags;  // union of received 0x101 flags awaiting a Reset Status write
@@ -130,6 +140,8 @@ static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
 static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
                                   struct ble_gatt_attr *attr, void *arg);
+static int prv_idd_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                 struct ble_gatt_attr *attr, void *arg);
 
 static uint16_t s_conn;
 static uint16_t s_cgm_start, s_cgm_end;
@@ -137,6 +149,7 @@ static uint16_t s_h_measurement, s_h_feature, s_h_racp;
 static uint16_t s_idd_start, s_idd_end, s_h_srcp;
 static uint16_t s_h_status_changed;
 static uint16_t s_h_idd_status;
+static uint16_t s_h_idd_racp, s_h_hist;
 
 // Latest parsed status pair, one-shot per read cycle: invalidated after each publish so a failed
 // read next cycle is not papered over with the previous cycle's fields (mirrors the bridge
@@ -161,6 +174,29 @@ static uint8_t s_rec_len;
 // 780G, complete once the 7-byte mandatory prefix is present.
 static uint8_t s_srcp[24];
 static uint8_t s_srcp_len;
+
+// Reassembly buffer for one (decrypted) IDD History Data record. Records have no length prefix;
+// the pump fills notifications to the ATT cap, so a fragment shorter than ATT_MTU-3 on the wire
+// ends the record (the bridge's reassembler rule), with a flush at the RACP terminal indication
+// covering a record that is an exact multiple of the fragment size.
+static uint8_t s_hist[64];
+static uint8_t s_hist_len;
+
+// Annunciation cursor. s_annunc_seq is the newest history sequence number already processed;
+// reads ask for everything after it. Re-baselined per connection via a "report last record"
+// exchange that never notifies -- alarms raised while disconnected are deliberately dropped (the
+// pump alarms audibly; the watch only mirrors alarms it is connected for). s_annunc_baseline
+// marks the in-flight exchange as that baseline read.
+static uint32_t s_annunc_seq;
+static bool s_annunc_have;      // baseline done; catch-up reads may notify
+static bool s_annunc_baseline;  // the in-flight PEND_ANNUNC exchange is the baseline read
+static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
+
+// Recently notified annunciation instance ids: the same annunciation can be re-logged with an
+// updated status (semantics not fully characterised), and a raise must buzz exactly once.
+// 0xFFFF = empty slot. Deliberately survives reconnects.
+static uint16_t s_annunc_ids[8] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
+static uint8_t s_annunc_ids_next;
 
 // Distinguishes a genuinely new sensor reading from a re-poll of the same one. The CGM record's
 // Time Offset (bytes 4-5, minutes since session start) is the only new-reading signal available --
@@ -313,6 +349,51 @@ static void prv_parse_iob(void) {
   minimed_sake_sender_send_iob(iob_str);  // forward to the watchface (no-op if it isn't running)
 }
 
+static bool prv_annunc_already_notified(uint16_t id) {
+  const size_t n = sizeof(s_annunc_ids) / sizeof(s_annunc_ids[0]);
+  for (size_t i = 0; i < n; i++) {
+    if (s_annunc_ids[i] == id) return true;
+  }
+  s_annunc_ids[s_annunc_ids_next++ % n] = id;
+  return false;
+}
+
+// One reassembled history record is complete: advance the cursor, and post a notification for a
+// new, un-silenced annunciation raise (never during the baseline read).
+static void prv_annunc_record_done(void) {
+  MinimedAnnunciation a;
+  const MinimedAnnuncRecord r = minimed_annunciation_parse_record(s_hist, s_hist_len, &a);
+  const uint8_t rec_len = s_hist_len;
+  s_hist_len = 0;
+  if (r == MinimedAnnuncRecordBad) {
+    PBL_LOG_INFO("SAKE: bad hist rec len=%u %02x %02x %02x %02x", (unsigned)rec_len, s_hist[0],
+                 s_hist[1], s_hist[2], s_hist[3]);
+    return;
+  }
+  s_annunc_seen = true;
+  if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
+  if (r != MinimedAnnuncRecordYes) return;
+
+  // Every annunciation to flash, notified or not: this is also the field log that grows the
+  // code/status catalog (docs/PUMP-DATA.md table).
+  PBL_LOG_INFO("SAKE: annunc type=0x%03x id=%u status=0x%02x sil=%d seq=%lu base=%d",
+               (unsigned)a.type, (unsigned)a.id, (unsigned)a.status, (int)a.silenced,
+               (unsigned long)a.seq, (int)s_annunc_baseline);
+  if (s_annunc_baseline) return;
+  if (a.silenced) return;  // the pump raised it quietly (alert settings); mirror that choice
+  if (prv_annunc_already_notified(a.id)) return;
+
+  char text[28];
+  const char *name = minimed_annunciation_name(a.type);
+  if (name != NULL) {
+    snprintf(text, sizeof(text), "%s", name);
+  } else {
+    snprintf(text, sizeof(text), "Pump alert 0x%03x", (unsigned)a.type);
+  }
+  minimed_sake_log(text);
+  minimed_alert_popup_push(text);
+}
+
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
 bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len) {
   if (s_h_measurement != 0 && attr_handle == s_h_measurement) {
@@ -365,6 +446,12 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       // Suspend/resume or SmartGuard/temp-target changed: re-read the status pair (bridge bits).
       req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
     }
+    if (s_h_idd_racp != 0 && s_h_hist != 0 &&
+        ((flags & MINIMED_IDD_FLAG_ANNUNCIATION) || !s_annunc_have)) {
+      // An alarm was raised or cleared: read the history records behind it. Until the baseline
+      // read has succeeded, any push doubles as a retry of it.
+      req |= PEND_ANNUNC;
+    }
     if (s_h_srcp != 0) {
       if (flags & MINIMED_IDD_FLAG_IOB) req |= PEND_IOB;
       s_reset_flags |= flags;
@@ -399,6 +486,51 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
         // A completed CGM exchange also proves the link; keep the dead-man from re-firing
         // right after a fallback-driven poll.
         ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(FALLBACK_AFTER_SECS * 1000));
+      }
+      prv_op_complete();
+    }
+    return true;
+  }
+  if (s_h_hist != 0 && attr_handle == s_h_hist) {
+    uint8_t plain[64];
+    uint16_t plain_len = 0;
+    if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
+      minimed_sake_log("hist decrypt failed");
+      return true;
+    }
+    if (s_hist_len + plain_len > sizeof(s_hist)) {
+      s_hist_len = 0;  // overflow guard; abandon this record
+    }
+    memcpy(s_hist + s_hist_len, plain, plain_len);
+    s_hist_len += plain_len;
+    // No length prefix: a wire fragment shorter than the ATT cap ends the record (the pump fills
+    // notifications to the cap; the bridge's reassembler uses the same rule). An exact-multiple
+    // record is flushed at the RACP terminal instead.
+    const uint16_t mtu = ble_att_mtu(s_conn);
+    const uint16_t att_max = (mtu > 3) ? (mtu - 3) : 20;
+    if (len < att_max) prv_annunc_record_done();
+    // A long catch-up read can outlive the 10 s op timer; each fragment is proof of progress.
+    if (s_op == PEND_ANNUNC) {
+      ble_npl_callout_reset(&s_op_timeout_co, ble_npl_time_ms_to_ticks32(OP_TIMEOUT_SECS * 1000));
+    }
+    return true;
+  }
+  if (s_h_idd_racp != 0 && attr_handle == s_h_idd_racp) {
+    // Plaintext terminal indication: 0f 0f 33 f0 = success, 0f 0f 33 06 = no records (an empty
+    // window is a clean result, not an error).
+    if (s_hist_len != 0) prv_annunc_record_done();  // exact-multiple flush
+    const bool ok = (len >= 4 && data[0] == 0x0F && data[2] == 0x33 &&
+                     (data[3] == 0xF0 || data[3] == 0x06));
+    if (!ok) {
+      char line[32];
+      snprintf(line, sizeof(line), "IDD RACP resp %02x%02x%02x%02x", len > 0 ? data[0] : 0,
+               len > 1 ? data[1] : 0, len > 2 ? data[2] : 0, len > 3 ? data[3] : 0);
+      minimed_sake_log(line);
+    }
+    if (s_op == PEND_ANNUNC) {
+      if (s_annunc_baseline && s_annunc_seen) {
+        s_annunc_have = true;
+        PBL_LOG_INFO("SAKE: annunc baseline seq=%lu", (unsigned long)s_annunc_seq);
       }
       prv_op_complete();
     }
@@ -466,6 +598,18 @@ static int prv_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
     // No terminating indication will come for a failed write; skip the exchange now rather
     // than stalling the serialiser until the op timeout.
     if (s_op == PEND_CGM) prv_op_complete();
+  }
+  return 0;
+}
+
+static int prv_idd_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                 struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    char line[32];
+    snprintf(line, sizeof(line), "IDD RACP wr err=0x%04x", (uint16_t)error->status);
+    minimed_sake_log(line);
+    // No terminating indication will come for a failed write; skip the exchange.
+    if (s_op == PEND_ANNUNC) prv_op_complete();
   }
   return 0;
 }
@@ -564,6 +708,35 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
       prv_op_complete();
       return;
     }
+  } else if (s_pending & PEND_ANNUNC) {
+    s_pending &= ~PEND_ANNUNC;
+    s_op = PEND_ANNUNC;
+    s_hist_len = 0;
+    s_annunc_baseline = !s_annunc_have;
+    s_annunc_seen = false;
+    // IDD RACP is plaintext. Baseline: report last record (33 69 0f) to learn the newest
+    // sequence number. Catch-up: report within range (33 5a 0f + min/max u32 LE) from the
+    // cursor; the open-ended max is a HW question -- the terminal response will say if the
+    // pump insists on a real upper bound.
+    uint8_t req[11] = {0x33, 0x69, 0x0F};
+    uint16_t req_len = 3;
+    if (!s_annunc_baseline) {
+      req[1] = 0x5A;
+      const uint32_t lo = s_annunc_seq + 1;
+      req[3] = (uint8_t)lo;
+      req[4] = (uint8_t)(lo >> 8);
+      req[5] = (uint8_t)(lo >> 16);
+      req[6] = (uint8_t)(lo >> 24);
+      req[7] = req[8] = req[9] = req[10] = 0xFF;
+      req_len = 11;
+    }
+    int rc = ble_gattc_write_flat(s_conn, s_h_idd_racp, req, req_len, prv_idd_racp_write_cb, NULL);
+    if (rc != 0) {
+      snprintf(line, sizeof(line), "IDD RACP write rc=0x%04x", (uint16_t)rc);
+      minimed_sake_log(line);
+      prv_op_complete();
+      return;
+    }
   } else if (s_pending & PEND_IOB) {
     s_pending &= ~PEND_IOB;
     s_op = PEND_IOB;
@@ -651,6 +824,7 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
   const uint8_t op = s_op;
   s_rec_len = 0;
   s_srcp_len = 0;
+  s_hist_len = 0;
   s_op = 0;
   if (op == PEND_STATUS || op == PEND_TAS) {
     // The timed-out read stays invalid; publish whatever the pair's other half delivered.
@@ -664,7 +838,10 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
 // Everything a full poll reads, gated on the handles that were actually discovered.
 static uint8_t prv_full_poll_mask(void) {
   return PEND_CGM | (s_h_srcp != 0 ? (PEND_IOB | PEND_TAS) : 0) |
-         (s_h_idd_status != 0 ? PEND_STATUS : 0);
+         (s_h_idd_status != 0 ? PEND_STATUS : 0) |
+         // Annunciation baseline rides the poll until it succeeds; after that only 0x101
+         // annunciation pushes trigger reads.
+         (s_h_idd_racp != 0 && s_h_hist != 0 && !s_annunc_have ? PEND_ANNUNC : 0);
 }
 
 // read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE.
@@ -749,6 +926,54 @@ static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
   return 0;
 }
 
+// Annunciation subscriptions (IDD RACP indicate, then History Data notify), chained before
+// polling starts. Any failure zeroes both handles -- no alerts, BG/IOB/status unaffected.
+static void prv_annunc_give_up(const char *what, uint16_t code) {
+  char line[32];
+  snprintf(line, sizeof(line), "%s 0x%04x", what, code);
+  minimed_sake_log(line);
+  s_h_idd_racp = 0;
+  s_h_hist = 0;
+  prv_start_polling();
+}
+
+static int prv_sub_hist_cb(uint16_t conn, const struct ble_gatt_error *error,
+                           struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    prv_annunc_give_up("hist sub err", (uint16_t)error->status);
+    return 0;
+  }
+  prv_start_polling();
+  return 0;
+}
+
+static int prv_sub_idd_racp_cb(uint16_t conn, const struct ble_gatt_error *error,
+                               struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    prv_annunc_give_up("IDD RACP sub err", (uint16_t)error->status);
+    return 0;
+  }
+  static const uint8_t notify[] = {0x01, 0x00};
+  int rc = ble_gattc_write_flat(s_conn, s_h_hist + 1, notify, sizeof(notify), prv_sub_hist_cb,
+                                NULL);
+  if (rc != 0) prv_annunc_give_up("hist sub rc", (uint16_t)rc);
+  return 0;
+}
+
+static void prv_sub_annunc(void) {
+  if (s_h_idd_racp == 0 || s_h_hist == 0) {
+    s_h_idd_racp = 0;
+    s_h_hist = 0;
+    minimed_sake_log("no IDD RACP/hist chr");
+    prv_start_polling();
+    return;
+  }
+  static const uint8_t indicate[] = {0x02, 0x00};
+  int rc = ble_gattc_write_flat(s_conn, s_h_idd_racp + 1, indicate, sizeof(indicate),
+                                prv_sub_idd_racp_cb, NULL);
+  if (rc != 0) prv_annunc_give_up("IDD RACP sub rc", (uint16_t)rc);
+}
+
 static int prv_sub_srcp_cb(uint16_t conn, const struct ble_gatt_error *error,
                            struct ble_gatt_attr *attr, void *arg) {
   if (error->status != 0) {
@@ -757,7 +982,7 @@ static int prv_sub_srcp_cb(uint16_t conn, const struct ble_gatt_error *error,
     minimed_sake_log(line);
     s_h_srcp = 0;  // give up on IOB, keep BG
   }
-  prv_start_polling();
+  prv_sub_annunc();
   return 0;
 }
 
@@ -772,13 +997,18 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
       s_h_status_changed = chr->val_handle;  // subscribed after polling starts; see prv_start_polling
     } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_uuid.u) == 0) {
       s_h_idd_status = chr->val_handle;  // encrypted read; drives the watchface status line
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_hist_uuid.u) == 0) {
+      s_h_hist = chr->val_handle;
+    } else if (chr->uuid.u.type == BLE_UUID_TYPE_16 && ble_uuid_u16(&chr->uuid.u) == RACP_UUID) {
+      // The IDD service has its own RACP (same SIG 0x2A52 as the CGM one, different handle).
+      s_h_idd_racp = chr->val_handle;
     }
     return 0;
   }
   if (error->status == BLE_HS_EDONE) {
     if (s_h_srcp == 0) {
       minimed_sake_log("no IDD SRCP chr");
-      prv_start_polling();  // BG still works without IOB
+      prv_sub_annunc();  // BG still works without IOB
       return 0;
     }
     // Subscribe SRCP indications (CCCD = value handle + 1, same as RACP on this pump).
@@ -789,14 +1019,14 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
       snprintf(line, sizeof(line), "SRCP sub rc=0x%04x", (uint16_t)rc);
       minimed_sake_log(line);
       s_h_srcp = 0;
-      prv_start_polling();
+      prv_sub_annunc();
     }
     return 0;
   }
   snprintf(line, sizeof(line), "IDD chr disc err=0x%04x", (uint16_t)error->status);
   minimed_sake_log(line);
   s_h_srcp = 0;
-  prv_start_polling();
+  prv_sub_annunc();
   return 0;
 }
 
@@ -988,8 +1218,18 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_idd_start = s_idd_end = s_h_srcp = 0;
   s_h_status_changed = 0;  // re-discovered per connection; a stale handle could alias a new one
   s_h_idd_status = 0;
+  s_h_idd_racp = 0;
+  s_h_hist = 0;
   s_rec_len = 0;
   s_srcp_len = 0;
+  s_hist_len = 0;
+  // Annunciations re-baseline per connection: alarms raised while disconnected are dropped by
+  // design (the pump alarms audibly; the watch mirrors alarms it is connected for). The
+  // notified-ids ring deliberately survives, so a re-logged pre-reconnect alarm can't re-buzz.
+  s_annunc_have = false;
+  s_annunc_seq = 0;
+  s_annunc_baseline = false;
+  s_annunc_seen = false;
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
