@@ -110,6 +110,10 @@ static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating in
 // whole link long after this has cleanly skipped the lost exchange.
 #define OP_TIMEOUT_SECS 10
 
+// 780G sensor display range, 2.8-22.2 mmol/L. Off-scale readings graph at the edge they crossed.
+#define SG_FLOOR_MGDL 50
+#define SG_CEILING_MGDL 400
+
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
 static void prv_status_publish_if_done(uint8_t completed_op);
@@ -192,16 +196,56 @@ static void prv_parse_and_show(void) {
     // an hours-old timestamp.
     s_have_offset = false;
     minimed_sake_log("SG: no value (warmup?)");
+    // Raw bytes to flash: which sentinel the pump uses (and that records flow at all) during
+    // warm-up / transmitter charging is undocumented.
+    PBL_LOG_INFO("SAKE: CGM sentinel rec %02x %02x %02x %02x %02x %02x",
+                 s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5]);
     return;
   }
+  const uint16_t offset = (uint16_t)(s_rec[4] | (s_rec[5] << 8));
+  const bool is_new = (!s_have_offset || offset != s_last_offset);
+
+  if (mgdl == 0 || (is_new && mgdl >= SG_CEILING_MGDL)) {
+    // Raw-record capture for the still-uncharacterised off-scale encodings: 0 mg/dL confirmed on
+    // HW 2026-08-16 during SG-below and "sensor updating"; what SG-above sends is an assumption
+    // (0 like below?), so a real HIGH capture is what would correct the branch below.
+    // side: 0 = neither, 1 = SG below, 2 = SG above (max 7 conversions per PBL_LOG).
+    PBL_LOG_INFO("SAKE: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d",
+                 s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5],
+                 minimed_status_sg_below() ? 1 : (minimed_status_sg_above() ? 2 : 0));
+  }
+  if (mgdl == 0) {
+    // 0 mg/dL is a marker, not a reading: the pump sends it (with advancing time offsets) while
+    // the SG is off-scale or the sensor has no glucose ("sensor updating", ...). Never show it
+    // as a number and never graph it as 0.
+    const bool below = minimed_status_sg_below();
+    const bool above = minimed_status_sg_above();
+    if (!below && !above) {
+      // No glucose to show: leave the last BG aging, the status band explains why. The offset is
+      // deliberately NOT consumed, so if this is really an off-scale onset raced ahead of the
+      // status read, the same record is re-judged as new once the status catches up (<=1 cycle).
+      minimed_sake_log("SG: 0 marker, skip");
+      return;
+    }
+    // Off-scale: show LO/HI like the pump, graph at the scale edge that was crossed ("at or
+    // beyond"), timestamped fresh -- the sensor is reporting, just out of range.
+    if (is_new) {
+      s_last_offset = offset;
+      s_have_offset = true;
+      s_reading_ts = (uint32_t)rtc_get_time();
+      minimed_sake_sender_add_graph_point(s_reading_ts, below ? SG_FLOOR_MGDL : SG_CEILING_MGDL);
+    }
+    minimed_sake_log(below ? "*** BG LO ***" : "*** BG HI ***");
+    minimed_sake_sender_send_bg(below ? "LO" : "HI", s_reading_ts);
+    return;
+  }
+
   // mg/dL -> mmol/L to one decimal, rounded. Uses 18.0182 (not the textbook 18.0156): the bridge's
   // GlucoseFormat picked this constant specifically so the rounded value matches the Medtronic
   // pump's own display (differs at rounding boundaries, e.g. 100 mg/dL -> 5.5, not 5.6). Scaled
   // integer math (no float printf on the watch); +90091 = 180182/2 for round-half-up.
   int32_t tenths = (mgdl * 100000 + 90091) / 180182;
 
-  const uint16_t offset = (uint16_t)(s_rec[4] | (s_rec[5] << 8));
-  const bool is_new = (!s_have_offset || offset != s_last_offset);
   if (is_new) {
     s_last_offset = offset;
     s_have_offset = true;
@@ -209,6 +253,9 @@ static void prv_parse_and_show(void) {
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
              (long)(tenths % 10));
+    // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor
+    // state, and at what offset, is otherwise invisible in a dump.
+    PBL_LOG_INFO("SAKE: BG new %ld mg/dL offset=%u", (long)mgdl, (unsigned)offset);
   } else {
     // Same reading re-polled. Worth a line so the log still shows the link is alive, and the age
     // makes a stalled sensor obvious instead of looking like fresh data. Clamp at 0 rather than
@@ -468,8 +515,8 @@ static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *er
       snprintf(line, sizeof(line), "st bad len=%u", plain_len);
       minimed_sake_log(line);
     } else {
-      PBL_LOG_INFO("SAKE: status t=%02x o=%02x conn=%02x msg=%02x res=%ld mu",
-                   s_idd_st.therapy, s_idd_st.operational, s_idd_st.sensor_conn,
+      PBL_LOG_INFO("SAKE: status t=%02x o=%02x fl=%02x conn=%02x msg=%02x res=%ld mu",
+                   s_idd_st.therapy, s_idd_st.operational, s_idd_st.flags, s_idd_st.sensor_conn,
                    s_idd_st.sensor_msg, (long)s_idd_st.reservoir_mu);
     }
   } else {

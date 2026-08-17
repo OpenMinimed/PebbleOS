@@ -37,6 +37,7 @@ typedef struct {
   uint8_t operational;  // OperationalState raw
   uint8_t sensor_conn;  // Sensor Connectivity State flag byte
   uint8_t sensor_msg;   // SensorMessageState raw
+  uint8_t flags;        // IDD Status flags byte, bit 0 = reservoir attached (logging only)
   int32_t reservoir_mu; // reservoir remaining, milli-IU (logging only; not displayed)
 } MinimedIddStatus;
 
@@ -76,6 +77,12 @@ bool minimed_status_compose(uint32_t now, char *out, uint16_t cap);
 //! True while the active label carries a time component, i.e. the caller should re-compose and
 //! re-send every minute so the countdown ticks.
 bool minimed_status_ticking(void);
+
+//! True while the SG is off the sensor scale (SensorMessageState SG below / above limit). The
+//! read path shows "LO"/"HI" as the BG instead of the 0 mg/dL marker the pump sends, and the
+//! band stays empty so it doesn't cover the graph.
+bool minimed_status_sg_below(void);
+bool minimed_status_sg_above(void);
 
 //! True when the pump currently has no valid glucose (GST signal lost, or the sensor is in a
 //! warm-up/searching/absent state): the watch should show "---" now rather than an aging number.
