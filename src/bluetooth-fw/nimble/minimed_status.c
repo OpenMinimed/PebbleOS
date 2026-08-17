@@ -80,7 +80,7 @@ bool minimed_status_parse_idd(const uint8_t *body, uint16_t len, MinimedIddStatu
   out->therapy = body[0];
   out->operational = body[1];
   out->reservoir_mu = res_mu;
-  // body[6] is the flags byte (bit 0 = reservoir attached) -- not needed by the mapping.
+  out->flags = body[6];  // bit 0 = reservoir attached; logged, not mapped
   out->sensor_conn = body[7];
   out->sensor_msg = body[8];
   out->valid = true;

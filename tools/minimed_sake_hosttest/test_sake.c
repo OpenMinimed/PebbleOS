@@ -447,7 +447,8 @@ static void section_status(void) {
   MinimedIddStatus st;
   check("IDD status parses", minimed_status_parse_idd(idd_normal, sizeof(idd_normal), &st));
   check("IDD fields decoded", st.valid && st.therapy == 0x55 && st.operational == 0x96 &&
-        st.sensor_conn == 0x03 && st.sensor_msg == 0x00 && st.reservoir_mu == 140000);
+        st.flags == 0x01 && st.sensor_conn == 0x03 && st.sensor_msg == 0x00 &&
+        st.reservoir_mu == 140000);
   check("IDD wrong length rejected", !minimed_status_parse_idd(idd_normal, 8, &st));
 
   // TAS: opcode 0x03FE, flags auto-mode only, shield AUTO_BASAL, readiness NO_ACTION.

@@ -37,6 +37,7 @@ typedef struct {
   uint8_t operational;  // OperationalState raw
   uint8_t sensor_conn;  // Sensor Connectivity State flag byte
   uint8_t sensor_msg;   // SensorMessageState raw
+  uint8_t flags;        // IDD Status flags byte, bit 0 = reservoir attached (logging only)
   int32_t reservoir_mu; // reservoir remaining, milli-IU (logging only; not displayed)
 } MinimedIddStatus;
 

@@ -515,8 +515,8 @@ static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *er
       snprintf(line, sizeof(line), "st bad len=%u", plain_len);
       minimed_sake_log(line);
     } else {
-      PBL_LOG_INFO("SAKE: status t=%02x o=%02x conn=%02x msg=%02x res=%ld mu",
-                   s_idd_st.therapy, s_idd_st.operational, s_idd_st.sensor_conn,
+      PBL_LOG_INFO("SAKE: status t=%02x o=%02x fl=%02x conn=%02x msg=%02x res=%ld mu",
+                   s_idd_st.therapy, s_idd_st.operational, s_idd_st.flags, s_idd_st.sensor_conn,
                    s_idd_st.sensor_msg, (long)s_idd_st.reservoir_mu);
     }
   } else {
