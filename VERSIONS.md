@@ -5,6 +5,15 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v49 (2026-08-17, BUILT, awaiting flash; `build/sake-spike-v49-iob-log.pbz`, adb push pending —
+  phone was disconnected): one flash-log line, no behavior change: `SAKE: IOB N mu` (raw
+  milliunits) on every successful SRCP 0x03FC parse in `prv_parse_iob`. The value previously went
+  only to the on-watch UI ring log, so flash dumps had pushes-with-bit-17 but no IOB values
+  (confirmed in the 2026-08-17 g0-v46 capture). Purpose: minute-cadence IOB traces in routine
+  dumps, to empirically recover the pump's active-insulin decay curve (true-IOB investigation —
+  fit the decay after a big bolus in a window with no follow-on boluses). Carries v48 unchanged.
+  HW checklist: (1) `SAKE: IOB N mu` appears ~every minute in a flash dump and matches the
+  watchface IOB to 0.1 U; (2) after a meal bolus, the trace shows the step jump and ~2 h decay.
 - v48 (2026-08-17, BUILT, awaiting flash; `build/sake-spike-v48-pump-alerts.pbz`, adb push
   pending): **pump alarms as native watch notifications.** On a 0x101 annunciation push (bit 3)
   the watch reads the new IDD history records (IDD RACP 0x2A52 + History Data 0x108, both newly

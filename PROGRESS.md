@@ -40,6 +40,10 @@ how to build and test, the code map, and what is left. Topic detail lives in its
   pump's display exactly. Feasibility fully settled; the rest is productization.
 - Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
+- **v49 BUILT 2026-08-17, awaiting flash** (`build/sake-spike-v49-iob-log.pbz`): logs raw IOB
+  milliunits to the flash log on every SRCP read (previously UI-ring-log only, so dumps had no
+  IOB values) — data for recovering the pump's insulin decay curve. Carries v48 unchanged;
+  checklist in the VERSIONS.md v49 entry.
 - **v48 BUILT 2026-08-17, awaiting flash** (`build/sake-spike-v48-pump-alerts.pbz`): pump
   alarms as native watch notifications (annunciations via IDD history reads on the 0x101
   annunciation bit; raise-only, silenced skipped). HW checklist in the VERSIONS.md v48 entry.

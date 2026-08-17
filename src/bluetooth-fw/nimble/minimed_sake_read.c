@@ -338,6 +338,10 @@ static void prv_parse_iob(void) {
     minimed_sake_log(line);
     return;
   }
+  // Raw milliunits to the flash log: minute-cadence IOB traces from routine dumps are the data
+  // for recovering the pump's decay curve (true-IOB investigation, 2026-08-17).
+  PBL_LOG_INFO("SAKE: IOB %ld mu", (long)iob_mu);
+
   // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
   int32_t tenths = (iob_mu + 50) / 100;
   char line[32];
