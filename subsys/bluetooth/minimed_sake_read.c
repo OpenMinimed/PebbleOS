@@ -114,6 +114,15 @@ static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating in
 #define SG_FLOOR_MGDL 50
 #define SG_CEILING_MGDL 400
 
+// Pump battery (SIG Battery Level 0x2A19, plaintext read). Hourly samples to characterise its
+// granularity -- Documentation PR #2 claims it is very coarse (only 50 and 100 % ever seen, from
+// bridge-era reads); the evidence log is gone, so re-gather. Plaintext single read on its own
+// char: no SAKE cipher involvement and no shared buffers, so it bypasses the exchange serialiser.
+#define BATTERY_LEVEL_UUID 0x2A19
+#define BATTERY_READ_INTERVAL_SECS (60 * 60)
+#define BATTERY_FIRST_READ_DELAY_SECS 30
+static struct ble_npl_callout s_battery_co;
+
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
 static void prv_status_publish_if_done(uint8_t completed_op);
@@ -658,6 +667,29 @@ static uint8_t prv_full_poll_mask(void) {
          (s_h_idd_status != 0 ? PEND_STATUS : 0);
 }
 
+// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE.
+static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error,
+                               struct ble_gatt_attr *attr, void *arg) {
+  if (error->status == 0 && attr && attr->om && attr->om->om_len >= 1) {
+    PBL_LOG_INFO("SAKE: pump battery %u pct", (unsigned)attr->om->om_data[0]);
+  } else if (error->status != BLE_HS_EDONE) {
+    PBL_LOG_INFO("SAKE: pump battery read err=0x%04x", (uint16_t)error->status);
+  }
+  return 0;
+}
+
+// Read by UUID over the whole handle range: saves discovering the Battery service, and the GST
+// battery (vendor 128-bit 0x400) can't collide with a 16-bit match.
+static void prv_battery_timer_cb(struct ble_npl_event *ev) {
+  const ble_uuid16_t uuid = BLE_UUID16_INIT(BATTERY_LEVEL_UUID);
+  int rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, &uuid.u, prv_battery_read_cb, NULL);
+  if (rc != 0) {
+    PBL_LOG_INFO("SAKE: pump battery read rc=0x%04x", (uint16_t)rc);
+  }
+  ble_npl_callout_reset(&s_battery_co,
+                        ble_npl_time_ms_to_ticks32(BATTERY_READ_INTERVAL_SECS * 1000));
+}
+
 static void prv_poll_timer_cb(struct ble_npl_event *ev) {
   if (s_push_mode) minimed_sake_log("fallback poll");
   prv_request(prv_full_poll_mask());
@@ -684,6 +716,8 @@ static void prv_start_polling(void) {
   prv_request(prv_full_poll_mask());
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
   ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
+  ble_npl_callout_reset(&s_battery_co,
+                        ble_npl_time_ms_to_ticks32(BATTERY_FIRST_READ_DELAY_SECS * 1000));
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
@@ -941,6 +975,7 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_dispatch_co, nimble_port_get_dflt_eventq(), prv_dispatch_cb, NULL);
   ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
   ble_npl_callout_init(&s_status_tick_co, nimble_port_get_dflt_eventq(), prv_status_tick_cb, NULL);
+  ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
 }
 
 void minimed_sake_read_start(uint16_t conn_handle) {
@@ -976,4 +1011,5 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_dispatch_co);
   ble_npl_callout_stop(&s_op_timeout_co);
   ble_npl_callout_stop(&s_status_tick_co);
+  ble_npl_callout_stop(&s_battery_co);
 }
