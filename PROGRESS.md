@@ -326,6 +326,16 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
 6. **Battery — the current job.** Stock 4.31.1 drains ~3.5–4× less than our firmware over matched
    SoC bands, so the cost is in our diff. v43/v44 log the hourly metrics that can attribute it.
    Numbers, method, confounds and remaining experiments: [`BATTERY.md`](BATTERY.md).
+6b. **Idea: stop servicing the minute-cadence IOB pushes (battery, unmeasured).** The 2026-08-17
+   flash dump (`../watch-captures/2026-08-17-g0-v46-sensor-change.txt`) shows ~1400 `0x101`
+   pushes/day, of which only ~320 carry New CGM; the bulk are IOB/therapy-algorithm ticks
+   (`0x28000` ×487, `0x18000` ×143, …) arriving ~every minute, each costing a decrypt + IOB SRCP
+   exchange + Reset Status write for a value the watchface can't visibly resolve at that rate.
+   The latch is a built-in rate limiter: withhold bits 16/17 from the Reset Status write and the
+   pump stops re-indicating them (pump-side TX included); reset them with the CGM bits so IOB
+   rides the 5-min pushes. Trade-off: IOB lags ≤5 min; check bolus pushes still show promptly
+   (the ×27 `0x280c4` pattern suggests boluses touch bits 2/6 too). Do after the battery baseline
+   (item 6) so the effect is measurable.
 7. **Phone-bond papercut** (re-pair dance between test cycles) — see
    [`CONNECTIVITY.md`](CONNECTIVITY.md).
 9. **Retire the "spike" terminology (queued cleanup, agreed 2026-08-16).** The feasibility
