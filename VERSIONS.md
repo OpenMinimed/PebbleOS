@@ -5,6 +5,16 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v47 (2026-08-17, BUILT for tomorrow's reservoir-change capture;
+  `build/sake-spike-v47-reservoir-battery.pbz`, adb push pending — phone was disconnected):
+  two logging additions to verify Documentation PRs #1 and #2, no behavior change.
+  (1) The IDD Status flags byte (bit 0 = reservoir attached) now parses into
+  `MinimedIddStatus.flags` and prints as `fl=` in the `SAKE: status` line — PR #1's
+  Reservoir Attached claim was unverifiable without it. (2) Hourly plaintext read of the pump's
+  SIG Battery Level 0x2a19 (`SAKE: pump battery N pct`; read-by-UUID, no discovery-chain change,
+  bypasses the SAKE serialiser) — re-gathers PR #2's coarse-battery evidence, whose bridge-era
+  log died with the app uninstall. Host tests 94/94. Reservoir-change expectation per PR #1:
+  t 55→33 (Stop, not 3c Pause), o 96→55→5a→66→96, fl bit 0 dropping then rising at priming.
 - v46 **HW-VERIFIED 2026-08-16 through a full sensor change** (19:52 CHANGE SENSOR → transmitter
   charge → 20:18 warm-up → 22:16:56 first reading, 155 mg/dL at offset 120 = warm-up estimate
   right again at 1 h 59 m). v45 marker fix verified: the CHANGE SENSOR 0-record with a fresh
