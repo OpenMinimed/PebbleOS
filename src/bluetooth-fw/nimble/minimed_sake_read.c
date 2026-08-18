@@ -446,8 +446,11 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
 
     uint8_t req = 0;
     if (flags & MINIMED_IDD_FLAG_NEW_CGM) req |= PEND_CGM;
-    if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
-      // Suspend/resume or SmartGuard/temp-target changed: re-read the status pair (bridge bits).
+    if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_OPERATIONAL |
+                 MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
+      // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
+      // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
+      // the status pair (bridge bits + bit 1).
       req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
     }
     if (s_h_idd_racp != 0 && s_h_hist != 0 &&
