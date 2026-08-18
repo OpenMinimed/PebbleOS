@@ -5,6 +5,15 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v50 (2026-08-18, BUILT, pushed to phone Download; `build/sake-spike-v50-opstate-trigger.pbz`):
+  status reads now also trigger on push bit 1 (Operational State Changed). The 2026-08-18
+  reservoir-change capture got only two status lines (bits 0/16 were the only triggers), missing
+  the Preparing/Priming walk PR #1 claims — Documentation PR #1 is closed pending a dense
+  re-capture with this build. Bit 2 deliberately not added (rides every microbolus). Caveat: a
+  state shorter than the indication→read round-trip (~1-3 s) can still be missed, and a burst of
+  bit-1 pushes can coalesce into one read. Carries v49. Host tests 108/108.
+  HW checklist: next reservoir change should log a status line per o-transition
+  (96→55→5a→66→96 expected, order TBD) with fl/res captured at each step.
 - v49 (2026-08-17, BUILT, awaiting flash; `build/sake-spike-v49-iob-log.pbz`, adb push pending —
   phone was disconnected): one flash-log line, no behavior change: `SAKE: IOB N mu` (raw
   milliunits) on every successful SRCP 0x03FC parse in `prv_parse_iob`. The value previously went
