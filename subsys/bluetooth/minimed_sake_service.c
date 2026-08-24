@@ -19,7 +19,7 @@
 #include "popups/minimed_sake_spike_ui.h"
 #include "kernel/event_loop.h"
 #include "pbl/services/settings/settings_file.h"
-#include "pbl/logging/logging.h"
+#include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 

@@ -21,7 +21,7 @@
 #include "minimed_status.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
-#include "pbl/logging/logging.h"
+#include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
@@ -344,6 +344,10 @@ static void prv_parse_iob(void) {
     minimed_sake_log(line);
     return;
   }
+  // Raw milliunits to the flash log: minute-cadence IOB traces from routine dumps are the data
+  // for recovering the pump's decay curve (true-IOB investigation, 2026-08-17).
+  PBL_LOG_INFO("SAKE: IOB %ld mu", (long)iob_mu);
+
   // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
   int32_t tenths = (iob_mu + 50) / 100;
   char line[32];
@@ -457,8 +461,11 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
 
     uint8_t req = 0;
     if (flags & MINIMED_IDD_FLAG_NEW_CGM) req |= PEND_CGM;
-    if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
-      // Suspend/resume or SmartGuard/temp-target changed: re-read the status pair (bridge bits).
+    if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_OPERATIONAL |
+                 MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
+      // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
+      // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
+      // the status pair (bridge bits + bit 1).
       req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
     }
     if (s_h_idd_racp != 0 && s_h_hist != 0 &&
