@@ -44,9 +44,10 @@ how to build and test, the code map, and what is left. Topic detail lives in its
   milliunits to the flash log on every SRCP read (previously UI-ring-log only, so dumps had no
   IOB values) — data for recovering the pump's insulin decay curve. Carries v48 unchanged;
   checklist in the VERSIONS.md v49 entry.
-- **v48 BUILT 2026-08-17, awaiting flash** (`build/sake-spike-v48-pump-alerts.pbz`): pump
-  alarms as native watch notifications (annunciations via IDD history reads on the 0x101
-  annunciation bit; raise-only, silenced skipped). HW checklist in the VERSIONS.md v48 entry.
+- **Pump alarms on the watch: HW-VERIFIED (v48, 2026-08-19), UI settled (v52, BUILT 2026-08-22,
+  awaiting flash).** Annunciations read via IDD history on the 0x101 annunciation bit; shown as
+  native notifications, title = pump wording, body = latest BG. The v51 Quick View banner
+  worked but was dropped — revive instructions in the VERSIONS.md v52 entry.
 - **v45 BUILT 2026-08-16, awaiting flash** (`build/sake-spike-v45-sg-markers.pbz`): 0 mg/dL CGM
   records are markers, not readings — off-scale shows LO/HI (band dropped), other sensor states
   let the BG go stale instead of showing 0.0 / graphing a 0-cliff. HW checklist in the

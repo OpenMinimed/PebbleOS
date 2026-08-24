@@ -5,6 +5,35 @@ archive — you rarely need it in context. Current state is in `PROGRESS.md`; th
 files are listed there.
 
 
+- v53 (2026-08-22, BUILT, awaiting flash; `build/sake-spike-v53-alert-text.pbz`): notification
+  text tweak only (no logic change from v52). Title = "MiniMed"; body = alert name with the BG
+  in parens, e.g. "Alert before low (4.2)" ("LO"/"HI" for off-scale), or just the name when the
+  pump has no current glucose. (v52 had put the alert name in the title and "BG N.N" in the body
+  with no source label.) Host tests 109/109.
+- v52 (2026-08-22, BUILT, superseded by v53; `build/sake-spike-v52-alert-notif-final.pbz`): **alert
+  UI settled: standard notification only, with the BG in it.** The v51 Quick View experiment is
+  removed after a day of wear: it WORKED (banner over the watchface, watchface shifts up, and —
+  correcting the v51 entry — the back button dismisses it just like the notification), but
+  rendering both was redundant and the pin's fixed 15-min window is a worse fit for alarms than
+  the notification's dismiss + history. Decision: standard notifications. **To change our minds
+  later:** the whole working pin implementation is the v51 diff of
+  `src/fw/popups/minimed_alert_popup.c` (`git show`, ~20 lines: ongoing persistent pin via
+  `timeline_add`); only re-adding that block is needed. New notification content: title = the
+  alert name (pump wording), body = the latest BG ("BG 4.2" / "BG LO"; omitted while the pump
+  has no valid glucose) — the CGM read dispatches before the annunciation read on the same push,
+  so the number is usually seconds old. Host tests 109/109 (no parser change).
+  HW checklist: next alert shows "Alert before low" / "BG N.N" as a notification, no banner.
+- v51 (2026-08-19, BUILT, awaiting flash; `build/sake-spike-v51-alert-quickview.pbz`): **alert
+  Quick View experiment** — each pump alert now ALSO inserts an ongoing timeline pin (15 min,
+  persistent, `from_watch`), which Timeline Quick View shows as a bottom banner over the
+  watchface; the full-screen notification (and its vibe) is unchanged, so both render and Morten
+  picks a winner. Needs Quick View enabled on the watch (Settings → Timeline). Also: 0x325
+  renamed to the pump's wording "Alert before low" (HW-confirmed 2026-08-19), and the icon
+  attribute now uses `add_resource_id` (kills the benign per-alert `attribute.c:432` warning).
+  Host tests 109/109. HW checklist: (1) on the next alert, dismiss the full-screen notification —
+  the banner should sit at the bottom of the watchface for 15 min (watchface content shifts up);
+  (2) the pin also appears in the Timeline app until it ages out; (3) verdict: banner vs
+  notification vs both, then strip the loser.
 - v50 (2026-08-18, BUILT, pushed to phone Download; `build/sake-spike-v50-opstate-trigger.pbz`):
   status reads now also trigger on push bit 1 (Operational State Changed). The 2026-08-18
   reservoir-change capture got only two status lines (bits 0/16 were the only triggers), missing
@@ -23,6 +52,18 @@ files are listed there.
   fit the decay after a big bolus in a window with no follow-on boluses). Carries v48 unchanged.
   HW checklist: (1) `SAKE: IOB N mu` appears ~every minute in a flash dump and matches the
   watchface IOB to 0.1 U; (2) after a meal bolus, the trace shows the step jump and ~2 h decay.
+- v48 **HW-VERIFIED 2026-08-19** (flashed as part of v49; g0-v49 dump in
+  `../logs/from-watch/2026-08-19-g0-v49-alerts-test.txt`): two real alerts decoded over ~23 h,
+  both `type=0x325` = ALERT_BEFORE_LOW_SG ("Low predicted"), each right after a falling BG —
+  correct records, correct name, both landed in the watch's notification list with the right
+  timestamps. **The popup/vibe was suppressed by watch-side Quiet Time** (storage + event chain
+  are upstream of that gate, so the list still filled) — QT off now; popup+vibe still to be
+  seen live. Open HW questions answered: the pump ACCEPTS the open-ended range max (no
+  `IDD RACP resp` errors) and the ATT-MTU framing rule holds (no `bad hist rec`). 10/10
+  reconnect baselines fired. Known-benign wart: each notification logs
+  `attribute.c:432 ... uint32 for non-uint32_t` (IconTiny wants add_resource_id; stock HRM popup
+  does the same). Watch-side "Mute All"/Quiet Time gate these alerts like any notification;
+  phone-side Pebble-app muting does not (never traverses the phone).
 - v48 (2026-08-17, BUILT, awaiting flash; `build/sake-spike-v48-pump-alerts.pbz`, adb push
   pending): **pump alarms as native watch notifications.** On a 0x101 annunciation push (bit 3)
   the watch reads the new IDD history records (IDD RACP 0x2A52 + History Data 0x108, both newly
