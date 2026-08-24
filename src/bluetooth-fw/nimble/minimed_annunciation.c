@@ -35,7 +35,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 }
 
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
-// themselves guesses from pump alert text). 0x054 is field-confirmed (bridge, 2026-07-20).
+// themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
+// are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19).
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -65,7 +66,7 @@ static const AnnuncName s_names[] = {
     {0x321, "Sensor error"},
     {0x322, "Low SG"},
     {0x323, "Low SG suspend"},
-    {0x325, "Low predicted"},
+    {0x325, "Alert before low"},  // pump wording, HW-confirmed 2026-08-19
     {0x327, "Predictive resume"},
     {0x329, "Threshold suspend"},
     {0x32a, "Suspend before low"},

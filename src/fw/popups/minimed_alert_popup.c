@@ -11,23 +11,30 @@
 #include "pbl/services/timeline/timeline.h"
 #include "pbl/services/timeline/timeline_resources.h"
 
-// Pending alert texts, written on the caller's task and drained on KernelMain (same lock-free
+// Pending alerts, written on the caller's task and drained on KernelMain (same lock-free
 // discipline as minimed_sake_sender). Sized for a worst-case indication burst; overflow drops
 // the oldest -- the pump itself still alarms, the watch is a mirror.
-#define SLOT_TEXT_MAX 32
+#define SLOT_TITLE_MAX 32
+#define SLOT_BODY_MAX 48  // "<alert name> (<bg>)"
 #define SLOT_COUNT 4
-static char s_slots[SLOT_COUNT][SLOT_TEXT_MAX];
+typedef struct {
+  char title[SLOT_TITLE_MAX];
+  char body[SLOT_BODY_MAX];  // "" = no body attribute
+} AlertSlot;
+static AlertSlot s_slots[SLOT_COUNT];
 static volatile uint8_t s_head, s_tail;  // tail written by producer, head by KernelMain
 
 static void prv_push_cb(void *unused) {
   while (s_head != s_tail) {
-    const char *text = s_slots[s_head % SLOT_COUNT];
+    const AlertSlot *slot = &s_slots[s_head % SLOT_COUNT];
 
     AttributeList attr_list = {};
-    attribute_list_add_cstring(&attr_list, AttributeIdTitle, "MiniMed");
-    attribute_list_add_cstring(&attr_list, AttributeIdBody, text);
-    attribute_list_add_uint32(&attr_list, AttributeIdIconTiny,
-                              TIMELINE_RESOURCE_NOTIFICATION_GENERIC);
+    attribute_list_add_cstring(&attr_list, AttributeIdTitle, slot->title);
+    if (slot->body[0] != '\0') {
+      attribute_list_add_cstring(&attr_list, AttributeIdBody, slot->body);
+    }
+    attribute_list_add_resource_id(&attr_list, AttributeIdIconTiny,
+                                   TIMELINE_RESOURCE_NOTIFICATION_GENERIC);
 
     AttributeList dismiss_attr_list = {};
     attribute_list_add_cstring(&dismiss_attr_list, AttributeIdTitle, "Dismiss");
@@ -58,13 +65,15 @@ static void prv_push_cb(void *unused) {
   }
 }
 
-void minimed_alert_popup_push(const char *text) {
+void minimed_alert_popup_push(const char *title, const char *body) {
   if ((uint8_t)(s_tail - s_head) >= SLOT_COUNT) {
     s_head++;  // full: drop the oldest queued alert
   }
-  char *slot = s_slots[s_tail % SLOT_COUNT];
-  strncpy(slot, text, SLOT_TEXT_MAX - 1);
-  slot[SLOT_TEXT_MAX - 1] = '\0';
+  AlertSlot *slot = &s_slots[s_tail % SLOT_COUNT];
+  strncpy(slot->title, title, SLOT_TITLE_MAX - 1);
+  slot->title[SLOT_TITLE_MAX - 1] = '\0';
+  strncpy(slot->body, body != NULL ? body : "", SLOT_BODY_MAX - 1);
+  slot->body[SLOT_BODY_MAX - 1] = '\0';
   s_tail++;
   launcher_task_add_callback(prv_push_cb, NULL);
 }

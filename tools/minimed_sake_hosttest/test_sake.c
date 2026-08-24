@@ -645,6 +645,10 @@ static void section_annunciation(void) {
         strcmp(minimed_annunciation_name(0x054), "Insert battery") == 0);
   check("0x323 named", minimed_annunciation_name(0x323) != NULL &&
         strcmp(minimed_annunciation_name(0x323), "Low SG suspend") == 0);
+  // Pump wording, confirmed on HW 2026-08-19 (two real alerts): the pump calls 0x325
+  // "Alert before low", not the table's earlier "Low predicted".
+  check("0x325 uses pump wording", minimed_annunciation_name(0x325) != NULL &&
+        strcmp(minimed_annunciation_name(0x325), "Alert before low") == 0);
   check("0x33b named", minimed_annunciation_name(0x33b) != NULL &&
         strcmp(minimed_annunciation_name(0x33b), "Severe low SG") == 0);
   check("unknown code has no name", minimed_annunciation_name(0x999) == NULL);

@@ -192,6 +192,11 @@ static bool s_annunc_have;      // baseline done; catch-up reads may notify
 static bool s_annunc_baseline;  // the in-flight PEND_ANNUNC exchange is the baseline read
 static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
 
+// Latest BG as shown on the watchface ("4.2" mmol/L, "LO"/"HI"; "" while the pump has no valid
+// glucose). Alert notifications carry it as their body -- a low alert without the number is
+// half the information.
+static char s_last_bg_str[12];
+
 // Recently notified annunciation instance ids: the same annunciation can be re-logged with an
 // updated status (semantics not fully characterised), and a raise must buzz exactly once.
 // 0xFFFF = empty slot. Deliberately survives reconnects.
@@ -281,7 +286,8 @@ static void prv_parse_and_show(void) {
       minimed_sake_sender_add_graph_point(s_reading_ts, below ? SG_FLOOR_MGDL : SG_CEILING_MGDL);
     }
     minimed_sake_log(below ? "*** BG LO ***" : "*** BG HI ***");
-    minimed_sake_sender_send_bg(below ? "LO" : "HI", s_reading_ts);
+    strcpy(s_last_bg_str, below ? "LO" : "HI");
+    minimed_sake_sender_send_bg(s_last_bg_str, s_reading_ts);
     return;
   }
 
@@ -319,11 +325,11 @@ static void prv_parse_and_show(void) {
   }
   minimed_sake_log(line);
 
-  char bg_str[12];
-  snprintf(bg_str, sizeof(bg_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
+  snprintf(s_last_bg_str, sizeof(s_last_bg_str), "%ld.%ld", (long)(tenths / 10),
+           (long)(tenths % 10));
   // Forward to the watchface (no-op if it isn't running). Timestamped when the reading first
   // appeared, not now, so the watchface's "N min ago" reflects the sensor, not our poll.
-  minimed_sake_sender_send_bg(bg_str, s_reading_ts);
+  minimed_sake_sender_send_bg(s_last_bg_str, s_reading_ts);
 }
 
 // Parse a reassembled SRCP IOB response and forward it to the watchface. On a parse failure log
@@ -387,15 +393,24 @@ static void prv_annunc_record_done(void) {
   if (a.silenced) return;  // the pump raised it quietly (alert settings); mirror that choice
   if (prv_annunc_already_notified(a.id)) return;
 
-  char text[28];
-  const char *name = minimed_annunciation_name(a.type);
-  if (name != NULL) {
-    snprintf(text, sizeof(text), "%s", name);
+  char name[28];
+  const char *known = minimed_annunciation_name(a.type);
+  if (known != NULL) {
+    snprintf(name, sizeof(name), "%s", known);
   } else {
-    snprintf(text, sizeof(text), "Pump alert 0x%03x", (unsigned)a.type);
+    snprintf(name, sizeof(name), "Pump alert 0x%03x", (unsigned)a.type);
   }
-  minimed_sake_log(text);
-  minimed_alert_popup_push(text);
+  minimed_sake_log(name);
+  // Body: the alert name with the latest BG in parens, e.g. "Alert before low (4.2)". The BG is
+  // at most one 5-min cycle old, and the CGM read dispatches before this one on the same push,
+  // so on a fresh alert it is usually seconds old; dropped entirely when the pump has no value.
+  char body[48];
+  if (s_last_bg_str[0] != '\0') {
+    snprintf(body, sizeof(body), "%s (%s)", name, s_last_bg_str);
+  } else {
+    snprintf(body, sizeof(body), "%s", name);
+  }
+  minimed_alert_popup_push("MiniMed", body);
 }
 
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
@@ -651,6 +666,7 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
       // immediately, stamped now so the watchface shows a current "---" like the pump does,
       // instead of an old number with a climbing age. The next real reading overwrites it.
       minimed_sake_sender_send_bg("---", now);
+      s_last_bg_str[0] = '\0';  // no valid glucose: alert notifications drop the BG body
     }
   }
   s_idd_st.valid = false;
