@@ -668,14 +668,14 @@ bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_int
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
   if (spike_mode) {
-    // Address type by pairing state, mirroring the FE82/FE81 service split:
-    //  - First-pair (FE82): a PLAIN identity address (infer_auto(0) -> this watch's static-random
-    //    identity). The pump discovers + pairs with a plain address (Documentation/bluetooth.md);
-    //    an RPA for first-pair proved undiscoverable on hardware (v15-v19 regression) and is what
-    //    v10-v14 did NOT do.
-    //  - Reconnect (FE81): an RPA (infer_auto(1)); the pump only reconnects to an RPA and resolves
-    //    it via the IRK we distribute during pairing.
-    const int privacy = minimed_sake_pump_paired() ? 1 : 0;
+    // Always advertise a PLAIN identity address (infer_auto(0) -> this watch's static-random
+    // identity). The pump reconnects by identity address regardless of the advertised payload,
+    // holding the bond + our IRK (HW-confirmed on asterix: it handshakes in NORMAL against a
+    // plain Pebble advert). An RPA (infer_auto(1)) is NOT required and breaks on the SF32LB52
+    // external LCPU controller: it advertises fine but the link fails at accept (0x10 accept
+    // timeout), so the pump cannot reconnect. FE82 (first-pair) and FE81 (reconnect) both use the
+    // same plain identity; first-pair with an RPA proved undiscoverable too (v15-v19).
+    const int privacy = 0;
     uint8_t at;
     if (ble_hs_id_infer_auto(privacy, &at) == 0) {
       own_addr_type = at;
