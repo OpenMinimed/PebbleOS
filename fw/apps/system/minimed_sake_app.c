@@ -8,6 +8,7 @@
 #include "applib/app.h"
 #include "applib/app_timer.h"
 #include "applib/fonts/fonts.h"
+#include "applib/ui/recognizer/swipe.h"
 #include "applib/ui/ui.h"
 #include "kernel/pbl_malloc.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
@@ -30,6 +31,7 @@ typedef struct {
   Window window;
   TextLayer text;
   AppTimer *timer;
+  Recognizer *swipe_recognizer;
   char buf[384];
   uint8_t bond_refresh_countdown;
   uint8_t bond_gateway;
@@ -77,6 +79,14 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
   prv_refresh(app_state_get_user_data());
 }
 
+// Right swipe = swipe-back: acts like the physical Back button and exits the app.
+static void prv_swipe_handler(const Recognizer *recognizer, RecognizerEvent event) {
+  if ((event == RecognizerEvent_Completed) &&
+      (swipe_recognizer_get_direction(recognizer) == SwipeDirection_Right)) {
+    app_window_stack_pop(true);
+  }
+}
+
 static void prv_click_config(void *context) {
   window_single_click_subscribe(BUTTON_ID_SELECT, prv_select_click);
   window_single_click_subscribe(BUTTON_ID_DOWN, prv_down_click);
@@ -88,6 +98,10 @@ static void prv_window_load(Window *window) {
   text_layer_init(&data->text, &root->bounds);
   text_layer_set_font(&data->text, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   layer_add_child(root, &data->text.layer);
+  // The window owns the recognizer and destroys it on unload.
+  data->swipe_recognizer =
+      swipe_recognizer_create(prv_swipe_handler, NULL, SwipeDirection_Right);
+  window_attach_recognizer(window, data->swipe_recognizer);
   prv_refresh(data);
 }
 
@@ -111,6 +125,7 @@ static void prv_handle_deinit(void) {
   if (data->timer) {
     app_timer_cancel(data->timer);
   }
+  data->swipe_recognizer = NULL;
   app_free(data);
 }
 
