@@ -108,6 +108,31 @@ static void prv_send_next(Transport *transport) {
 
 static void prv_reset(Transport *transport) {}
 
+// Forward: defined below with the session lifecycle. prv_close re-opens the loopback after a phone
+// reconnect evicts it, which routes through this same mode callback.
+static void prv_set_mode_cb(void *ctx);
+
+// comm_session_open closes the *existing* system session when a new one connects (last-system-session
+// wins), via transport->close. The loopback's get_type is QEMU, which prv_get_system_session treats
+// as a last-resort system session, so a phone reconnect will call this to evict us. It must actually
+// close the session (and clear our pointer), or PPoGATT hits "System session already exists and
+// cannot be closed" and the phone loops connect/disconnect forever.
+//
+// After the eviction the loopback is gone, so in DUAL mode the watchface would stop receiving data.
+// Re-open it once the phone's session is up: deferred to KernelMain so we don't race PPoGATT's own
+// comm_session_open (which is mid-flight and holds bt_lock when this runs).
+static void prv_close(Transport *transport) {
+  bt_lock();
+  if (s_session) {
+    comm_session_close(s_session, CommSessionCloseReason_UnderlyingDisconnection);
+    s_session = NULL;
+  }
+  bt_unlock();
+  if (minimed_sake_get_mode() == MinimedSakeModeDual) {
+    launcher_task_add_callback(prv_set_mode_cb, (void *)1);  // re-open the loopback
+  }
+}
+
 static void prv_set_connection_responsiveness(Transport *transport, enum pbl_bt_consumer consumer,
                                               enum pbl_bt_response_time_state state, uint16_t max_period_secs,
                                               pbl_bt_responsiveness_granted_cb_t granted_handler) {
@@ -121,10 +146,20 @@ static CommSessionTransportType prv_get_type(struct Transport *transport) {
   return CommSessionTransportType_QEMU;
 }
 
+// The loopback speaks for the MiniMed watchface specifically. Without this the watchface's outbound
+// AppMessages (its launch/reconnect "ready ping") match no session by UUID and fall back to the
+// phone's Hybrid session -- so the ping never reaches us, we never ACK + resend, and the watchface
+// stays stale until the next 60s poll happens to land while it is foreground. With the UUID the
+// session matches specifically (prv_get_app_session: uuid_equal wins over fallback) and the ping
+// routes to us.
+static const Uuid *prv_get_uuid(struct Transport *transport) { return &s_watchface_uuid; }
+
 static const TransportImplementation s_loopback_implementation = {
     .send_next = prv_send_next,
+    .close = prv_close,
     .reset = prv_reset,
     .set_connection_responsiveness = prv_set_connection_responsiveness,
+    .get_uuid = prv_get_uuid,
     .get_type = prv_get_type,
 };
 

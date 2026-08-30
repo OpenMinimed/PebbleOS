@@ -32,7 +32,7 @@ typedef struct {
   TextLayer text;
   AppTimer *timer;
   Recognizer *swipe_recognizer;
-  char buf[384];
+  char buf[512];
   uint8_t bond_refresh_countdown;
   uint8_t bond_gateway;
   uint8_t bond_non_gateway;

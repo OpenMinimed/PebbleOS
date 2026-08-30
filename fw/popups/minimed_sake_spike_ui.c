@@ -15,7 +15,7 @@
 #include <string.h>
 #include <time.h>
 
-#define SAKE_LOG_LINES 8
+#define SAKE_LOG_LINES 12
 #define SAKE_LOG_WIDTH 40
 #define SAKE_LOG_TS_LEN 9  // "HH:MM:SS "
 
