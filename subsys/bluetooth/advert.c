@@ -697,32 +697,36 @@ bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_int
     return false;
   }
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-  // DIAGNOSTIC: what we advertise + which address type when (re)enabled. In DUAL mode this fires
-  // for both the pump and phone jobs as the scheduler round-robins them.
-  if (minimed_sake_get_mode() == MinimedSakeModeDual) {
-    char line[32];
-    snprintf(line, sizeof(line), "adv EN t%u %ums", own_addr_type, (unsigned)min_interval_ms);
-    minimed_sake_log(line);
-  }
-#endif
-
   rc = ble_gap_adv_start(own_addr_type, nullptr, BLE_HS_FOREVER, &advp, prv_handle_gap_event,
                          nullptr);
   if (rc != 0) {
-    PBL_LOG_ERR("Failed to start advertising (0x%04x)", (uint16_t)rc);
+    // Log once per failure episode, not every scheduler cycle. With both DUAL links up the
+    // connection pool is full, NimBLE rejects connectable advertising with 0x0006 (ENOMEM), and
+    // the scheduler retries every second -- a line per attempt would flood both the flash log and
+    // the 8-line on-watch ring. The retry itself is load-bearing: it is what puts the pump back
+    // on air the moment a slot frees.
+    if (s_last_adv_enable_ok) {
+      PBL_LOG_ERR("Failed to start advertising (0x%04x)", (uint16_t)rc);
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
-    if (minimed_sake_get_mode() == MinimedSakeModeDual && s_last_adv_enable_ok) {
-      char line[32];
-      snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
-      minimed_sake_log(line);  // v15 failed here invisibly -- surface the first failure, not the spam
+      if (minimed_sake_get_mode() == MinimedSakeModeDual) {
+        char line[32];
+        snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
+        minimed_sake_log(line);  // v15 failed here invisibly -- surface the first failure, not the spam
+      }
+#endif
     }
     s_last_adv_enable_ok = false;
-#endif
     return false;
   }
 
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
+  if (minimed_sake_get_mode() == MinimedSakeModeDual) {
+    // DIAGNOSTIC: what we advertise + which address type. Only on success, so the on-watch ring
+    // does not spin with "adv EN" lines while both links are up and advertising is rejected.
+    char line[32];
+    snprintf(line, sizeof(line), "adv EN t%u %ums", own_addr_type, (unsigned)min_interval_ms);
+    minimed_sake_log(line);
+  }
   s_last_adv_enable_ok = true;
 #endif
   return true;

@@ -116,14 +116,25 @@ if [ -f build/pebbleos_loghash_dict.json ]; then
 fi
 
 if [ "$push" = 1 ]; then
-  device=$(kdeconnect-cli -a --id-only 2>/dev/null | head -1)
-  if [ -n "$device" ]; then
-    kdeconnect-cli -d "$device" --share "$out_slot0" >/dev/null && \
-      echo ">> shared to phone: $(basename "$out_slot0")"
-    kdeconnect-cli -d "$device" --share "$out_slot1" >/dev/null && \
-      echo ">> shared to phone: $(basename "$out_slot1")"
+  if command -v adb >/dev/null 2>&1 && adb get-state 2>/dev/null | grep -q device; then
+    # adb first: over USB or `adb connect IP:port` (also the tunnel to the phone's 9000 port for
+    # pebble logs / dump_flash_logs). Lands in the phone's Downloads so the Pebble app's file
+    # picker can find it.
+    adb push "$out_slot0" /sdcard/Download/ >/dev/null 2>&1 && \
+      echo ">> pushed to phone: $(basename "$out_slot0")"
+    adb push "$out_slot1" /sdcard/Download/ >/dev/null 2>&1 && \
+      echo ">> pushed to phone: $(basename "$out_slot1")"
     echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
   else
-    echo ">> skip share: no reachable kdeconnect device (use --no-push to silence)"
+    device=$(kdeconnect-cli -a --id-only 2>/dev/null | head -1)
+    if [ -n "$device" ]; then
+      kdeconnect-cli -d "$device" --share "$out_slot0" >/dev/null && \
+        echo ">> shared to phone: $(basename "$out_slot0")"
+      kdeconnect-cli -d "$device" --share "$out_slot1" >/dev/null && \
+        echo ">> shared to phone: $(basename "$out_slot1")"
+      echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
+    else
+      echo ">> skip share: no adb device and no reachable kdeconnect device (use --no-push to silence)"
+    fi
   fi
 fi

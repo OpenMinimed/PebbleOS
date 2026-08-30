@@ -8,13 +8,16 @@
 #include "comm/ble/gap_le_advert.h"
 #include "kernel/event_loop.h"
 #include "kernel/pbl_malloc.h"
+#include "pbl/drivers/rtc.h"
 #include "pbl/services/bluetooth/bluetooth_ctl.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define SAKE_LOG_LINES 8
-#define SAKE_LOG_WIDTH 32
+#define SAKE_LOG_WIDTH 40
+#define SAKE_LOG_TS_LEN 9  // "HH:MM:SS "
 
 // Log state is mutated only on KernelMain (via prv_append_cb); the app task only reads s_joined,
 // where a torn read is at worst a few garbage chars in a debug line -- acceptable, so no lock.
@@ -47,7 +50,11 @@ static void prv_append_cb(void *data) {
     }
     slot = s_lines[SAKE_LOG_LINES - 1];
   }
-  strncpy(slot, msg, SAKE_LOG_WIDTH - 1);
+  // Prefix the wall-clock time so a line's recency is readable on the watch without a phone.
+  time_t now = rtc_get_time();
+  struct tm t;
+  localtime_r(&now, &t);
+  snprintf(slot, SAKE_LOG_WIDTH, "%02d:%02d:%02d %s", t.tm_hour, t.tm_min, t.tm_sec, msg);
   slot[SAKE_LOG_WIDTH - 1] = '\0';
   prv_rebuild_joined();
   kernel_free(msg);

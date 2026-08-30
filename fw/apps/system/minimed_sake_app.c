@@ -110,7 +110,7 @@ static void prv_handle_init(void) {
   memset(data, 0, sizeof(*data));
   app_state_set_user_data(data);
 
-  window_init(&data->window, "SAKE Spike");
+  window_init(&data->window, "MiniMed App");
   window_set_window_handlers(&data->window, &(WindowHandlers){
                                                 .load = prv_window_load,
                                             });
@@ -138,7 +138,7 @@ static void s_main(void) {
 const PebbleProcessMd *minimed_sake_app_get_info(void) {
   static const PebbleProcessMdSystem s_info = {
       .common.main_func = s_main,
-      .name = "SAKE Spike",
+      .name = "MiniMed App",
   };
   return (const PebbleProcessMd *)&s_info;
 }
