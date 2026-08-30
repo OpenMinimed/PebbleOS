@@ -651,6 +651,14 @@ static void section_annunciation(void) {
         strcmp(minimed_annunciation_name(0x325), "Alert before low") == 0);
   check("0x33b named", minimed_annunciation_name(0x33b) != NULL &&
         strcmp(minimed_annunciation_name(0x33b), "Severe low SG") == 0);
+  // Confirmed on HW 2026-08-30: 0x31a = sensor expired, 0x33f = SmartGuard calibration timeout,
+  // 0x071 = reservoir empty.
+  check("0x31a named", minimed_annunciation_name(0x31a) != NULL &&
+        strcmp(minimed_annunciation_name(0x31a), "Sensor expired") == 0);
+  check("0x33f named", minimed_annunciation_name(0x33f) != NULL &&
+        strcmp(minimed_annunciation_name(0x33f), "SmartGuard calibration timeout") == 0);
+  check("0x071 named", minimed_annunciation_name(0x071) != NULL &&
+        strcmp(minimed_annunciation_name(0x071), "Reservoir empty") == 0);
   check("unknown code has no name", minimed_annunciation_name(0x999) == NULL);
   printf("\n");
 }

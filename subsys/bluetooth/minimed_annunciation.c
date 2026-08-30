@@ -36,7 +36,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
 // themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
-// are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19).
+// are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19),
+// 0x31a and 0x33f (2026-08-30).
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -55,6 +56,7 @@ static const AnnuncName s_names[] = {
     {0x06a, "Low reservoir"},
     {0x06c, "Reminder"},
     {0x06d, "Set change reminder"},
+    {0x071, "Reservoir empty"},
     {0x075, "IOB cleared"},
     {0x307, "Calibrate now"},
     {0x308, "Calibration not accepted"},
@@ -62,6 +64,7 @@ static const AnnuncName s_names[] = {
     {0x30a, "Change sensor"},
     {0x30c, "Lost sensor signal"},
     {0x315, "Change sensor"},
+    {0x31a, "Sensor expired"},  // HW-confirmed 2026-08-30
     {0x31e, "Sensor connected"},
     {0x321, "Sensor error"},
     {0x322, "Low SG"},
@@ -81,6 +84,7 @@ static const AnnuncName s_names[] = {
     {0x336, "SmartGuard max delivery"},
     {0x33a, "SmartGuard off"},
     {0x33b, "Severe low SG"},
+    {0x33f, "SmartGuard calibration timeout"},  // HW-confirmed 2026-08-30
     {0x341, "Bolus recommended"},
     {0x344, "High SG 3 h"},
     {0x345, "Calibration recommended"},
