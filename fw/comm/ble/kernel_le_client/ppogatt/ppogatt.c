@@ -449,8 +449,14 @@ static void prv_delete_client(PPoGATTClient *client, bool is_disconnected, Delet
     bt_lock();
   }
 
-  if (client->state == StateConnectedOpen) {
+  // Always release the comm session if we have one. Gating this on StateConnectedOpen leaves a
+  // stale Hybrid/App session in the global list when the phone drops mid-discovery or mid-reset
+  // (state != ConnectedOpen): the next reconnect's comm_session_open then finds that stale system
+  // session, cannot close it (the old PPoGATT transport is gone), returns NULL, and the phone
+  // ends up in a connect/disconnect storm ("System session already exists and cannot be closed").
+  if (client->session) {
     comm_session_close(client->session, (CommSessionCloseReason)reason);
+    client->session = NULL;
   }
 
   if (client->role == PPoGATTRoleReversed && s_reversed_active_conn == client->rev.connection) {
