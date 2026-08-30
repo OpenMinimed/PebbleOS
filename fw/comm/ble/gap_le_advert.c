@@ -54,6 +54,7 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 static const uint32_t s_interval_ms[] = {
   [GAPLEAdvertisingInterval_Short] = 20,  // 20ms
   [GAPLEAdvertisingInterval_Long] = 1022, // 1022.5ms (truncated to ms)
+  [GAPLEAdvertisingInterval_Medtronic] = 100,  // MiniMed pump advert job
 };
 
 typedef struct GAPLEAdvertisingJob {
@@ -101,6 +102,11 @@ static bool s_is_advertising;
 
 static bool s_is_connected;
 
+//! When true (dual link mode), the scheduler keeps advertising even while connected so the MiniMed
+//! pump can discover/connect alongside the phone. Stock single-connection behaviour is
+//! advertising XOR connected.
+static bool s_allow_advert_while_connected;
+
 //! Cache of the last advertising transmission power in dBm. A cache is kept in
 //! case the API call fails, for example because Bluetooth is disabled.
 //! 12 dBm is what the PAN1315 Bluetooth module reports.
@@ -122,6 +128,7 @@ static void prv_analytics_stop_timers(void) {
 static void prv_analytics_start_timer(GAPLEAdvertisingInterval interval) {
   switch (interval) {
     case GAPLEAdvertisingInterval_Short:
+    case GAPLEAdvertisingInterval_Medtronic:  // ~100ms, close enough to the fast bucket
       PBL_ANALYTICS_TIMER_START(ble_adv_short_intvl_time_ms);
       break;
     case GAPLEAdvertisingInterval_Long:
@@ -138,6 +145,8 @@ static const char *prv_string_for_debug_tag(GAPLEAdvertisingJobTag tag) {
       return "DIS";
     case GAPLEAdvertisingJobTagReconnection:
       return "RCN";
+    case GAPLEAdvertisingJobTagMinimed:
+      return "MMD";
     default:
       return "?";
   }
@@ -257,7 +266,7 @@ static void prv_cycle_kernelmain_cb(void *unused) {
       goto unlock;
     }
 
-    if (s_is_connected) {
+    if (s_is_connected && !s_allow_advert_while_connected) {
       // Don't do anything if connected
       goto unlock;
     }
@@ -554,6 +563,7 @@ void gap_le_advert_init(void) {
     // Not cleared by the disconnect handler if the stack went down while
     // connected (airplane mode): a stale true pauses the cycle timer.
     s_is_connected = false;
+    s_allow_advert_while_connected = false;
     s_gap_le_advert_is_initialized = true;
   }
 unlock:
@@ -633,11 +643,20 @@ void gap_le_advert_force_data_refresh(void) {
     // the re-air on disconnect (force refresh) picks up the invalidation.
     s_current_ad_data = NULL;
 
-    if (s_current && !s_is_connected) {
+    if (s_current && (!s_is_connected || s_allow_advert_while_connected)) {
       prv_perform_next_job(true /* force refresh */);
     }
   }
 unlock:
+  bt_unlock();
+}
+
+// -----------------------------------------------------------------------------
+void gap_le_advert_set_allow_advert_while_connected(bool allow) {
+  bt_lock();
+  {
+    s_allow_advert_while_connected = allow;
+  }
   bt_unlock();
 }
 
@@ -655,7 +674,7 @@ void pbl_bt_handle_host_resynced(void) {
     s_current_ad_data = nullptr;
     s_is_advertising = false;
 
-    if (s_current && !s_is_connected) {
+    if (s_current && (!s_is_connected || s_allow_advert_while_connected)) {
       prv_perform_next_job(true /* force refresh */);
     }
   }

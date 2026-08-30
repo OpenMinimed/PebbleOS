@@ -16,9 +16,14 @@
 
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_read.h"
+#include "nimble_type_conversions.h"
+#include "comm/ble/gap_le_advert.h"
+#include "comm/bt_lock.h"
+#include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "popups/minimed_sake_spike_ui.h"
 #include "kernel/event_loop.h"
 #include "pbl/services/settings/settings_file.h"
+#include "pbl/util/size.h"
 #include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
@@ -75,9 +80,22 @@ static bool s_pump_paired;
 static ble_addr_t s_pump_id_addr;
 static bool s_pump_addr_known;
 
+// The pump's own advertising job in DUAL mode. The scheduler has a single advertising instance,
+// so this time-shares with the phone's jobs; it is independent of the Reconnection job, which the
+// kernel LE client unschedules when the phone connects -- the pump needs a job that survives that.
+static GAPLEAdvertisingJobRef s_pump_advert_job;
+
+// Cached identity of the phone (gateway) bond, captured when the pump-pairing window opens so a
+// reconnecting phone during the window is not misclassified as the pump (whose identity is unknown
+// until its first handshake). RAM-only: the window opens on the app/KernelMain task, so the flash
+// read happens there, never on the BT host task.
+static bool s_gateway_addr_known;
+static ble_addr_t s_gateway_addr;
+
 #define MINIMED_SETTINGS_FILE "minimedsake"
 #define MINIMED_SETTINGS_MAX_SIZE 256
 static const char s_paired_setting_key[] = "paired";
+static const char s_pump_addr_key[] = "pumpaddr";
 
 static void prv_load_pump_paired(void) {
   SettingsFile fd;
@@ -88,6 +106,14 @@ static void prv_load_pump_paired(void) {
   if (settings_file_get(&fd, s_paired_setting_key, sizeof(s_paired_setting_key), &v, sizeof(v)) ==
       S_SUCCESS) {
     s_pump_paired = (v != 0);
+  }
+  // The pump's identity address rides along so the pump link is recognised (and, in NORMAL,
+  // rejected) even right after a cold boot, before the first handshake of the boot.
+  ble_addr_t addr;
+  if (settings_file_get(&fd, s_pump_addr_key, sizeof(s_pump_addr_key), (uint8_t *)&addr,
+                        sizeof(addr)) == S_SUCCESS) {
+    s_pump_id_addr = addr;
+    s_pump_addr_known = true;
   }
   settings_file_close(&fd);
 }
@@ -105,6 +131,12 @@ static void prv_store_pump_paired_cb(void *data) {
       S_SUCCESS) {
     minimed_sake_log("persist set fail");
   }
+  if (s_pump_addr_known) {
+    if (settings_file_set(&fd, s_pump_addr_key, sizeof(s_pump_addr_key),
+                          (uint8_t *)&s_pump_id_addr, sizeof(s_pump_id_addr)) != S_SUCCESS) {
+      minimed_sake_log("persist addr fail");
+    }
+  }
   settings_file_close(&fd);
 }
 
@@ -114,6 +146,96 @@ static void prv_set_pump_paired(bool paired) {
   }
   s_pump_paired = paired;
   launcher_task_add_callback(prv_store_pump_paired_cb, paired ? (void *)1 : NULL);
+}
+
+// -------------------------------------------------------------------------------------------------
+// Pump advert job (DUAL mode)
+// -------------------------------------------------------------------------------------------------
+// The scheduler's single advertising instance time-shares this job with the phone's. It is
+// separate from the Reconnection job because that one is unscheduled when the phone connects
+// (kernel_le_client) and refuses to restart while connected as a slave -- the pump's discovery
+// vehicle must survive both.
+
+static void prv_pump_advert_unscheduled_cb(GAPLEAdvertisingJobRef job, bool completed, void *data) {
+  s_pump_advert_job = NULL;
+}
+
+static void prv_pump_advert_rebuild(void) {
+  bt_lock();  // the unschedule callback below runs under bt_lock; guard the pointer against
+              // concurrent rebuilds from the app task (toggle/forget) and the BT task (handshake).
+  // Stop whatever is scheduled; when not in DUAL mode that is all we want (NORMAL has no pump job).
+  if (s_pump_advert_job) {
+    gap_le_advert_unschedule(s_pump_advert_job);
+    s_pump_advert_job = NULL;
+  }
+  if (minimed_sake_get_mode() != MinimedSakeModeDual) {
+    goto unlock;
+  }
+
+  // struct pbl_bt_ad_data ends in a flexible array, so it can't be declared on its own and then written past
+  // -- allocate the struct and the data buffer as one object. ad.data aliases data[].
+  typedef struct {
+    struct pbl_bt_ad_data ad;
+    uint8_t data[PBL_BT_AD_REPORT_DATA_MAX_LENGTH];
+  } MinimedPumpAdBuf;
+  static MinimedPumpAdBuf s_pump_ad;
+  s_pump_ad.ad.ad_data_length = minimed_sake_build_adv(s_pump_ad.data, sizeof(s_pump_ad.data));
+  s_pump_ad.ad.scan_resp_data_length = 0;
+
+  const GAPLEAdvertisingJobTerm terms[] = {
+      {.duration_secs = GAPLE_ADVERTISING_DURATION_INFINITE,
+       .interval = GAPLEAdvertisingInterval_Medtronic},
+  };
+  s_pump_advert_job =
+      gap_le_advert_schedule(&s_pump_ad.ad, terms, ARRAY_LENGTH(terms),
+                             prv_pump_advert_unscheduled_cb, NULL, GAPLEAdvertisingJobTagMinimed);
+  if (s_pump_advert_job) {
+    char line[32];
+    snprintf(line, sizeof(line), "adv job FE8%c len%u", s_pump_paired ? '1' : '2',
+             s_pump_ad.ad.ad_data_length);
+    minimed_sake_log(line);
+  } else {
+    minimed_sake_log("pump adv job FAIL");
+  }
+unlock:
+  bt_unlock();
+}
+
+void minimed_sake_pump_advert_start(void) { prv_pump_advert_rebuild(); }
+void minimed_sake_pump_advert_stop(void) { prv_pump_advert_rebuild(); }
+void minimed_sake_pump_advert_update(void) { prv_pump_advert_rebuild(); }
+
+// The pump-pairing window: while in DUAL mode with the pump not yet bonded, any incoming
+// connection is presumed to be the pump (its identity is unknown until the handshake completes)
+// and pairing must use legacy Just Works. Closes once the pump is paired.
+bool minimed_sake_pump_pairing_window(void) {
+  return minimed_sake_get_mode() == MinimedSakeModeDual && !s_pump_paired;
+}
+
+// Cache the phone (gateway) identity so a reconnecting phone during the pump-pairing window is not
+// misclassified as the pump. Called on the app/KernelMain task (toggle to DUAL, forget-pump).
+void minimed_sake_cache_gateway_addr(void) {
+  s_gateway_addr_known = false;
+  pbl_bt_bonding_id_t gw = bt_persistent_storage_get_ble_ancs_bonding();
+  if (gw == PBL_BT_BONDING_ID_INVALID) {
+    return;
+  }
+  struct pbl_bt_device_internal dev;
+  if (!bt_persistent_storage_get_ble_pairing_by_id(gw, NULL, &dev, NULL)) {
+    return;
+  }
+  ble_addr_t a;
+  pebble_device_to_nimble_addr(&dev, &a);
+  s_gateway_addr = a;
+  s_gateway_addr_known = true;
+}
+
+// True if the peer is the cached phone (gateway) identity.
+bool minimed_sake_addr_is_gateway(const uint8_t addr[6], uint8_t addr_type) {
+  if (!s_gateway_addr_known || s_gateway_addr.type != addr_type) {
+    return false;
+  }
+  return memcmp(s_gateway_addr.val, addr, 6) == 0;
 }
 
 static void prv_rng(void *ud, uint8_t *out, size_t n) {
@@ -199,6 +321,10 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     }
     minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
+    // The pump is bonded now: close the pump-pairing window (back to strict LESC for the phone)
+    // and re-air the pump advert as FE81.
+    minimed_sake_apply_sm_config(false);
+    minimed_sake_pump_advert_update();
   } else {
     snprintf(line, sizeof(line), "sake ERR (st%d)", stage);
     minimed_sake_log(line);
@@ -384,20 +510,23 @@ bool minimed_sake_addr_is_pump(const ble_addr_t *addr) {
 void minimed_sake_forget_pump(void) {
   prv_set_pump_paired(false);
   minimed_sake_log("forget pump -> FE82");
-  // Re-advertise first-pair immediately; in NORMAL mode the next SPIKE toggle picks it up anyway
-  // (and force_readvertise would needlessly drop the phone link).
-  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+  if (minimed_sake_get_mode() == MinimedSakeModeDual) {
+    // Open the pump-pairing window: legacy JW for the next pair, FE82 advert, and drop any live
+    // pump link so the pump re-pairs fresh. The phone link is untouched.
+    minimed_sake_cache_gateway_addr();
+    minimed_sake_apply_sm_config(true);
+    minimed_sake_pump_advert_update();
     minimed_sake_force_readvertise();
   }
 }
 
-void minimed_sake_apply_sm_config(bool spike) {
+void minimed_sake_apply_sm_config(bool pump_window) {
   // The pump and the phone want opposite Security Manager settings, and NimBLE reads ble_hs_cfg
-  // live when it builds each pairing request -- so flip at runtime by mode instead of baking one
-  // compromise into syscfg. The phone never pairs in SPIKE mode (its BT is off) and the pump never
-  // in NORMAL, so the two configs never meet. This keeps the phone bond identical to stock (no
-  // re-pair dance on every reflash) while still letting the pump pair legacy Just Works.
-  if (spike) {
+  // live when it builds each pairing request -- so flip at runtime instead of baking one
+  // compromise into syscfg. The phone keeps the stock strict-LESC bond (no re-pair dance on every
+  // reflash) while the pump pairs legacy Just Works -- only during the pump-pairing window (DUAL
+  // mode with the pump not yet bonded).
+  if (pump_window) {
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;  // pump: no MITM -> Just Works
     ble_hs_cfg.sm_mitm = 0;
     ble_hs_cfg.sm_our_key_dist = 3;  // + IRK/identity so the pump can resolve our RPA on reconnect

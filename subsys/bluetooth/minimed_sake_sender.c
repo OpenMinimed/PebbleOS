@@ -210,7 +210,7 @@ static void prv_handle_watchface_push(uint8_t txn) {
 
 // -- Session lifecycle --------------------------------------------------------------------------
 
-// KernelMain only. ctx != NULL -> open (SPIKE mode), NULL -> close (NORMAL mode).
+// KernelMain only. ctx != NULL -> open (DUAL mode), NULL -> close (NORMAL mode).
 // NOTE: we deliberately do NOT emit PEBBLE_BT_CONNECTION_EVENT here (tried in v19). The watchface's
 // system "not connected" banner is a separate problem, tackled after pairing works; faking a
 // connection at SPIKE-entry is also a discovery confound we want out of the way.
@@ -218,8 +218,11 @@ static void prv_set_mode_cb(void *ctx) {
   const bool open = (ctx != NULL);
   bt_lock();
   if (open && !s_session) {
+    // TransportDestinationApp (not Hybrid): a Hybrid loopback is a "system" session and would
+    // evict the real phone session on open (comm_session_open: last system session wins). In DUAL
+    // mode both sessions must coexist, so use an App destination, which skips the eviction.
     s_session = comm_session_open((Transport *)&s_transport, &s_loopback_implementation,
-                                  TransportDestinationHybrid);
+                                  TransportDestinationApp);
     if (s_session) {
       comm_session_set_capabilities(s_session, CommSessionAppMessage8kSupport);
     }
@@ -263,6 +266,6 @@ void minimed_sake_sender_send_status(const char *status_str) {
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
-void minimed_sake_sender_set_mode(bool spike) {
-  launcher_task_add_callback(prv_set_mode_cb, spike ? (void *)1 : NULL);
+void minimed_sake_sender_set_mode(bool open) {
+  launcher_task_add_callback(prv_set_mode_cb, open ? (void *)1 : NULL);
 }

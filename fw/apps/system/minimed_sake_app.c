@@ -40,8 +40,8 @@ typedef struct {
 } MinimedSakeAppData;
 
 static void prv_refresh(MinimedSakeAppData *data) {
-  const char *mode = (minimed_sake_get_mode() == MinimedSakeModeSpike)
-                         ? (minimed_sake_pump_paired() ? "MODE: SPIKE (FE81)" : "MODE: SPIKE (FE82)")
+  const char *mode = (minimed_sake_get_mode() == MinimedSakeModeDual)
+                         ? (minimed_sake_pump_paired() ? "MODE: DUAL (FE81)" : "MODE: DUAL (FE82)")
                          : "MODE: NORMAL";
 
   // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
@@ -65,7 +65,7 @@ static void prv_timer_cb(void *context) {
   data->timer = app_timer_register(SAKE_APP_REFRESH_MS, prv_timer_cb, NULL);
 }
 
-// SELECT toggles Normal<->Spike. Back is intentionally left unhandled so it exits the app to the
+// SELECT toggles Normal<->Dual. Back is intentionally left unhandled so it exits the app to the
 // launcher -- never trap the user out of the system menus.
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
   minimed_sake_toggle_mode();

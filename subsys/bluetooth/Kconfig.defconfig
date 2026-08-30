@@ -53,6 +53,11 @@ endchoice
 config NIMBLE_BLE_SVC_DIS_DEFAULT_READ_PERM
     default 0
 
+# MiniMed DUAL mode holds the phone and the pump at the same time, so the host and the controller
+# both need two connection slots.
+config NIMBLE_BLE_MAX_CONNECTIONS
+    default 2 if MINIMED_SAKE_SPIKE && SOC_SF32LB52
+
 # On some cases (e.g. iOS while subscribing to discovered services) the memory
 # pool used for concurrent GATT procedures runs out of slots. This doubles the
 # NimBLE default.

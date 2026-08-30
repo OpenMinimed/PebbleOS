@@ -8,6 +8,7 @@
 typedef enum {
   GAPLEAdvertisingJobTagDiscovery,
   GAPLEAdvertisingJobTagReconnection,
+  GAPLEAdvertisingJobTagMinimed,
 } GAPLEAdvertisingJobTag;
 
 //! Advertising interval preset, compliant with Apple Accessory Design Guidelines.
@@ -16,6 +17,9 @@ typedef enum {
   GAPLEAdvertisingInterval_Short,
   //! 1022.5ms interval (Apple ADG slow advertising)
   GAPLEAdvertisingInterval_Long,
+  //! ~100ms interval: fast enough for the MiniMed pump (it ignores adverts slower than ~150ms)
+  //! without the battery cost of a continuous 20ms burst. Used by the pump's own advert job.
+  GAPLEAdvertisingInterval_Medtronic,
 } GAPLEAdvertisingInterval;
 
 struct GAPLEAdvertisingJob;
@@ -137,3 +141,8 @@ void gap_le_advert_handle_disconnect_as_slave(void);
 //! rewrites the advert payload underneath us), so the scheduler's pointer-based skip would
 //! otherwise leave stale data live. No-op while connected -- the eventual re-air refreshes it.
 void gap_le_advert_force_data_refresh(void);
+
+//! Allow the scheduler to keep advertising while a connection is up (dual link mode: the MiniMed
+//! pump must be able to discover/connect while the phone already holds a link). Off by default
+//! -- the stock single-connection behaviour is advertising XOR connected.
+void gap_le_advert_set_allow_advert_while_connected(bool allow);

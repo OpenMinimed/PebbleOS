@@ -261,11 +261,11 @@ static int prv_nimble_store_write_sec(const int obj_type,
   // Bonds are the OS gateway (phone) by default.
   bool is_gateway = true;
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
-  // The pump pairs only in SPIKE mode (the phone always pairs in NORMAL), so a bond written now is
-  // the pump's. Persist it like any bond -- the keys are needed to reconnect after reboot -- but
-  // flag it non-gateway so it is NOT made the OS active gateway, which would displace the phone
-  // (symptom: pump shows in the watch's Bluetooth menu, phone can't reconnect).
-  if (minimed_sake_get_mode() == MinimedSakeModeSpike) {
+  // A bond written while the pump-pairing window is open (DUAL mode with the pump not yet bonded)
+  // is the pump's. Persist it like any bond -- the keys are needed to reconnect after reboot --
+  // but flag it non-gateway so it is NOT made the OS active gateway, which would displace the
+  // phone (symptom: pump shows in the watch's Bluetooth menu, phone can't reconnect).
+  if (minimed_sake_pump_pairing_window()) {
     is_gateway = false;
   }
 #endif

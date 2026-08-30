@@ -34,7 +34,7 @@ void minimed_sake_sender_send_iob(const char *iob_str);
 //! Pushes the full cached frame like send_iob; does not touch the BG timestamp.
 void minimed_sake_sender_send_status(const char *status_str);
 
-//! Open (spike=true) / close (spike=false) the loopback session. The session must NOT exist in
+//! Open (open=true) / close (open=false) the loopback session. The session must NOT exist in
 //! NORMAL mode: a real phone connection would then compete with it. Called from the mode toggle;
 //! marshals to KernelMain internally.
-void minimed_sake_sender_set_mode(bool spike);
+void minimed_sake_sender_set_mode(bool open);
