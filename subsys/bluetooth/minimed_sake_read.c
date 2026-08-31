@@ -128,6 +128,35 @@ static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating in
 // granularity -- Documentation PR #2 claims it is very coarse (only 50 and 100 % ever seen, from
 // bridge-era reads); the evidence log is gone, so re-gather. Plaintext single read on its own
 // char: no SAKE cipher involvement and no shared buffers, so it bypasses the exchange serialiser.
+// The pump's Device Information Service (0x180A), read once per boot. Plaintext, so no SAKE and
+// no shared buffers. Identifies which pump and firmware produced a log -- the baseline for
+// comparing against a newer, Simplera-Sync-capable pump -- and the whole set is listed as never
+// captured in OpenMinimed's todo.md, so the values are also a doc contribution. The nine
+// characteristics are those documented in Documentation/pump-services.md.
+#define DEVINFO_READ_DELAY_SECS 20
+static struct ble_npl_callout s_devinfo_co;
+static bool s_devinfo_read;
+static uint8_t s_devinfo_idx;
+
+// Binary fields are logged as hex: System ID is 8 bytes, PnP ID 7, and the IEEE 11073 regulatory
+// certification list is a structured blob -- none of them are text.
+static const struct {
+  uint16_t uuid;
+  const char *name;
+  bool hex;
+} s_devinfo_chrs[] = {
+    {0x2A29, "manufacturer", false},
+    {0x2A24, "model", false},
+    {0x2A25, "serial", false},
+    {0x2A27, "hardware revision", false},
+    {0x2A26, "firmware revision", false},
+    {0x2A28, "software revision", false},
+    {0x2A23, "system id", true},
+    {0x2A50, "pnp id", true},
+    {0x2A2A, "ieee regulatory cert", true},
+};
+#define DEVINFO_CHR_COUNT (sizeof(s_devinfo_chrs) / sizeof(s_devinfo_chrs[0]))
+
 #define BATTERY_LEVEL_UUID 0x2A19
 #define BATTERY_READ_INTERVAL_SECS (60 * 60)
 #define BATTERY_FIRST_READ_DELAY_SECS 30
@@ -867,6 +896,88 @@ static uint8_t prv_full_poll_mask(void) {
          (s_h_idd_racp != 0 && s_h_hist != 0 && !s_annunc_have ? PEND_ANNUNC : 0);
 }
 
+static void prv_devinfo_read_next(void);
+
+// v57 hard-faulted twice inside picolibc's %s conversion, with the fault correlating to this
+// sweep. Unproven, but the plausible mechanism is stack exhaustion on the NimBLE host task: v57
+// put 73 bytes of buffers in this callback's frame and then called PBL_LOG, which is itself
+// stack-hungry (logging.c guards the same hazard via prv_use_default_log_msg). So the whole line
+// is composed into one *static* buffer here and logged with a single %s, leaving this frame
+// nearly empty. The sweep is serialised, so one shared buffer is safe.
+static char s_devinfo_line[80];
+
+// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE. NimBLE runs
+// one GATT procedure at a time per connection, so the next characteristic is chained off EDONE
+// rather than issuing all nine at once.
+static int prv_devinfo_read_cb(uint16_t conn, const struct ble_gatt_error *error,
+                               struct ble_gatt_attr *attr, void *arg) {
+  const uint8_t idx = (uint8_t)(uintptr_t)arg;
+
+  if (error->status == BLE_HS_EDONE) {
+    s_devinfo_idx = idx + 1;
+    prv_devinfo_read_next();
+    return 0;
+  }
+  if (error->status != 0 || !attr || !attr->om || attr->om->om_len < 1) {
+    // Advance past a field the pump will not give us; v57 returned here without advancing, which
+    // stalled the sweep on that characteristic and re-read it every session.
+    snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s read err=0x%04x", s_devinfo_chrs[idx].name,
+             (uint16_t)error->status);
+    PBL_LOG_INFO("SAKE: pump %s", s_devinfo_line);
+    s_devinfo_idx = idx + 1;
+    prv_devinfo_read_next();
+    return 0;
+  }
+
+  const uint16_t n = attr->om->om_len;
+  int off = snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s ", s_devinfo_chrs[idx].name);
+  if (off < 0 || (unsigned)off >= sizeof(s_devinfo_line)) {
+    return 0;
+  }
+
+  if (s_devinfo_chrs[idx].hex) {
+    for (uint16_t i = 0; i < n && (unsigned)off + 3 < sizeof(s_devinfo_line); i++) {
+      off += snprintf(&s_devinfo_line[off], 3, "%02x", attr->om->om_data[i]);
+    }
+  } else {
+    unsigned room = sizeof(s_devinfo_line) - off - 1;
+    uint16_t len = n > room ? (uint16_t)room : n;
+    memcpy(&s_devinfo_line[off], attr->om->om_data, len);
+    while (len > 0 && s_devinfo_line[off + len - 1] == '\0') len--;  // trim a trailing NUL
+    s_devinfo_line[off + len] = '\0';
+  }
+  PBL_LOG_INFO("SAKE: pump %s", s_devinfo_line);
+  return 0;
+}
+
+// Read by UUID over the whole handle range, like the battery read: saves discovering the service,
+// and these 16-bit UUIDs cannot collide with the vendor 128-bit ones.
+static void prv_devinfo_read_next(void) {
+  if (s_devinfo_idx >= DEVINFO_CHR_COUNT) {
+    s_devinfo_read = true;  // whole sweep done; latch so it stays once per boot
+    return;
+  }
+  const uint8_t idx = s_devinfo_idx;
+  const ble_uuid16_t uuid = BLE_UUID16_INIT(s_devinfo_chrs[idx].uuid);
+  int rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, &uuid.u, prv_devinfo_read_cb,
+                                  (void *)(uintptr_t)idx);
+  if (rc != 0) {
+    // Abandon the sweep without latching, so the next session retries from the start.
+    PBL_LOG_INFO("SAKE: pump %s read rc=0x%04x", s_devinfo_chrs[idx].name, (uint16_t)rc);
+    s_devinfo_idx = 0;
+  }
+}
+
+// Once per boot, not per session: these only change across a pump firmware update or a pump swap,
+// and the pump reconnects often enough that a per-session sweep would be log spam.
+static void prv_devinfo_timer_cb(struct ble_npl_event *ev) {
+  if (s_devinfo_read) {
+    return;
+  }
+  s_devinfo_idx = 0;
+  prv_devinfo_read_next();
+}
+
 // read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE.
 static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error,
                                struct ble_gatt_attr *attr, void *arg) {
@@ -918,6 +1029,8 @@ static void prv_start_polling(void) {
   ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
   ble_npl_callout_reset(&s_battery_co,
                         ble_npl_time_ms_to_ticks32(BATTERY_FIRST_READ_DELAY_SECS * 1000));
+  ble_npl_callout_reset(&s_devinfo_co,
+                        ble_npl_time_ms_to_ticks32(DEVINFO_READ_DELAY_SECS * 1000));
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
@@ -1229,6 +1342,7 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
   ble_npl_callout_init(&s_status_tick_co, nimble_port_get_dflt_eventq(), prv_status_tick_cb, NULL);
   ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
+  ble_npl_callout_init(&s_devinfo_co, nimble_port_get_dflt_eventq(), prv_devinfo_timer_cb, NULL);
 }
 
 void minimed_sake_read_start(uint16_t conn_handle) {
@@ -1275,4 +1389,5 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_op_timeout_co);
   ble_npl_callout_stop(&s_status_tick_co);
   ble_npl_callout_stop(&s_battery_co);
+  ble_npl_callout_stop(&s_devinfo_co);
 }
