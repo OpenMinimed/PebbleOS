@@ -544,9 +544,22 @@ int minimed_sake_service_init(void) {
   ble_npl_callout_init(&s_notify_co, nimble_port_get_dflt_eventq(), prv_notify_cb, NULL);
   minimed_sake_read_init();
 
-  // Boot mode is NORMAL: make sure the phone gets the stock strict config even though we compile
-  // with the permissive legacy gates (SC_ONLY 0 / LEGACY 1) the pump needs.
-  minimed_sake_apply_sm_config(false);
+  // Re-arm DUAL state after a Bluetooth stack restart that was triggered while in DUAL (the
+  // pump-liveness watchdog's recovery, or a manual DUAL-keep restart). s_mode survives the
+  // restart (it is a static), but the loopback session, the pump advert job, and the
+  // advertise-while-connected flag were all torn down with the stack -- re-create them.
+  if (minimed_sake_get_mode() == MinimedSakeModeDual) {
+    minimed_sake_clear_link_state();
+    minimed_sake_cache_gateway_addr();
+    minimed_sake_apply_sm_config(minimed_sake_pump_pairing_window());
+    minimed_sake_sender_set_mode(true);
+    gap_le_advert_set_allow_advert_while_connected(true);
+    minimed_sake_pump_advert_start();
+  } else {
+    // Boot mode is NORMAL: make sure the phone gets the stock strict config even though we compile
+    // with the permissive legacy gates (SC_ONLY 0 / LEGACY 1) the pump needs.
+    minimed_sake_apply_sm_config(false);
+  }
 
   prv_load_pump_paired();
   if (s_pump_paired) {

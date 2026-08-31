@@ -70,6 +70,11 @@ void minimed_sake_clear_link_state(void) {
   s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
   s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
 }
+
+// True while the pump link is tracked as connected. Used by the pump-liveness watchdog.
+bool minimed_sake_pump_connected(void) {
+  return s_sake_conn_handle != BLE_HS_CONN_HANDLE_NONE;
+}
 #endif
 
 static int prv_device_name_read_event_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -324,6 +329,18 @@ static void prv_end_pairing(uint16_t conn_handle, bool success) {
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
   const uint16_t conn_handle = event->disconnect.conn.conn_handle;
+  // Layer 2 diagnostic: every host-delivered disconnect, BEFORE the swallow routing, with the two
+  // tracked pump handles so the reason it was (or was not) swallowed is visible. An untracked
+  // disconnect that also fails the pump-address test is a pump link the driver never recorded
+  // (e.g. a handle cleared early or a second pump link) and would route into the fw stack.
+  {
+    char line[64];
+    snprintf(line, sizeof(line), "disc hdl=%u r=0x%02x sake=%u rej=%u %02x:%02x",
+             conn_handle, (uint8_t)event->disconnect.reason, s_sake_conn_handle,
+             s_rejected_pump_conn, event->disconnect.conn.peer_id_addr.val[5],
+             event->disconnect.conn.peer_id_addr.val[0]);
+    minimed_sake_log(line);
+  }
   if (conn_handle == s_rejected_pump_conn) {
     // A pump connection we rejected in NORMAL. The stack never saw it connect, so do NOT route its
     // disconnect (that path derefs a never-created GAPLEConnection -> NULL crash). The controller
@@ -351,6 +368,16 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     minimed_sake_spike_report(MinimedSakeStageDisconnected);
     gap_le_advert_force_data_refresh();
     return;
+  }
+  {
+    // Untracked disconnect routed into the fw stack: the phone, or a pump the driver never
+    // recorded. Name it so a mis-swallowed pump shows up as "disc UNTRACKED <pump addr>" instead
+    // of silently passing as a phone disconnect.
+    char line[40];
+    snprintf(line, sizeof(line), "disc UNTRACKED r=0x%02x %02x:%02x",
+             (uint8_t)event->disconnect.reason, event->disconnect.conn.peer_id_addr.val[5],
+             event->disconnect.conn.peer_id_addr.val[0]);
+    minimed_sake_log(line);
   }
 #endif
 
@@ -672,6 +699,16 @@ static int prv_handle_gap_event(struct ble_gap_event *event, void *arg) {
       break;
     default:
       PBL_LOG_WRN("Unhandled GAP event: %d", event->type);
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+      {
+        // Layer 2 diagnostic: an unhandled GAP event could carry a disconnect-like signal (e.g. a
+        // termination the host routed oddly). Name it on-watch so a silent pump drop is not
+        // invisible here.
+        char line[32];
+        snprintf(line, sizeof(line), "gap evt unhandled %d", (int)event->type);
+        minimed_sake_log(line);
+      }
+#endif
       break;
   }
   return 0;

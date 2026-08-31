@@ -15,7 +15,7 @@
 #include <string.h>
 #include <time.h>
 
-#define SAKE_LOG_LINES 12
+#define SAKE_LOG_LINES 14
 #define SAKE_LOG_WIDTH 40
 #define SAKE_LOG_TS_LEN 9  // "HH:MM:SS "
 
@@ -93,6 +93,22 @@ MinimedSakeMode minimed_sake_get_mode(void) { return s_mode; }
 
 const char *minimed_sake_get_log(void) { return s_joined; }
 
+// Watchdog recovery: the pump link went silent. Keep the mode DUAL and run the NORMAL kill-switch
+// restart -- it frees the phantom connection slot, drops the silent link, and re-arms advertising.
+// The SAKE service re-arms the full DUAL state when the restarted stack re-inits
+// (minimed_sake_service_init). bt_ctl_reset_bluetooth is async (scheduled on the system task), so
+// there is no race with the mode flag here.
+void minimed_sake_watchdog_retoggle(void) {
+  if (minimed_sake_get_mode() != MinimedSakeModeDual) {
+    return;
+  }
+  minimed_sake_clear_link_state();  // a stale pump handle must not alias (and swallow) a phone link
+  minimed_sake_pump_advert_stop();
+  minimed_sake_sender_set_mode(false);
+  gap_le_advert_set_allow_advert_while_connected(false);
+  bt_ctl_reset_bluetooth();
+}
+
 void minimed_sake_toggle_mode(void) {
   s_mode = (s_mode == MinimedSakeModeNormal) ? MinimedSakeModeDual : MinimedSakeModeNormal;
   if (s_mode == MinimedSakeModeDual) {
@@ -135,6 +151,8 @@ bool minimed_sake_addr_is_gateway(const uint8_t addr[6], uint8_t addr_type) {
   return false;
 }
 void minimed_sake_clear_link_state(void) {}
+bool minimed_sake_pump_connected(void) { return false; }
+void minimed_sake_watchdog_retoggle(void) {}
 void minimed_sake_pump_advert_start(void) {}
 void minimed_sake_pump_advert_stop(void) {}
 void minimed_sake_pump_advert_update(void) {}

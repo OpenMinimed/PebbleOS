@@ -88,6 +88,16 @@ bool minimed_sake_addr_is_gateway(const uint8_t addr[6], uint8_t addr_type);
 //! stack restart cannot alias (and swallow) a later phone connection.
 void minimed_sake_clear_link_state(void);
 
+//! Implemented in the BT layer (advert.c): true while a pump link is tracked as connected. Used by
+//! the pump-liveness watchdog.
+bool minimed_sake_pump_connected(void);
+
+//! Implemented in the popups layer (minimed_sake_spike_ui.c): the pump-liveness watchdog's
+//! recovery. Keeps the mode DUAL and runs the NORMAL kill-switch stack restart to free a phantom
+//! pump connection slot and re-arm the pump advert; the SAKE service re-arms DUAL after the
+//! restart completes (see minimed_sake_service_init).
+void minimed_sake_watchdog_retoggle(void);
+
 //! Implemented in the BT layer (minimed_sake_service.c): start/stop/update the pump's own
 //! advertising job (Medtronic FE82/FE81 payload at ~100ms, independent of the phone's
 //! Reconnection job). Update re-schedules with the current paired flag (FE82<->FE81).
