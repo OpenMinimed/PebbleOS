@@ -27,6 +27,20 @@ test_log_dict = {
         "color": "RED",
         "msg": "Start Authentication Process %d (%x) %s",
     },
+    "215": {
+        "file": "../src/fw/services/battery/nrf_fuel_gauge/battery_state.c",
+        "line": "415",
+        "level": "200",
+        "color": "GREY",
+        "msg": "Percent: %hhu, V: %ld mV, charging: %s",
+    },
+    "216": {
+        "file": "length_modifiers.c",
+        "line": "1",
+        "level": "200",
+        "color": "GREY",
+        "msg": "%llu %zu %jd %td %hu %Lf 100%%",
+    },
     "214": {
         "file": "pointer_print.c",
         "line": "1872",
@@ -304,3 +318,24 @@ def test_ble_decode():
     assert os.path.basename(line_dict["file"]) == "hc_protocol.c"
     assert line_dict["line"] == "69"
     assert line_dict["formatted_msg"] == "Init BLE SPI Protocol"
+
+
+def test_length_modifiers():
+    """
+    C length modifiers must be dropped before Python's % formatting sees them. Python ignores
+    h/l/L but raises "unsupported format character" on hh/ll/z/j/t, so a firmware line using
+    PRIu8 or PRIu64 used to dehash to that error instead of a message.
+    """
+
+    line = "? A 21:35:14.375 :0> NL:{:x} 24 e0d `no`".format(215)
+    assert (
+        dehash_line_unformatted(line, test_log_dict)["formatted_msg"]
+        == "Percent: 36, V: 3597 mV, charging: no"
+    )
+
+    # Args arrive hex-encoded from the firmware, hence e0d for 3597 above and ff for 255 here.
+    line = "? A 21:35:14.375 :0> NL:{:x} 5 7 8 9 ff 2".format(216)
+    assert (
+        dehash_line_unformatted(line, test_log_dict)["formatted_msg"]
+        == "5 7 8 9 255 2.000000 100%"
+    )
