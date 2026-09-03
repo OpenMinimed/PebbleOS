@@ -31,13 +31,13 @@ static const Uuid s_watchface_uuid = {
     0xb6, 0x3f, 0x91, 0x6a, 0x82, 0x13, 0xd2, 0x84,
 };
 
-// Pebble Glucose Protocol v1 keys (minimed-pebble-watchface docs/PEBBLE_GLUCOSE_PROTOCOL.md).
-// BG string + timestamp; IOB string (14); graph (17). Status (15) later.
+// Pebble Glucose Protocol v1 keys (pebble-glucose-protocol/PROTOCOL.md).
+// BG string + timestamp; IOB string (14); status (15); graph (30).
 #define KEY_BG_TIMESTAMP 10
 #define KEY_BG_STRING 11
 #define KEY_IOB_STRING 14
 #define KEY_STATUS_STRING 15
-#define KEY_GRAPH_DATA 17
+#define KEY_GRAPH_DATA 30
 
 #define BG_STR_MAX 8      // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
 #define IOB_STR_MAX 8     // "N.N"/"NN.N" IU
