@@ -79,6 +79,10 @@ static bool s_pump_paired;
 // host task, so no locking.
 static ble_addr_t s_pump_id_addr;
 static bool s_pump_addr_known;
+// True once flash holds the address currently in s_pump_id_addr. The paired flag cannot stand in
+// for this: prv_set_pump_paired short-circuits when the flag does not change, so a watch that was
+// already paired before the address was persisted would never write it.
+static bool s_pump_addr_persisted;
 
 // The pump's own advertising job in DUAL mode. The scheduler has a single advertising instance,
 // so this time-shares with the phone's jobs; it is independent of the Reconnection job, which the
@@ -87,8 +91,7 @@ static GAPLEAdvertisingJobRef s_pump_advert_job;
 
 // Cached identity of the phone (gateway) bond, captured when the pump-pairing window opens so a
 // reconnecting phone during the window is not misclassified as the pump (whose identity is unknown
-// until its first handshake). RAM-only: the window opens on the app/KernelMain task, so the flash
-// read happens there, never on the BT host task.
+// until its first handshake). RAM-only, refreshed on every DUAL entry and on stack re-init.
 static bool s_gateway_addr_known;
 static ble_addr_t s_gateway_addr;
 
@@ -114,6 +117,7 @@ static void prv_load_pump_paired(void) {
                         sizeof(addr)) == S_SUCCESS) {
     s_pump_id_addr = addr;
     s_pump_addr_known = true;
+    s_pump_addr_persisted = true;
   }
   settings_file_close(&fd);
 }
@@ -135,6 +139,8 @@ static void prv_store_pump_paired_cb(void *data) {
     if (settings_file_set(&fd, s_pump_addr_key, sizeof(s_pump_addr_key),
                           (uint8_t *)&s_pump_id_addr, sizeof(s_pump_id_addr)) != S_SUCCESS) {
       minimed_sake_log("persist addr fail");
+    } else {
+      s_pump_addr_persisted = true;
     }
   }
   settings_file_close(&fd);
@@ -213,7 +219,9 @@ bool minimed_sake_pump_pairing_window(void) {
 }
 
 // Cache the phone (gateway) identity so a reconnecting phone during the pump-pairing window is not
-// misclassified as the pump. Called on the app/KernelMain task (toggle to DUAL, forget-pump).
+// misclassified as the pump. Called on the app/KernelMain task (toggle to DUAL, forget-pump) and
+// on the BT host task from minimed_sake_service_init. The settings read is safe on either --
+// prv_load_pump_paired below already reads the same way from service_init.
 void minimed_sake_cache_gateway_addr(void) {
   s_gateway_addr_known = false;
   pbl_bt_bonding_id_t gw = bt_persistent_storage_get_ble_ancs_bonding();
@@ -237,6 +245,62 @@ bool minimed_sake_addr_is_gateway(const uint8_t addr[6], uint8_t addr_type) {
   }
   return memcmp(s_gateway_addr.val, addr, 6) == 0;
 }
+
+// Recover the pump identity from the bond store. Needed on a watch that paired before the address
+// was persisted: flash has the paired flag but no pumpaddr, and prv_set_pump_paired short-circuits
+// on an unchanged flag, so nothing would write it. Until the address is known the first connect of
+// every boot is classified as the phone -- addr_is_pump is false and the pairing window is shut
+// once paired -- which routes the pump into the fw stack and later swallows its disconnect.
+// The pump is the only non-gateway BLE bond (nimble_store stores it with is_gateway = false).
+#define PUMP_BOND_SEARCH_MAX 4
+typedef struct {
+  int count;
+  pbl_bt_bonding_id_t ids[PUMP_BOND_SEARCH_MAX];
+  ble_addr_t addrs[PUMP_BOND_SEARCH_MAX];
+} PumpBondSearch;
+
+// Collect only. bt_persistent_storage_for_each_ble_pairing holds the bonding-DB mutex while it
+// runs this, and that mutex is not recursive, so anything that reads the bonding DB here -- the
+// is-gateway test included -- self-deadlocks. The same rule is spelled out at the other call site
+// in settings/bluetooth.c. Deadlocking here hangs the NimBLE host task during init, which times
+// out into PBL_CROAK and reboots the watch until it drops to PRF.
+static void prv_adopt_pump_bond_cb(struct pbl_bt_device_internal *device, struct pbl_bt_sm_key *irk,
+                                   const char *name, pbl_bt_bonding_id_t *id, void *context) {
+  PumpBondSearch *search = (PumpBondSearch *)context;
+  if (search->count >= PUMP_BOND_SEARCH_MAX) {
+    return;
+  }
+  search->ids[search->count] = *id;
+  pebble_device_to_nimble_addr(device, &search->addrs[search->count]);
+  search->count++;
+}
+
+// Runs on KernelMain, never on the BT host task: this reads the bonding DB, and doing that from
+// inside minimed_sake_service_init hangs BT init (see the callback above). Scheduling it also
+// keeps the read off whatever init ordering the bonding DB itself needs. The pump cannot connect
+// before the user toggles to DUAL, so landing a beat later is soon enough.
+static void prv_adopt_pump_bond_cb2(void *unused) {
+  PumpBondSearch search = {0};
+  bt_persistent_storage_for_each_ble_pairing(prv_adopt_pump_bond_cb, &search);
+  // The lock is free now, so the gateway test is safe.
+  int found = 0;
+  ble_addr_t addr = {0};
+  for (int i = 0; i < search.count; i++) {
+    if (bt_persistent_storage_is_ble_ancs_bonding(search.ids[i])) {
+      continue;  // the phone
+    }
+    found++;
+    addr = search.addrs[i];
+  }
+  if (found != 1) {
+    return;  // no pump bond, or ambiguous -- leave it to the next handshake
+  }
+  s_pump_id_addr = addr;
+  s_pump_addr_known = true;
+  minimed_sake_log("pump addr from bond");
+}
+
+static void prv_adopt_pump_bond(void) { launcher_task_add_callback(prv_adopt_pump_bond_cb2, NULL); }
 
 static void prv_rng(void *ud, uint8_t *out, size_t n) {
   (void)ud;
@@ -316,8 +380,17 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     prv_set_pump_paired(true);  // pump is bonded now -> advertise FE81 (reconnect) from here on
     struct ble_gap_conn_desc d;  // remember who the pump is, for the v29 PUMP/phone conn label
     if (ble_gap_conn_find(conn_handle, &d) == 0) {
+      const bool changed =
+          !s_pump_addr_known || memcmp(&s_pump_id_addr, &d.peer_id_addr, sizeof(s_pump_id_addr));
       s_pump_id_addr = d.peer_id_addr;
       s_pump_addr_known = true;
+      // Persist here, not only via prv_set_pump_paired: on a watch that was already paired the
+      // flag never changes, so that path never fires and the address would stay RAM-only. Then
+      // every cold boot classifies the pump's first connect as the phone (the pairing window is
+      // closed once paired), routing a link into the fw stack whose disconnect is later swallowed.
+      if (changed || !s_pump_addr_persisted) {
+        launcher_task_add_callback(prv_store_pump_paired_cb, s_pump_paired ? (void *)1 : NULL);
+      }
     }
     minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
@@ -564,6 +637,9 @@ int minimed_sake_service_init(void) {
   prv_load_pump_paired();
   if (s_pump_paired) {
     minimed_sake_log("paired (persisted): FE81");
+    if (!s_pump_addr_known) {
+      prv_adopt_pump_bond();  // paired before pumpaddr existed; the handshake will persist it
+    }
   }
 
   s_keydb_ok = sake_keydb_parse(&s_keydb, s_pump_keydb_bytes, sizeof(s_pump_keydb_bytes));
