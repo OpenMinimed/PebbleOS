@@ -742,17 +742,19 @@ bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_int
     // the scheduler retries every second -- a line per attempt would flood both the flash log and
     // the 8-line on-watch ring. The retry itself is load-bearing: it is what puts the pump back
     // on air the moment a slot frees.
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
     if (s_last_adv_enable_ok) {
       PBL_LOG_ERR("Failed to start advertising (0x%04x)", (uint16_t)rc);
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
       if (minimed_sake_get_mode() == MinimedSakeModeDual) {
         char line[32];
         snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
         minimed_sake_log(line);  // v15 failed here invisibly -- surface the first failure, not the spam
       }
-#endif
     }
     s_last_adv_enable_ok = false;
+#else
+    PBL_LOG_ERR("Failed to start advertising (0x%04x)", (uint16_t)rc);
+#endif
     return false;
   }
 
