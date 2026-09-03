@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
 # One-shot build/version/deploy for the MiniMed SAKE spike firmware.
 #
-#   ./spike-build.sh <desc>          build slot0+slot1 bundles + share both to the phone.
+#   ./spike-build.sh <desc>              build + share to the phone (default board: asterix)
+#   ./spike-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
 #   ./spike-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
 #   ./spike-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
 #
-# What this produces and why (see PROGRESS.md "PT2 port" for the full post-mortem):
-#   - Release build  (CONFIG_RELEASE=y). The very first black-screens were caused by this flag
+# Two boards, two recipes. They differ in more than the --board flag, hence the profile block
+# below rather than one parametrised path:
+#
+# asterix (Pebble 2 Duo, nRF52840) -- the default, Morten's watch:
+#   - Single bundle. asterix has one firmware slot, so there is no slot dance.
+#   - Non-release build against the locally built image.
+#
+# obelix@pvt (Pebble Time 2, SiFli SF32LB52) -- palmarci's watch, --pt2:
+# (see PROGRESS.md "PT2 port" for the full post-mortem)
+#   - Release build (CONFIG_RELEASE=y). The very first black-screens were caused by this flag
 #     being silently dropped, making non-release builds that hung the obelix display/boot path.
 #   - Separate, correctly-linked slot0 AND slot1 bundles. The Pebble app resolves a sideload to
 #     the slot NOT currently running (updateToSlot = 1 - runningSlot) and its safety check requires
@@ -20,32 +29,56 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-IMAGE=ghcr.io/coredevices/pebbleos-docker:v6   # official CI image, not the local commit
-BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
-BOARD_NORM=${BOARD//@/_}                      # obelix_pvt (BOARD_NORMALIZED strips @revision)
-SPIKE_TAG=${SPIKE_TAG:-v4.36.9}               # release-form tag stamped into the bundle
+profile=asterix
 do_configure=0
 push=1
 desc=""
 for arg in "$@"; do
   case "$arg" in
-    --configure) do_configure=1 ;;
-    --no-push)   push=0 ;;
-    -*)          echo "unknown flag: $arg" >&2; exit 2 ;;
-    *)           desc="$arg" ;;
+    --configure)        do_configure=1 ;;
+    --no-push)          push=0 ;;
+    --pt2|--obelix)     profile=obelix ;;
+    --asterix)          profile=asterix ;;
+    -*)                 echo "unknown flag: $arg" >&2; exit 2 ;;
+    *)                  desc="$arg" ;;
   esac
 done
-[ -n "$desc" ] || { echo "usage: $0 <desc> [--configure] [--no-push]" >&2; exit 2; }
+[ -n "$desc" ] || { echo "usage: $0 <desc> [--pt2] [--configure] [--no-push]" >&2; exit 2; }
 
-# Ensure a release-form annotated tag exists on HEAD so `git describe` in the build resolves to
-# something the Pebble app parses (vX.Y.Z / -beta / -rc) AND that encodes as release band.
-# If SPIKE_TAG exists on an older commit, move it to HEAD (the bundle carries the HEAD build).
-git tag -f -a "$SPIKE_TAG" -m "spike pt2 build" HEAD >/dev/null 2>&1
-git describe --dirty
+if [ "$profile" = obelix ]; then
+  IMAGE=ghcr.io/coredevices/pebbleos-docker:v6  # official CI image, not the local commit
+  BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
+  DOCKER_USER=()                                # the CI image needs root to pip install
+  PIP_CMD='pip install -U pip >/dev/null 2>&1; pip install -r requirements.txt >/dev/null 2>&1;'
+  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE_SPIKE=y"
+  SLOTS=(0 1)
+  NEED_TAG=1
+  VERIFY_BAND=1
+else
+  IMAGE=pebbleos-build:local
+  BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
+  DOCKER_USER=(-u "$(id -u):$(id -g)")
+  PIP_CMD=''
+  CORE_CFG="-DCONFIG_MINIMED_SAKE_SPIKE=y"
+  SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
+  NEED_TAG=0
+  VERIFY_BAND=0
+fi
+BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (BOARD_NORMALIZED strips @revision)
+SPIKE_TAG=${SPIKE_TAG:-v4.36.9}                 # release-form tag stamped into the bundle
+echo ">> board $BOARD (image $IMAGE)"
+
+if [ "$NEED_TAG" = 1 ]; then
+  # Ensure a release-form annotated tag exists on HEAD so `git describe` in the build resolves to
+  # something the Pebble app parses (vX.Y.Z / -beta / -rc) AND that encodes as release band.
+  # If SPIKE_TAG exists on an older commit, move it to HEAD (the bundle carries the HEAD build).
+  git tag -f -a "$SPIKE_TAG" -m "spike pt2 build" HEAD >/dev/null 2>&1
+  git describe --dirty
+fi
 
 # Fast path: keep the existing build/c4che configure (incremental) unless one is missing
 # or the board/config changed. Re-configure only on --configure or first run.
-if [ -d build/c4che ] && ! grep -q "${BOARD%@*}" build/c4che/_cache.py 2>/dev/null; then
+if [ -d build/c4che ] && ! grep -q "BOARD = '${BOARD%@*}'" build/c4che/_cache.py 2>/dev/null; then
   do_configure=1
 fi
 [ -d build/c4che ] || do_configure=1
@@ -54,30 +87,34 @@ fi
 next_ver=$(( $(ls build/sake-spike-v*.pbz 2>/dev/null \
   | sed -n 's#.*/sake-spike-v\([0-9]\{1,\}\)-.*#\1#p' | sort -n | tail -1 | grep -E '^[0-9]+$' || echo 0) + 1 ))
 
-CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE_SPIKE=y"
-
+# Build one image. With an argument it is a slot number (obelix); without, the board's single slot.
 build_slot() {
-  local slot=$1
+  local slot=${1:-}
   local cfg=""
-  # Configure if forced, or if the existing cache lacks the spike/release config or targets a
-  # different slot. Guards against stale caches from a previous plain (non-spike) configure.
-  if [ "$do_configure" = 1 ] || ! grep -q "FIRMWARE_SLOT = $slot" build/c4che/_cache.py 2>/dev/null \
-     || ! grep -q "MINIMED_SAKE_SPIKE" build/c4che/_cache.py 2>/dev/null \
-     || ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
+  # Configure if forced, or if the existing cache lacks the spike config, targets a different slot,
+  # or (obelix) is not a release build. Guards against stale caches from a plain configure.
+  if [ "$do_configure" = 1 ] || ! grep -q "MINIMED_SAKE_SPIKE" build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
-  echo ">> building slot$slot (v$next_ver-$desc)${cfg:+ [configure]}..."
-  docker run --rm -e HOME=/tmp \
+  if [ -n "$slot" ] && ! grep -q "FIRMWARE_SLOT = $slot" build/c4che/_cache.py 2>/dev/null; then
+    cfg="true"
+  fi
+  if [ "$VERIFY_BAND" = 1 ] && ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
+    cfg="true"
+  fi
+  echo ">> building ${slot:+slot$slot }(v$next_ver-$desc)${cfg:+ [configure]}..."
+  docker run --rm "${DOCKER_USER[@]}" -e HOME=/tmp \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       git config --global --add safe.directory /pebbleos
-      pip install -U pip >/dev/null 2>&1
-      pip install -r requirements.txt >/dev/null 2>&1
+      $PIP_CMD
       export PATH=/opt/pebbleos-sdk/arm-none-eabi/bin:\$PATH
-      ${cfg:+./waf configure --board $BOARD -DCONFIG_FIRMWARE_SLOT=$slot $CORE_CFG && }./waf build && ./waf bundle"
+      ${cfg:+./waf configure --board $BOARD ${slot:+-DCONFIG_FIRMWARE_SLOT=$slot} $CORE_CFG && }./waf build && ./waf bundle"
 }
 
+# Only obelix boots via the Pebble app's release-band check; asterix takes whatever we build.
 verify_bundle() {
   local out=$1
+  [ "$VERIFY_BAND" = 1 ] || return 0
   local version_tag band_hex maj min pat
   version_tag=$(unzip -p "$out" manifest.json | python3 -c "import json,sys; print(json.load(sys.stdin)['firmware']['versionTag'])")
   read band_hex maj min pat <<<"$(python3 -c "
@@ -97,20 +134,29 @@ print(f'{(prio>>56)&0xff:02x} {(prio>>48)&0xff} {(prio>>40)&0xff} {(prio>>32)&0x
   fi
 }
 
-out_slot0="build/sake-spike-v${next_ver}-${desc}_slot0.pbz"
-out_slot1="build/sake-spike-v${next_ver}-${desc}_slot1.pbz"
+outs=()
+if [ ${#SLOTS[@]} -eq 0 ]; then
+  build_slot
+  fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
+  out="build/sake-spike-v${next_ver}-${desc}.pbz"
+  cp "$fresh" "$out"
+  verify_bundle "$out"
+  echo ">> $out"
+  outs+=("$out")
+else
+  for slot in "${SLOTS[@]}"; do
+    build_slot "$slot"
+    fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
+    out="build/sake-spike-v${next_ver}-${desc}_slot${slot}.pbz"
+    cp "$fresh" "$out"
+    verify_bundle "$out"
+    outs+=("$out")
+  done
+fi
 
-build_slot 0
-fresh=$(ls -t build/normal_${BOARD_NORM}_*slot0.pbz | head -1)
-cp "$fresh" "$out_slot0"
-verify_bundle "$out_slot0"
-
-build_slot 1
-fresh=$(ls -t build/normal_${BOARD_NORM}_*slot1.pbz | head -1)
-cp "$fresh" "$out_slot1"
-verify_bundle "$out_slot1"
-
-# Keep this build's loghash dictionary next to the .pbz. (SAME dict for both slots.)
+# Keep this build's loghash dictionary next to the .pbz. PBL_LOG lines are stored hashed and the
+# hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
+# back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f build/pebbleos_loghash_dict.json ]; then
   cp build/pebbleos_loghash_dict.json "build/sake-spike-v${next_ver}-${desc}.loghash.json"
 fi
@@ -120,19 +166,23 @@ if [ "$push" = 1 ]; then
     # adb first: over USB or `adb connect IP:port` (also the tunnel to the phone's 9000 port for
     # pebble logs / dump_flash_logs). Lands in the phone's Downloads so the Pebble app's file
     # picker can find it.
-    adb push "$out_slot0" /sdcard/Download/ >/dev/null 2>&1 && \
-      echo ">> pushed to phone: $(basename "$out_slot0")"
-    adb push "$out_slot1" /sdcard/Download/ >/dev/null 2>&1 && \
-      echo ">> pushed to phone: $(basename "$out_slot1")"
-    echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
+    for out in "${outs[@]}"; do
+      adb push "$out" /sdcard/Download/ >/dev/null 2>&1 && \
+        echo ">> pushed to phone: $(basename "$out")"
+    done
+    if [ ${#outs[@]} -gt 1 ]; then
+      echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
+    fi
   else
     device=$(kdeconnect-cli -a --id-only 2>/dev/null | head -1)
     if [ -n "$device" ]; then
-      kdeconnect-cli -d "$device" --share "$out_slot0" >/dev/null && \
-        echo ">> shared to phone: $(basename "$out_slot0")"
-      kdeconnect-cli -d "$device" --share "$out_slot1" >/dev/null && \
-        echo ">> shared to phone: $(basename "$out_slot1")"
-      echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
+      for out in "${outs[@]}"; do
+        kdeconnect-cli -d "$device" --share "$out" >/dev/null && \
+          echo ">> shared to phone: $(basename "$out")"
+      done
+      if [ ${#outs[@]} -gt 1 ]; then
+        echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
+      fi
     else
       echo ">> skip share: no adb device and no reachable kdeconnect device (use --no-push to silence)"
     fi
