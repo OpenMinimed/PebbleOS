@@ -9,6 +9,7 @@
 #include "kernel/event_loop.h"
 #include "kernel/pbl_malloc.h"
 #include "pbl/drivers/rtc.h"
+#include "pbl/logging/logging.h"
 #include "pbl/services/bluetooth/bluetooth_ctl.h"
 
 #include <stdio.h>
@@ -73,6 +74,17 @@ static const char *prv_stage_text(MinimedSakeStage stage) {
   }
 }
 
+// Connectivity events that must survive to the flash log. The 14-line ring is fine for watching
+// the screen live, but a dropout gets diagnosed hours later from dump_flash_logs.py, and
+// everything about the pump link -- its connect classification, its disconnects, whether its
+// advert job even exists -- was ring-only. Two nights and one wrong fix went into rediscovering
+// that. Deliberately NOT used for the per-poll read path, which has its own PBL_LOGs, nor for
+// anything on the advert rotation path, which fires about once a second while two jobs exist.
+void minimed_sake_log_evt(const char *msg) {
+  PBL_LOG_INFO("SAKE: %s", msg);
+  minimed_sake_log(msg);
+}
+
 void minimed_sake_log(const char *msg) {
   size_t n = strlen(msg) + 1;
   char *copy = (char *)kernel_malloc(n);
@@ -109,10 +121,25 @@ void minimed_sake_watchdog_retoggle(void) {
   bt_ctl_reset_bluetooth();
 }
 
+// Called by bluetooth_ctl.c once the whole Bluetooth stack is up. The advert half of the DUAL
+// re-arm has to happen here, not in minimed_sake_service_init: that one runs inside
+// bt_driver_start, and gap_le_init() -> gap_le_advert_init() runs right after it and resets
+// s_jobs, s_current and s_allow_advert_while_connected. A job scheduled any earlier is thrown
+// away -- gap_le_advert_schedule frees it outright while the module is deinitialised -- so after a
+// stack restart the pump had no advert at all and could never reconnect.
+void minimed_sake_bt_started(void) {
+  if (minimed_sake_get_mode() != MinimedSakeModeDual) {
+    return;
+  }
+  gap_le_advert_set_allow_advert_while_connected(true);
+  minimed_sake_pump_advert_start();
+  minimed_sake_log_evt("BT up -> re-arm DUAL adv");
+}
+
 void minimed_sake_toggle_mode(void) {
   s_mode = (s_mode == MinimedSakeModeNormal) ? MinimedSakeModeDual : MinimedSakeModeNormal;
   if (s_mode == MinimedSakeModeDual) {
-    minimed_sake_log("mode -> DUAL");
+    minimed_sake_log_evt("mode -> DUAL");
     minimed_sake_clear_link_state();  // no pump link exists entering DUAL; drop any stale handle so
                                       // it cannot alias (and swallow) a future phone connection
     minimed_sake_cache_gateway_addr();     // so a reconnecting phone isn't mistaken for the pump
@@ -127,7 +154,7 @@ void minimed_sake_toggle_mode(void) {
     // pump link handles here: the pump link is still up until the stack stops, and a disconnect
     // arriving in that window must still be swallowed (routing it would deref a never-created
     // GAPLEConnection). The handles are cleared on the next DUAL entry instead.
-    minimed_sake_log("mode -> NORMAL");
+    minimed_sake_log_evt("mode -> NORMAL");
     minimed_sake_apply_sm_config(false);
     minimed_sake_pump_advert_stop();
     minimed_sake_sender_set_mode(false);
@@ -140,8 +167,10 @@ void minimed_sake_toggle_mode(void) {
 
 MinimedSakeMode minimed_sake_get_mode(void) { return MinimedSakeModeNormal; }
 void minimed_sake_toggle_mode(void) {}
+void minimed_sake_bt_started(void) {}
 void minimed_sake_spike_report(MinimedSakeStage stage) { (void)stage; }
 void minimed_sake_log(const char *msg) { (void)msg; }
+void minimed_sake_log_evt(const char *msg) { (void)msg; }
 const char *minimed_sake_get_log(void) { return ""; }
 bool minimed_sake_pump_pairing_window(void) { return false; }
 void minimed_sake_cache_gateway_addr(void) {}

@@ -605,6 +605,16 @@ void gap_le_advert_handle_connect_as_slave(void) {
     prv_analytics_stop_timers();
 
     s_is_connected = true;
+
+    // Dual link: the reasoning above holds only when advertising and being connected are mutually
+    // exclusive. When they are not, the controller has just stopped advertising and nobody re-airs
+    // it, so any job meant to stay up while connected -- the MiniMed pump's -- silently goes off
+    // air until something else forces a refresh. Observed overnight as the pump failing to
+    // reconnect for 86 and 160 minutes after a Bluetooth stack restart, in exactly the cases where
+    // the phone connected after the pump's job was scheduled.
+    if (s_allow_advert_while_connected && s_current) {
+      prv_perform_next_job(true /* force refresh, connectability mode changed */);
+    }
   }
 unlock:
   bt_unlock();

@@ -13,6 +13,7 @@
 #endif
 #include <pbl/kernel/mutex.h>
 #include <pbl/logging/logging.h>
+#include "popups/minimed_sake_spike_ui.h"
 #include <pbl/services/analytics/analytics.h>
 #include <pbl/services/bluetooth/ble_bas.h>
 #include <pbl/services/bluetooth/ble_hrm.h>
@@ -95,6 +96,11 @@ static void prv_comm_start(void) {
 #endif
     ble_bas_init();
     bt_pairability_init();
+#ifdef CONFIG_MINIMED_SAKE_SPIKE
+    // Must come after gap_le_init(): that resets the advert scheduler, so the pump's advert job
+    // and the advertise-while-connected flag can only be set up once it has run.
+    minimed_sake_bt_started();
+#endif
 #ifdef CONFIG_QEMU_SERIAL
     qemu_transport_start();
 #endif

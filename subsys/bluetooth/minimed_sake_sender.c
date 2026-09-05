@@ -222,7 +222,7 @@ static void prv_push_bg_cb(void *unused) {
   const uint8_t n_tuplets = ARRAY_LENGTH(tuplets) - (graph_len == 0 ? 1 : 0);
   if (dict_serialize_tuplets_to_buffer(tuplets, n_tuplets, (uint8_t *)&push->dictionary,
                                        &dict_size) != DICT_OK) {
-    minimed_sake_log("wf dict fail");
+    minimed_sake_log_evt("wf dict fail");
     return;
   }
   prv_inject(offsetof(AppMessagePush, dictionary) + dict_size);
@@ -235,7 +235,7 @@ static void prv_ack_and_resend_cb(void *ctx) {
       .header = {.command = CMD_ACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
   };
   prv_inject(sizeof(*ack));
-  minimed_sake_log("wf ready ping");
+  minimed_sake_log_evt("wf ready ping");
   prv_push_bg_cb(NULL);
 }
 
@@ -261,7 +261,7 @@ static void prv_set_mode_cb(void *ctx) {
     if (s_session) {
       comm_session_set_capabilities(s_session, CommSessionAppMessage8kSupport);
     }
-    minimed_sake_log(s_session ? "wf sender up" : "wf sender FAIL");
+    minimed_sake_log_evt(s_session ? "wf sender up" : "wf sender FAIL");
   } else if (!open && s_session) {
     comm_session_close(s_session, CommSessionCloseReason_UnderlyingDisconnection);
     s_session = NULL;

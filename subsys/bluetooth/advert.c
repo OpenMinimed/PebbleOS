@@ -170,7 +170,7 @@ static void prv_log_conn_params(const struct ble_gap_conn_desc *desc) {
   snprintf(line, sizeof(line), "prm %ums lat%u sv%ums",
            (unsigned)(desc->conn_itvl * BLE_HCI_CONN_ITVL / 1000), (unsigned)desc->conn_latency,
            (unsigned)(desc->supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS));
-  minimed_sake_log(line);
+  minimed_sake_log_evt(line);
 }
 #endif
 
@@ -199,7 +199,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     // the bond + our IRK -- HW-confirmed: it handshakes in NORMAL even though we advertise a plain
     // Pebble payload). In NORMAL we advertise for the phone, so a pump connection here would run SAKE
     // and squat the connection, blocking the phone. Reject it: the freed slot lets the phone win.
-    minimed_sake_log("pump conn in NORMAL -> drop");
+    minimed_sake_log_evt("pump conn in NORMAL -> drop");
     s_rejected_pump_conn = event->connect.conn_handle;  // so its disconnect is swallowed, not routed
     int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     if (rc != 0) {
@@ -213,7 +213,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
       // later phone connection reuses the handle (see the stale-handle clear below).
       char line[32];
       snprintf(line, sizeof(line), "pump drop FAIL 0x%04x", (uint16_t)rc);
-      minimed_sake_log(line);
+      minimed_sake_log_evt(line);
     }
     return;
   }
@@ -229,7 +229,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
       char line[32];
       snprintf(line, sizeof(line), "conn PUMP m=D %02x:%02x t%u",
                desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
-      minimed_sake_log(line);
+      minimed_sake_log_evt(line);
       prv_log_conn_params(&desc);
     }
     // The link-layer controller stopped advertising when this connected, but the scheduler still
@@ -243,7 +243,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     char line[32];
     snprintf(line, sizeof(line), "conn phone m=D %02x:%02x t%u",
              desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
     prv_log_conn_params(&desc);
   }
 
@@ -339,7 +339,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
              conn_handle, (uint8_t)event->disconnect.reason, s_sake_conn_handle,
              s_rejected_pump_conn, event->disconnect.conn.peer_id_addr.val[5],
              event->disconnect.conn.peer_id_addr.val[0]);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
   }
   if (conn_handle == s_rejected_pump_conn) {
     // A pump connection we rejected in NORMAL. The stack never saw it connect, so do NOT route its
@@ -348,7 +348,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     // advert back on air here -- otherwise we sit off-air and the phone can't take the freed slot.
     s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
     gap_le_advert_force_data_refresh();
-    minimed_sake_log("pump drop done -> re-advertise");
+    minimed_sake_log_evt("pump drop done -> re-advertise");
     return;
   }
   // A pump link went down: either the recorded pump link (handle match, any mode -- covers a
@@ -363,7 +363,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     {
       char line[32];
       snprintf(line, sizeof(line), "disc pump reason=0x%02x", (uint8_t)event->disconnect.reason);
-      minimed_sake_log(line);
+      minimed_sake_log_evt(line);
     }
     minimed_sake_spike_report(MinimedSakeStageDisconnected);
     gap_le_advert_force_data_refresh();
@@ -377,7 +377,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     snprintf(line, sizeof(line), "disc UNTRACKED r=0x%02x %02x:%02x",
              (uint8_t)event->disconnect.reason, event->disconnect.conn.peer_id_addr.val[5],
              event->disconnect.conn.peer_id_addr.val[0]);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
   }
 #endif
 
@@ -706,7 +706,7 @@ static int prv_handle_gap_event(struct ble_gap_event *event, void *arg) {
         // invisible here.
         char line[32];
         snprintf(line, sizeof(line), "gap evt unhandled %d", (int)event->type);
-        minimed_sake_log(line);
+        minimed_sake_log_evt(line);
       }
 #endif
       break;
@@ -748,7 +748,7 @@ bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_int
       if (minimed_sake_get_mode() == MinimedSakeModeDual) {
         char line[32];
         snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
-        minimed_sake_log(line);  // v15 failed here invisibly -- surface the first failure, not the spam
+        minimed_sake_log_evt(line);  // v15 failed here invisibly -- surface the first failure, not the spam
       }
     }
     s_last_adv_enable_ok = false;

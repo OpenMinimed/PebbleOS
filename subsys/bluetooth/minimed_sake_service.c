@@ -127,18 +127,18 @@ static void prv_load_pump_paired(void) {
 static void prv_store_pump_paired_cb(void *data) {
   SettingsFile fd;
   if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
-    minimed_sake_log("persist open fail");
+    minimed_sake_log_evt("persist open fail");
     return;
   }
   uint8_t v = (data != NULL) ? 1 : 0;
   if (settings_file_set(&fd, s_paired_setting_key, sizeof(s_paired_setting_key), &v, sizeof(v)) !=
       S_SUCCESS) {
-    minimed_sake_log("persist set fail");
+    minimed_sake_log_evt("persist set fail");
   }
   if (s_pump_addr_known) {
     if (settings_file_set(&fd, s_pump_addr_key, sizeof(s_pump_addr_key),
                           (uint8_t *)&s_pump_id_addr, sizeof(s_pump_id_addr)) != S_SUCCESS) {
-      minimed_sake_log("persist addr fail");
+      minimed_sake_log_evt("persist addr fail");
     } else {
       s_pump_addr_persisted = true;
     }
@@ -199,9 +199,9 @@ static void prv_pump_advert_rebuild(void) {
     char line[32];
     snprintf(line, sizeof(line), "adv job FE8%c len%u", s_pump_paired ? '1' : '2',
              s_pump_ad.ad.ad_data_length);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
   } else {
-    minimed_sake_log("pump adv job FAIL");
+    minimed_sake_log_evt("pump adv job FAIL");
   }
 unlock:
   bt_unlock();
@@ -297,7 +297,7 @@ static void prv_adopt_pump_bond_cb2(void *unused) {
   }
   s_pump_id_addr = addr;
   s_pump_addr_known = true;
-  minimed_sake_log("pump addr from bond");
+  minimed_sake_log_evt("pump addr from bond");
 }
 
 static void prv_adopt_pump_bond(void) { launcher_task_add_callback(prv_adopt_pump_bond_cb2, NULL); }
@@ -362,7 +362,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     minimed_sake_spike_report(MinimedSakeStageWrote);
   }
   snprintf(line, sizeof(line), "wrote %u:%02x %02x %02x %02x", len, buf[0], buf[1], buf[2], buf[3]);
-  minimed_sake_log(line);
+  minimed_sake_log_evt(line);
 
   if (!s_keydb_ok) {
     return 0;  // no key DB -> stay inert (Spike 1 behaviour: log the write, don't handshake)
@@ -375,7 +375,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
   if (r == SAKE_RESULT_MSG) {
     prv_defer_notify(conn_handle, reply, 30);
     snprintf(line, sizeof(line), "sent reply (st%d)", stage);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
   } else if (r == SAKE_RESULT_DONE) {
     prv_set_pump_paired(true);  // pump is bonded now -> advertise FE81 (reconnect) from here on
     struct ble_gap_conn_desc d;  // remember who the pump is, for the v29 PUMP/phone conn label
@@ -400,7 +400,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     minimed_sake_pump_advert_update();
   } else {
     snprintf(line, sizeof(line), "sake ERR (st%d)", stage);
-    minimed_sake_log(line);
+    minimed_sake_log_evt(line);
   }
   return 0;
 }
@@ -490,13 +490,13 @@ static const struct ble_gatt_svc_def s_sake_svcs[] = {
 static void prv_notify_cb(struct ble_npl_event *ev) {
   struct os_mbuf *om = ble_hs_mbuf_from_flat(s_notify_buf, sizeof(s_notify_buf));
   if (!om) {
-    minimed_sake_log("notify mbuf fail");
+    minimed_sake_log_evt("notify mbuf fail");
     return;
   }
   int rc = ble_gatts_notify_custom(s_notify_conn, s_sake_port_val_handle, om);
   char line[24];
   snprintf(line, sizeof(line), "notify rc=0x%04x", (uint16_t)rc);
-  minimed_sake_log(line);
+  minimed_sake_log_evt(line);
 }
 
 void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, bool notify) {
@@ -582,7 +582,7 @@ bool minimed_sake_addr_is_pump(const ble_addr_t *addr) {
 
 void minimed_sake_forget_pump(void) {
   prv_set_pump_paired(false);
-  minimed_sake_log("forget pump -> FE82");
+  minimed_sake_log_evt("forget pump -> FE82");
   if (minimed_sake_get_mode() == MinimedSakeModeDual) {
     // Open the pump-pairing window: legacy JW for the next pair, FE82 advert, and drop any live
     // pump link so the pump re-pairs fresh. The phone link is untouched.
@@ -604,7 +604,7 @@ void minimed_sake_apply_sm_config(bool pump_window) {
     ble_hs_cfg.sm_mitm = 0;
     ble_hs_cfg.sm_our_key_dist = 3;  // + IRK/identity so the pump can resolve our RPA on reconnect
     ble_hs_cfg.sm_their_key_dist = 3;
-    minimed_sake_log("SM: pump (legacy JW)");
+    minimed_sake_log_evt("SM: pump (legacy JW)");
   } else {
     ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_YESNO;  // phone: stock LESC + numeric-compare MITM
     ble_hs_cfg.sm_mitm = 1;
@@ -619,15 +619,17 @@ int minimed_sake_service_init(void) {
 
   // Re-arm DUAL state after a Bluetooth stack restart that was triggered while in DUAL (the
   // pump-liveness watchdog's recovery, or a manual DUAL-keep restart). s_mode survives the
-  // restart (it is a static), but the loopback session, the pump advert job, and the
-  // advertise-while-connected flag were all torn down with the stack -- re-create them.
+  // restart (it is a static), but the loopback session and the driver's link state were torn down
+  // with the stack -- re-create them.
+  // The advert half of the re-arm is NOT done here. This runs inside bt_driver_start, and
+  // bluetooth_ctl.c calls gap_le_init() -- hence gap_le_advert_init() -- immediately afterwards,
+  // which clears s_jobs, s_current and s_allow_advert_while_connected. Anything scheduled here is
+  // discarded before it can ever air. minimed_sake_bt_started() does that part, after gap_le_init.
   if (minimed_sake_get_mode() == MinimedSakeModeDual) {
     minimed_sake_clear_link_state();
     minimed_sake_cache_gateway_addr();
     minimed_sake_apply_sm_config(minimed_sake_pump_pairing_window());
     minimed_sake_sender_set_mode(true);
-    gap_le_advert_set_allow_advert_while_connected(true);
-    minimed_sake_pump_advert_start();
   } else {
     // Boot mode is NORMAL: make sure the phone gets the stock strict config even though we compile
     // with the permissive legacy gates (SC_ONLY 0 / LEGACY 1) the pump needs.
@@ -636,7 +638,7 @@ int minimed_sake_service_init(void) {
 
   prv_load_pump_paired();
   if (s_pump_paired) {
-    minimed_sake_log("paired (persisted): FE81");
+    minimed_sake_log_evt("paired (persisted): FE81");
     if (!s_pump_addr_known) {
       prv_adopt_pump_bond();  // paired before pumpaddr existed; the handshake will persist it
     }

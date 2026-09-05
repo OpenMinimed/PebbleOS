@@ -36,12 +36,21 @@ MinimedSakeMode minimed_sake_get_mode(void);
 //! returns to a clean, phone-only state -- the kill switch for sideloading firmware.
 void minimed_sake_toggle_mode(void);
 
+//! Called once the Bluetooth stack is fully up (after gap_le_init). Re-arms the DUAL advert state;
+//! it cannot be done from the driver's own init, because gap_le_advert_init() runs after that and
+//! resets the advert scheduler.
+void minimed_sake_bt_started(void);
+
 //! Append a stage line to the on-watch log (+ a vibe on key stages). Safe from any task.
 void minimed_sake_spike_report(MinimedSakeStage stage);
 
 //! Append an arbitrary line to the on-watch log (rc codes, byte dumps, disconnect reasons).
 //! Safe from any task, including the BT host task.
 void minimed_sake_log(const char *msg);
+
+//! Like minimed_sake_log, but also writes the line to the durable flash log. Connectivity events
+//! only -- never anything on a per-poll or per-advert-rotation path.
+void minimed_sake_log_evt(const char *msg);
 
 //! Snapshot of the joined log text for the app to render. Points at a static buffer.
 const char *minimed_sake_get_log(void);
