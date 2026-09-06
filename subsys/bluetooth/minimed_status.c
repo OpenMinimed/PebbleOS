@@ -69,6 +69,11 @@ static uint32_t s_warmup_expiry;   // 0 = not timing
 static uint32_t s_suspend_since;   // 0 = not suspended
 static uint32_t s_tt_expiry;       // 0 = no temp target
 static bool s_bg_invalid;
+// Latched when s_bg_invalid goes 1 -> 0, consumed by the reader. The pump can start showing a
+// glucose value again without setting the "new CGM" push bit -- the record it displays may be one
+// that already existed -- and then nothing asks the watch to fetch it, so the watch stayed blank
+// until the 6-minute fallback poll.
+static bool s_bg_became_valid;
 
 bool minimed_status_parse_idd(const uint8_t *body, uint16_t len, MinimedIddStatus *out) {
   memset(out, 0, sizeof(*out));
@@ -195,7 +200,11 @@ void minimed_status_update(const MinimedIddStatus *st, const MinimedTas *tas, ui
         m == SENSOR_MSG_WAIT_TO_CALIBRATE || m == SENSOR_MSG_SEARCHING ||
         m == SENSOR_MSG_NO_SIGNAL || m == SENSOR_MSG_CHANGE_SENSOR ||
         m == SENSOR_MSG_NO_PAIRED_SENSOR || m == SENSOR_MSG_GST_BATTERY;
-    s_bg_invalid = gst_lost || no_glucose_state;
+    const bool now_invalid = gst_lost || no_glucose_state;
+    if (s_bg_invalid && !now_invalid) {
+      s_bg_became_valid = true;
+    }
+    s_bg_invalid = now_invalid;
   }
 }
 
@@ -251,6 +260,12 @@ bool minimed_status_ticking(void) {
 
 bool minimed_status_bg_invalid(void) { return s_bg_invalid; }
 
+bool minimed_status_take_bg_became_valid(void) {
+  const bool v = s_bg_became_valid;
+  s_bg_became_valid = false;
+  return v;
+}
+
 bool minimed_status_sg_below(void) { return s_label == LABEL_SG_LOW; }
 bool minimed_status_sg_above(void) { return s_label == LABEL_SG_HIGH; }
 
@@ -260,4 +275,5 @@ void minimed_status_reset(void) {
   s_suspend_since = 0;
   s_tt_expiry = 0;
   s_bg_invalid = false;
+  s_bg_became_valid = false;
 }

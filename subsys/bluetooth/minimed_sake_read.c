@@ -742,6 +742,13 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
       s_last_bg_str[0] = '\0';  // no valid glucose: alert notifications drop the BG body
     }
   }
+  if (minimed_status_take_bg_became_valid()) {
+    // Sensor recovered. Fetch a reading now rather than waiting for the pump to set its "new CGM"
+    // push bit, which it need not do if the record it is displaying already existed -- that left
+    // the watch blank for up to FALLBACK_AFTER_SECS while the pump showed a number.
+    minimed_sake_log_evt("BG valid again -> fetch CGM");
+    prv_request(PEND_CGM);
+  }
   s_idd_st.valid = false;
   s_tas.valid = false;
 }

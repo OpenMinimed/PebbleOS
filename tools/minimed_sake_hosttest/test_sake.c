@@ -478,6 +478,23 @@ static void section_status(void) {
   check("normal does not tick", !minimed_status_ticking());
   check("normal BG valid", !minimed_status_bg_invalid());
 
+  // Sensor recovery latch: fires once on invalid -> valid, and is consumed by the read.
+  // The pump can resume showing glucose without setting its "new CGM" push bit, so this is what
+  // makes the watch fetch a reading instead of waiting out the 6-minute fallback.
+  minimed_status_reset();
+  minimed_status_parse_tas(tas_normal, sizeof(tas_normal), &tas);
+  MinimedIddStatus gone = st;
+  gone.sensor_conn = 0x07;  // on + paired + signal lost
+  minimed_status_update(&gone, &tas, 1000);
+  check("signal lost -> BG invalid", minimed_status_bg_invalid());
+  check("no recovery latch while still invalid", !minimed_status_take_bg_became_valid());
+  minimed_status_update(&st, &tas, 1060);  // sensor back
+  check("recovery latches", minimed_status_bg_invalid() == false);
+  check("recovery latch reads true once", minimed_status_take_bg_became_valid());
+  check("recovery latch is consumed", !minimed_status_take_bg_became_valid());
+  minimed_status_update(&st, &tas, 1120);  // still valid: no new transition
+  check("no latch without a transition", !minimed_status_take_bg_became_valid());
+
   // Suspended: therapy STOP + op READY -> "SUSPENDED", count-up from entry.
   minimed_status_reset();
   MinimedIddStatus sus = st;

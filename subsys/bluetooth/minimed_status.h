@@ -89,6 +89,11 @@ bool minimed_status_sg_above(void);
 //! Only updated when the IDD Status read succeeded; retains its previous value otherwise.
 bool minimed_status_bg_invalid(void);
 
+//! True once per 1 -> 0 transition of bg_invalid: the pump has glucose again. Consumes the latch,
+//! so each recovery yields exactly one true. The caller should fetch a CGM record -- the pump does
+//! not always set its "new CGM" push bit at that moment.
+bool minimed_status_take_bg_became_valid(void);
+
 //! Reset all internal state (label + epochs). For the host tests; the firmware deliberately
 //! keeps state across reconnects so e.g. a warm-up countdown survives a pump dropout.
 void minimed_status_reset(void);

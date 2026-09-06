@@ -16,7 +16,7 @@
 #define MINIMED_GRAPH_MAX_POINTS 30
 #define MINIMED_GRAPH_WINDOW_SECS (150 * 60)
 
-//! Wire format (minimed-pebble-watchface docs/PEBBLE_GLUCOSE_PROTOCOL.md, key 17), little-endian:
+//! Wire format (pebble-glucose-protocol/PROTOCOL.md, GRAPH_DATA key 30), little-endian:
 //! [ref_ts u32][count u16][offset_min u16 xN][bg u8 xN], where bg is mg/dL / 2.
 #define MINIMED_GRAPH_BLOB_MAX (6 + 3 * MINIMED_GRAPH_MAX_POINTS)
 
