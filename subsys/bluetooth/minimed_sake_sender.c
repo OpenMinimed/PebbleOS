@@ -11,7 +11,10 @@
 #include "comm/bt_lock.h"
 #include "drivers/rtc.h"
 #include "kernel/event_loop.h"
+#include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
+#include "pebble_glucose_protocol.h"
+#include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
 #include "pbl/services/comm_session/session_transport.h"
 #include "popups/minimed_sake_spike_ui.h"
@@ -23,25 +26,34 @@
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
-// The MiniMed watchface (minimed-pebble-watchface package.json). Pushes carry the target app's
-// UUID; the firmware delivery path drops them cleanly (NACK) when this app is not in the
-// foreground, so no foreground check is needed here.
-static const Uuid s_watchface_uuid = {
-    0x56, 0x7a, 0x3f, 0x6e, 0x97, 0xd0, 0x4f, 0x3a,
-    0xb6, 0x3f, 0x91, 0x6a, 0x82, 0x13, 0xd2, 0x84,
-};
+// Who we send to, and what they asked for -- both learned from the watchface's capability
+// announcement rather than hardcoded, so any watchface implementing the Pebble Glucose Protocol
+// works. Zeroed = nobody has announced yet, and we send nothing.
+static Uuid s_target_uuid;
+static bool s_have_target;
+static uint32_t s_caps;
+static uint8_t s_graph_hours;
 
-// Pebble Glucose Protocol v1 keys (pebble-glucose-protocol/PROTOCOL.md).
-// BG string + timestamp; IOB string (14); status (15); graph (30).
-#define KEY_BG_TIMESTAMP 10
-#define KEY_BG_STRING 11
-#define KEY_IOB_STRING 14
-#define KEY_STATUS_STRING 15
-#define KEY_GRAPH_DATA 30
+// One-entry negative cache: a watchface we claimed (see prv_get_uuid) that turned out not to
+// speak our protocol. One entry is enough -- there is one foreground app at a time -- and it
+// costs that watchface exactly one swallowed-then-NACKed message before we get out of its way.
+static Uuid s_not_glucose_uuid;
+static bool s_have_not_glucose;
+
+// Returned by prv_get_uuid when we do NOT want to claim the foreground app. It must be a *valid*
+// UUID that cannot match: prv_get_app_session treats a session with an invalid UUID as a
+// catch-all fallback (session.c prv_find_session_by_app_uuid_comparator), which would capture
+// traffic meant for the phone. All-zeros is never compared against, because that function bails
+// out before the walk when the foreground app's own UUID is system/invalid.
+static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 
 #define BG_STR_MAX 8      // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
 #define IOB_STR_MAX 8     // "N.N"/"NN.N" IU
 #define STATUS_STR_MAX 20  // watchface s_status_string is 20; longest label "TEMP TARGET H:MM"
+
+// Enough for any capability announcement: 3 tuples of at most 7 + 4 bytes plus the count byte.
+// Sized with slack so a future key or two still parses rather than being read as a foreign app.
+#define ANNOUNCE_DICT_MAX 64
 
 // Largest dictionary we serialize. The graph blob dominates; the rest is the BG/IOB/status
 // strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
@@ -77,7 +89,11 @@ static uint8_t s_frame[sizeof(PebbleProtocolHeader) + offsetof(AppMessagePush, d
 // sends a ready ping (a CMD_PUSH with protocol version + capabilities) on launch and on
 // (believed) reconnect; replying with an ACK makes its outbox succeed, and we follow up with the
 // latest BG. Its ACKs of OUR pushes also land here and must be ignored, or we'd loop forever.
-static void prv_handle_watchface_push(uint8_t txn);
+//
+// `uuid` and the dictionary come straight from the frame, so the sender identifies itself: no
+// need to re-ask app_manager which app is in the foreground.
+static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8_t *dict,
+                                      uint16_t dict_len, bool truncated);
 
 static void prv_send_next(Transport *transport) {
   if (!s_session) {
@@ -96,8 +112,21 @@ static void prv_send_next(Transport *transport) {
     if (endpoint == APP_MESSAGE_ENDPOINT_ID && payload_len >= sizeof(AppMessageHeader)) {
       AppMessageHeader msg;
       comm_session_send_queue_copy(s_session, sizeof(hdr), sizeof(msg), (uint8_t *)&msg);
-      if (msg.command == CMD_PUSH) {
-        prv_handle_watchface_push(msg.transaction_id);
+      if (msg.command == CMD_PUSH && payload_len >= offsetof(AppMessagePush, dictionary)) {
+        // Copy out the UUID + as much of the dictionary as an announcement could possibly be.
+        // A longer message is not one (ours is 3 tuples, ~28 B), but say so rather than letting
+        // the parse fail on our own truncation -- see prv_handle_watchface_push.
+        Uuid uuid;
+        comm_session_send_queue_copy(s_session, sizeof(hdr) + offsetof(AppMessagePush, uuid),
+                                     sizeof(uuid), (uint8_t *)&uuid);
+        const uint16_t dict_len =
+            (uint16_t)(payload_len - offsetof(AppMessagePush, dictionary));
+        uint8_t dict[ANNOUNCE_DICT_MAX];
+        const bool truncated = dict_len > sizeof(dict);
+        const uint16_t copy_len = truncated ? sizeof(dict) : dict_len;
+        comm_session_send_queue_copy(s_session, sizeof(hdr) + offsetof(AppMessagePush, dictionary),
+                                     copy_len, dict);
+        prv_handle_watchface_push(msg.transaction_id, &uuid, dict, copy_len, truncated);
       }
       // CMD_ACK/CMD_NACK (responses to our pushes): swallow silently.
     }
@@ -146,13 +175,32 @@ static CommSessionTransportType prv_get_type(struct Transport *transport) {
   return CommSessionTransportType_QEMU;
 }
 
-// The loopback speaks for the MiniMed watchface specifically. Without this the watchface's outbound
-// AppMessages (its launch/reconnect "ready ping") match no session by UUID and fall back to the
-// phone's Hybrid session -- so the ping never reaches us, we never ACK + resend, and the watchface
-// stays stale until the next 60s poll happens to land while it is foreground. With the UUID the
-// session matches specifically (prv_get_app_session: uuid_equal wins over fallback) and the ping
-// routes to us.
-static const Uuid *prv_get_uuid(struct Transport *transport) { return &s_watchface_uuid; }
+// Which app this loopback speaks for. prv_get_app_session matches sessions against the foreground
+// app's UUID, so whatever we return here decides whose outbound AppMessages reach us. Without a
+// match the watchface's launch/reconnect ready ping falls back to the phone's Hybrid session --
+// the ping never arrives, we never ACK + resend, and the watchface stays stale until the next
+// poll happens to land while it is foreground.
+//
+// We claim the foreground app's own UUID, so ANY watchface's ping reaches us rather than only one
+// hardcoded UUID. Two limits keep that from stealing traffic that isn't ours:
+//   - watchfaces only. Settings and ordinary watchapps (ProcessTypeApp) are left alone entirely,
+//     which is most of what could have been intercepted.
+//   - the negative cache. A watchface that turns out not to speak our protocol is dropped after
+//     one message (see prv_handle_watchface_push).
+// Claiming has to come first: there is no way to receive the announcement that identifies a
+// watchface without already being the session its messages route to.
+static const Uuid *prv_claimed_uuid(void) {
+  const PebbleProcessMd *md = app_manager_get_current_app_md();
+  if (!md || md->process_type != ProcessTypeWatchface) {
+    return &s_no_claim_uuid;
+  }
+  if (s_have_not_glucose && uuid_equal(&md->uuid, &s_not_glucose_uuid)) {
+    return &s_no_claim_uuid;
+  }
+  return &md->uuid;
+}
+
+static const Uuid *prv_get_uuid(struct Transport *transport) { return prv_claimed_uuid(); }
 
 static const TransportImplementation s_loopback_implementation = {
     .send_next = prv_send_next,
@@ -187,48 +235,91 @@ static void prv_inject(uint16_t payload_len) {
   bt_unlock();
 }
 
-// KernelMain only. Push the stored BG (if any) to the watchface. Delivery silently no-ops when
-// the watchface isn't the foreground app (inbox missing or UUID mismatch -> clean drop).
+// KernelMain only. Push the stored data to the target watchface. Delivery silently no-ops when
+// that watchface isn't the foreground app (inbox missing or UUID mismatch -> clean drop), so
+// there is no foreground check here.
+//
+// Every push carries every announced field, not just the one that changed. The protocol allows
+// sending only what is new, but this transport is a memcpy rather than a radio, so re-sending the
+// whole frame costs nothing and keeps the watchface correct after a relaunch.
 static void prv_push_bg_cb(void *unused) {
   if (!s_session || s_bg_str[0] == '\0') {
-    return;
+    return;  // nothing to say yet
+  }
+
+  // Before anyone has announced, send everything to the foreground watchface. Waiting for an
+  // announcement is the protocol-correct behaviour but loses the first one in practice: the
+  // watchface announces at launch and on the app-connection event, and a boot that starts in
+  // NORMAL has already done both by the time the mode toggle creates this session -- so the ping
+  // routes to the phone and is never repeated (HW, v67, 2026-09-08). A watchface that does not
+  // speak the protocol just ignores keys it doesn't know; this stops for good the moment any
+  // watchface announces, after which we are exact.
+  Uuid target;
+  uint32_t caps;
+  bool send_graph;
+  if (s_have_target) {
+    target = s_target_uuid;
+    caps = s_caps;
+    send_graph = (s_graph_hours > 0);  // GRAPH_HOURS == 0 is how a watchface declines the graph
+  } else {
+    const Uuid *fg = prv_claimed_uuid();
+    if (uuid_equal(fg, &s_no_claim_uuid)) {
+      return;  // not a watchface, or one we already know isn't ours
+    }
+    target = *fg;
+    caps = CAP_BG | CAP_IOB | CAP_STATUS;  // everything we can currently supply
+    send_graph = true;
   }
 
   AppMessagePush *push = (AppMessagePush *)FRAME_PAYLOAD;
   *push = (AppMessagePush){
       .header = {.command = CMD_PUSH, .transaction_id = s_txn++},
-      .uuid = s_watchface_uuid,
+      .uuid = target,
   };
 
   uint8_t graph[MINIMED_GRAPH_BLOB_MAX];
   const uint16_t graph_len = minimed_graph_serialize(&s_graph, graph);
 
-  uint32_t dict_size = WF_DICT_MAX;
-  // Pointer locals: an array would trip -Werror=address in TupletCString's NULL check.
-  const char *bg = s_bg_str;
-  const char *iob = s_iob_str;
-  const char *status = s_status_str;
-  const Tuplet tuplets[] = {
-      TupletInteger(KEY_BG_TIMESTAMP, s_bg_timestamp),
-      TupletCString(KEY_BG_STRING, bg),
-      TupletCString(KEY_IOB_STRING, iob),  // empty until the first IOB read; watchface blanks it
-      TupletCString(KEY_STATUS_STRING, status),  // "" = normal; watchface hides the band
-      // Graph rides every push rather than only on change: this transport is a memcpy, not a
-      // radio, so re-sending ~100 B costs nothing and keeps the watchface in sync after a relaunch.
-      TupletBytes(KEY_GRAPH_DATA, graph, graph_len),
-  };
-  // Drop the graph tuplet entirely until there is a point to plot -- a zero-length byte array
-  // would tell the watchface "count=0" is a real, parseable graph.
-  const uint8_t n_tuplets = ARRAY_LENGTH(tuplets) - (graph_len == 0 ? 1 : 0);
-  if (dict_serialize_tuplets_to_buffer(tuplets, n_tuplets, (uint8_t *)&push->dictionary,
-                                       &dict_size) != DICT_OK) {
+  // Written key by key rather than from a Tuplet array: Tuplet's value union has const members,
+  // so a conditionally-filled array can't be assigned into.
+  DictionaryIterator iter;
+  DictionaryResult res = dict_write_begin(&iter, (uint8_t *)&push->dictionary, WF_DICT_MAX);
+  uint8_t n = 0;
+
+  // Only the announced fields (or, pre-announcement, everything). A field a watchface did not ask
+  // for is one it cannot render, and its key number may well mean something else there.
+  if (caps & CAP_BG) {
+    res |= dict_write_uint32(&iter, KEY_BG_TIMESTAMP, s_bg_timestamp);
+    res |= dict_write_cstring(&iter, KEY_BG_STRING, s_bg_str);
+    n += 2;
+  }
+  if (caps & CAP_IOB) {
+    // Empty until the first IOB read; the watchface blanks the field.
+    res |= dict_write_cstring(&iter, KEY_IOB_STRING, s_iob_str);
+    n++;
+  }
+  if (caps & CAP_STATUS) {
+    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
+    n++;
+  }
+  // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
+  // tell the watchface that "count=0" is a real, parseable graph.
+  if (send_graph && graph_len > 0) {
+    res |= dict_write_data(&iter, KEY_GRAPH_DATA, graph, graph_len);
+    n++;
+  }
+  if (n == 0) {
+    return;  // a watchface that announced nothing we can currently supply
+  }
+  if (res != DICT_OK) {
     minimed_sake_log_evt("wf dict fail");
     return;
   }
-  prv_inject(offsetof(AppMessagePush, dictionary) + dict_size);
+  prv_inject(offsetof(AppMessagePush, dictionary) + dict_write_end(&iter));
 }
 
-// KernelMain only. ACK the watchface's ready ping (txn in ctx), then answer it with the BG.
+// KernelMain only. ACK the watchface's ready ping (txn in ctx), then answer it with the data it
+// asked for.
 static void prv_ack_and_resend_cb(void *ctx) {
   AppMessageAck *ack = (AppMessageAck *)FRAME_PAYLOAD;
   *ack = (AppMessageAck){
@@ -239,7 +330,43 @@ static void prv_ack_and_resend_cb(void *ctx) {
   prv_push_bg_cb(NULL);
 }
 
-static void prv_handle_watchface_push(uint8_t txn) {
+// KernelMain only. NACK a message that was not an announcement, so the app sees its send fail
+// rather than the message vanishing. By now prv_get_uuid has stopped claiming this watchface, so
+// its retry routes wherever it was meant to go.
+static void prv_nack_cb(void *ctx) {
+  AppMessageAck *nack = (AppMessageAck *)FRAME_PAYLOAD;
+  *nack = (AppMessageAck){
+      .header = {.command = CMD_NACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
+  };
+  prv_inject(sizeof(*nack));
+  minimed_sake_log_evt("not a glucose wf");
+}
+
+static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8_t *dict,
+                                      uint16_t dict_len, bool truncated) {
+  MinimedGlucoseAnnounce announce;
+  if (truncated || !minimed_glucose_parse_announce(dict, dict_len, &announce)) {
+    // Not one of ours; fail the send. Blacklist it so prv_get_uuid stops claiming it -- but not
+    // when we truncated the read, since that is us failing to look rather than the watchface
+    // failing to announce, and a permanent blacklist is too harsh a price for our own buffer.
+    if (!truncated) {
+      s_not_glucose_uuid = *uuid;
+      s_have_not_glucose = true;
+    }
+    launcher_task_add_callback(prv_nack_cb, (void *)(uintptr_t)txn);
+    return;
+  }
+  // Confirmed. Everything we send from here on is addressed and shaped by this announcement.
+  s_target_uuid = *uuid;
+  s_have_target = true;
+  s_caps = announce.caps;
+  s_graph_hours = announce.graph_hours;
+  // Only clear the cache for THIS watchface. Clearing it unconditionally would re-probe (and
+  // re-NACK) a known non-match every time you switched back from the glucose watchface, since
+  // returning to a watchface relaunches it and re-announces.
+  if (s_have_not_glucose && uuid_equal(uuid, &s_not_glucose_uuid)) {
+    s_have_not_glucose = false;
+  }
   launcher_task_add_callback(prv_ack_and_resend_cb, (void *)(uintptr_t)txn);
 }
 

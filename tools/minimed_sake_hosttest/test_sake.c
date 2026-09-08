@@ -11,6 +11,8 @@
 #include "minimed_annunciation.h"
 #include "minimed_sake_crypto.h"
 #include "minimed_sake_aes.h"
+#include "minimed_glucose_announce.h"
+#include "pebble_glucose_protocol.h"
 #include "minimed_graph.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
@@ -680,6 +682,124 @@ static void section_annunciation(void) {
   printf("\n");
 }
 
+// --- Section 9: glucose-protocol capability announcement ------------------
+// Doubles as the "is this watchface one of ours?" test: we must claim a watchface's UUID before
+// we can receive anything from it, so the claim is provisional and this parse confirms it.
+
+// Build a serialized dictionary the way dict.c does: [u8 count] then per tuple
+// [u32 key][u8 type][u16 len][value].
+static uint8_t g_dict[128];
+static uint16_t g_dict_len;
+
+static void dict_begin(uint8_t count) {
+  g_dict[0] = count;
+  g_dict_len = 1;
+}
+
+static void dict_put(uint32_t key, uint8_t type, uint16_t len, const uint8_t *val) {
+  uint8_t *p = g_dict + g_dict_len;
+  p[0] = (uint8_t)key; p[1] = (uint8_t)(key >> 8);
+  p[2] = (uint8_t)(key >> 16); p[3] = (uint8_t)(key >> 24);
+  p[4] = type;
+  p[5] = (uint8_t)len; p[6] = (uint8_t)(len >> 8);
+  memcpy(p + 7, val, len);
+  g_dict_len += 7 + len;
+}
+
+static void dict_put_uint(uint32_t key, uint32_t value, uint16_t width) {
+  uint8_t v[4] = {(uint8_t)value, (uint8_t)(value >> 8), (uint8_t)(value >> 16),
+                  (uint8_t)(value >> 24)};
+  dict_put(key, 2 /* TUPLE_UINT */, width, v);
+}
+
+// What pebble-glucose-watchface actually sends (main.c: uint8 version, uint32 caps, uint8 hours).
+static void dict_real_announce(void) {
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG | CAP_IOB | CAP_STATUS, 4);
+  dict_put_uint(KEY_GRAPH_HOURS, 24, 1);
+}
+
+static void section_announce(void) {
+  printf("  Section 9: capability announcement parse\n");
+  MinimedGlucoseAnnounce a;
+
+  dict_real_announce();
+  check("real watchface announcement accepted",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+  check("caps decoded", a.caps == (CAP_BG | CAP_IOB | CAP_STATUS));
+  check("graph hours decoded", a.graph_hours == 24);
+  check("version decoded", a.version == PROTOCOL_VERSION);
+
+  // GRAPH_HOURS is optional; its absence means no graph rather than a parse failure.
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("announcement without GRAPH_HOURS accepted",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.graph_hours == 0);
+
+  // Narrower encodings of the same number are the same number.
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 1);
+  check("uint8 capabilities accepted",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.caps == CAP_BG);
+
+  // Unknown keys must not break us, or the protocol can never grow.
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(7 /* reserved */, 1234, 4);
+  check("unknown key ignored", minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  // --- Rejections: these are foreign watchfaces, not ours.
+  dict_begin(1);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  check("version alone rejected", !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  dict_begin(1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("capabilities alone rejected", !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, 2, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("wrong protocol version rejected",
+        !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, 0, 4);
+  check("zero capabilities rejected", !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, 0x80, 4);  // bit 7 is not a defined capability
+  check("undefined capability bit rejected",
+        !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  // A plausible foreign watchface: low raw keys, but strings rather than our value shapes.
+  dict_begin(2);
+  dict_put(KEY_PROTOCOL_VERSION, 1 /* TUPLE_CSTRING */, 4, (const uint8_t *)"abc");
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("cstring in key 0 rejected", !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  // Truncation must not read past the buffer.
+  dict_real_announce();
+  check("truncated dictionary rejected",
+        !minimed_glucose_parse_announce(g_dict, (uint16_t)(g_dict_len - 3), &a));
+  check("empty buffer rejected", !minimed_glucose_parse_announce(g_dict, 0, &a));
+
+  // A count that overstates the tuples present.
+  dict_begin(5);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("overstated tuple count rejected",
+        !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+
+  printf("\n");
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -690,6 +810,7 @@ int main(void) {
   section_idd_flags();
   section_status();
   section_annunciation();
+  section_announce();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

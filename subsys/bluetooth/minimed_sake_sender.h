@@ -6,10 +6,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-//! Local AppMessage sender: feeds glucose data from the on-watch pump driver to the (unmodified)
-//! MiniMed watchface by injecting synthetic inbound AppMessages through a phone-less loopback
+//! Local AppMessage sender: feeds glucose data from the on-watch pump driver to an (unmodified)
+//! watchface by injecting synthetic inbound AppMessages through a phone-less loopback
 //! CommSession -- the same trick the QEMU transport uses. The watchface receives a byte-for-byte
 //! normal AppMessage and cannot tell there is no phone.
+//!
+//! The target is discovered, not hardcoded: any watchface speaking the Pebble Glucose Protocol
+//! (pebble_glucose_protocol.h) identifies itself with a capability announcement, and we then send
+//! it exactly the fields it announced. Nothing is sent before that announcement arrives.
 
 //! Latest BG for the watchface, e.g. "5.6" (pre-formatted display string, mmol/L). `timestamp` is
 //! when the *sensor* produced this reading, not when we polled it -- re-polling an unchanged
@@ -30,8 +34,8 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
 void minimed_sake_sender_send_iob(const char *iob_str);
 
-//! Update the pump-status line (watchface key 15). "" = normal, the watchface hides the band.
-//! Pushes the full cached frame like send_iob; does not touch the BG timestamp.
+//! Update the pump-status line (watchface KEY_STATUS_STRING). "" = normal, the watchface hides
+//! the band. Pushes the full cached frame like send_iob; does not touch the BG timestamp.
 void minimed_sake_sender_send_status(const char *status_str);
 
 //! Open (open=true) / close (open=false) the loopback session. The session must NOT exist in
