@@ -20,6 +20,10 @@ typedef enum {
   //! ~100ms interval: fast enough for the MiniMed pump (it ignores adverts slower than ~150ms)
   //! without the battery cost of a continuous 20ms burst. Used by the pump's own advert job.
   GAPLEAdvertisingInterval_Medtronic,
+  //! ~500ms interval: the pump advert job's back-off term once no pump has shown up for a while.
+  //! Slower than the pump's ~150ms scan cutoff (may take a few scan windows to be noticed), but
+  //! that's fine for a quiet-period fallback -- the job jumps back to Medtronic on disconnect.
+  GAPLEAdvertisingInterval_MedtronicSlow,
 } GAPLEAdvertisingInterval;
 
 struct GAPLEAdvertisingJob;

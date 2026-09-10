@@ -72,9 +72,10 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
-static char s_status_str[STATUS_STR_MAX];
+static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
+static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
 
 static MinimedGraph s_graph;
 
@@ -270,9 +271,14 @@ static void prv_push_bg_cb(void *unused) {
   }
   s_last_push_ticks = now;
 
-  if (!s_session || s_bg_str[0] == '\0') {
-    return;  // nothing to say yet
+  if (!s_session) {
+    return;
   }
+
+  // BG/IOB/status/graph have nothing to say until the first real reading arrives. Pump-connected
+  // is different: false (offline) is itself a real, correct value before that, so it must not
+  // wait behind this gate.
+  const bool have_bg = (s_bg_str[0] != '\0');
 
   // Before anyone has announced, send everything to the foreground watchface. Waiting for an
   // announcement is the protocol-correct behaviour but loses the first one in practice: the
@@ -296,7 +302,8 @@ static void prv_push_bg_cb(void *unused) {
       return;  // not a watchface, or one we already know isn't ours
     }
     target = *fg;
-    caps = CAP_BG | CAP_IOB | CAP_STATUS;  // everything we can currently supply
+    // Everything we can currently supply.
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -313,7 +320,7 @@ static void prv_push_bg_cb(void *unused) {
   // IOB/status-only push, which under bursts was draining the heap.
   bool graph_present = false;
   uint16_t graph_len = 0;
-  if (send_graph && (s_graph_dirty || (caps & CAP_BG))) {
+  if (have_bg && send_graph && (s_graph_dirty || (caps & CAP_BG))) {
     graph_len = minimed_graph_serialize(&s_graph, graph_window_secs, graph);
     s_graph_dirty = false;
     graph_present = true;
@@ -326,19 +333,20 @@ static void prv_push_bg_cb(void *unused) {
   uint8_t n = 0;
 
   // Only the announced fields (or, pre-announcement, everything). A field a watchface did not ask
-  // for is one it cannot render, and its key number may well mean something else there.
-  if (caps & CAP_BG) {
+  // for is one it cannot render, and its key number may well mean something else there. BG/IOB/
+  // status/graph additionally wait for have_bg -- there is nothing real to say there yet.
+  if (have_bg && (caps & CAP_BG)) {
     res |= dict_write_uint32(&iter, KEY_BG_TIMESTAMP, s_bg_timestamp);
     res |= dict_write_cstring(&iter, KEY_BG_STRING, s_bg_str);
     n += 2;
   }
-  if (caps & CAP_IOB) {
+  if (have_bg && (caps & CAP_IOB)) {
     // Empty until the first IOB read; the watchface blanks the field.
     res |= dict_write_cstring(&iter, KEY_IOB_STRING, s_iob_str);
     n++;
   }
-  if (caps & CAP_STATUS) {
-    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);
+  if (have_bg && (caps & CAP_STATUS)) {
+    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
     n++;
     if (s_status_start != 0) {
       res |= dict_write_uint32(&iter, KEY_STATUS_START, s_status_start);
@@ -348,6 +356,12 @@ static void prv_push_bg_cb(void *unused) {
       res |= dict_write_uint32(&iter, KEY_STATUS_END, s_status_end);
       n++;
     }
+  }
+  if (caps & CAP_PUMP_CONNECTED) {
+    // Not gated on have_bg: offline (0) is a real value from boot, not a placeholder waiting on
+    // the pump's first reading.
+    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_connected ? 1 : 0);
+    n++;
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
@@ -480,4 +494,11 @@ void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uin
 
 void minimed_sake_sender_set_mode(bool open) {
   launcher_task_add_callback(prv_set_mode_cb, open ? (void *)1 : NULL);
+}
+
+void minimed_sake_sender_send_pump_connected(bool connected) {
+  // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
+  // KernelMain, depending on caller), read on KernelMain during the push.
+  s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
 }

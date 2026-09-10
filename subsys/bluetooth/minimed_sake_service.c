@@ -162,6 +162,10 @@ static void prv_set_pump_paired(bool paired) {
 // (kernel_le_client) and refuses to restart while connected as a slave -- the pump's discovery
 // vehicle must survive both.
 
+// How long the pump job stays at the fast (Medtronic) interval before backing off to
+// MedtronicSlow. Same 30s window as the phone's reconnection job.
+#define PUMP_ADVERT_FAST_DURATION_SECS (30)
+
 static void prv_pump_advert_unscheduled_cb(GAPLEAdvertisingJobRef job, bool completed, void *data) {
   s_pump_advert_job = NULL;
 }
@@ -188,9 +192,15 @@ static void prv_pump_advert_rebuild(void) {
   s_pump_ad.ad.ad_data_length = minimed_sake_build_adv(s_pump_ad.data, sizeof(s_pump_ad.data));
   s_pump_ad.ad.scan_resp_data_length = 0;
 
+  // Fast-then-slow back-off, same shape as the phone's reconnection job: burn the fast interval
+  // for a while, then settle for as long as the pump doesn't show up. prv_pump_advert_rebuild is
+  // called fresh (cur_term resets to 0) whenever the pump is expected back soon -- on a mode entry
+  // and, from the disconnect handler, right after the pump link drops.
   const GAPLEAdvertisingJobTerm terms[] = {
-      {.duration_secs = GAPLE_ADVERTISING_DURATION_INFINITE,
+      {.duration_secs = PUMP_ADVERT_FAST_DURATION_SECS,
        .interval = GAPLEAdvertisingInterval_Medtronic},
+      {.duration_secs = GAPLE_ADVERTISING_DURATION_INFINITE,
+       .interval = GAPLEAdvertisingInterval_MedtronicSlow},
   };
   s_pump_advert_job =
       gap_le_advert_schedule(&s_pump_ad.ad, terms, ARRAY_LENGTH(terms),
