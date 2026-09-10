@@ -4,6 +4,10 @@ Every spike build, newest first, then the chronological dev/test log. This is a 
 archive — you rarely need it in context. Current state is in `PROGRESS.md`; the per-topic
 files are listed there.
 
+The entries below use the old `vN` build counter. `spike-build.sh` no longer assigns one:
+builds are now identified by their git commit hash (short form), and new entries here should
+refer to a build that way (e.g. "build dc906629f") instead of `vNN`.
+
 
 - v66 (2026-09-06, BUILT, **AWAITING HW**;
   `build/sake-spike-v66-cgm-fetch-on-sensor-recovery.pbz`): **fetch a CGM record as soon as the

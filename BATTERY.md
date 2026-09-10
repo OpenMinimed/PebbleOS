@@ -167,7 +167,7 @@ attached, shows nothing for hours on an idle watch, and cannot see SPIKE mode at
 session). Reproduce the condition, then pull the history afterwards:
 
     adb forward tcp:9000 tcp:9000
-    tools/dump_flash_logs.py -g 0 --dict build/sake-spike-vNN-<desc>.loghash.json -o /tmp/gen0.log
+    tools/dump_flash_logs.py -g 0 --dict build/sake-spike-<hash>-<desc>.loghash.json -o /tmp/gen0.log
     grep 'Percent:' /tmp/gen0.log
 
 - Needs Developer Connection on and the watch connected to the phone — toggle out of SPIKE into
