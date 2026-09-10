@@ -29,6 +29,7 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 // MedtronicProtocol.kt). The pump exposes these as a GATT server over the post-handshake link.
 #define CGM_SERVICE_UUID 0x181F
 #define CGM_MEASUREMENT_UUID 0x2AA7  // notify, SAKE-encrypted records
+#define MINIMED_ALERT_POPUPS 0  // set 1 to re-enable watch popups for pump alarms (annunciations)
 #define CGM_FEATURE_UUID 0x2AA8      // read, plaintext (E2E-CRC flag)
 #define RACP_UUID 0x2A52             // write/indicate, plaintext control point
 
@@ -237,8 +238,10 @@ static char s_last_bg_str[12];
 // Recently notified annunciation instance ids: the same annunciation can be re-logged with an
 // updated status (semantics not fully characterised), and a raise must buzz exactly once.
 // 0xFFFF = empty slot. Deliberately survives reconnects.
+#if MINIMED_ALERT_POPUPS
 static uint16_t s_annunc_ids[8] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
 static uint8_t s_annunc_ids_next;
+#endif
 
 // Distinguishes a genuinely new sensor reading from a re-poll of the same one. The CGM record's
 // Time Offset (bytes 4-5, minutes since session start) is the only new-reading signal available --
@@ -396,6 +399,7 @@ static void prv_parse_iob(void) {
   minimed_sake_sender_send_iob(iob_str);  // forward to the watchface (no-op if it isn't running)
 }
 
+#if MINIMED_ALERT_POPUPS
 static bool prv_annunc_already_notified(uint16_t id) {
   const size_t n = sizeof(s_annunc_ids) / sizeof(s_annunc_ids[0]);
   for (size_t i = 0; i < n; i++) {
@@ -404,6 +408,7 @@ static bool prv_annunc_already_notified(uint16_t id) {
   s_annunc_ids[s_annunc_ids_next++ % n] = id;
   return false;
 }
+#endif
 
 // One reassembled history record is complete: advance the cursor, and post a notification for a
 // new, un-silenced annunciation raise (never during the baseline read).
@@ -428,6 +433,7 @@ static void prv_annunc_record_done(void) {
                (unsigned long)a.seq, (int)s_annunc_baseline);
   if (s_annunc_baseline) return;
   if (a.silenced) return;  // the pump raised it quietly (alert settings); mirror that choice
+#if MINIMED_ALERT_POPUPS
   if (prv_annunc_already_notified(a.id)) return;
 
   char name[28];
@@ -448,6 +454,9 @@ static void prv_annunc_record_done(void) {
     snprintf(body, sizeof(body), "%s", name);
   }
   minimed_alert_popup_push("MiniMed", body);
+#else
+  (void)a;
+#endif
 }
 
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
