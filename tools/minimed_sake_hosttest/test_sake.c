@@ -678,7 +678,17 @@ static void section_annunciation(void) {
         strcmp(minimed_annunciation_name(0x33f), "SmartGuard calibration timeout") == 0);
   check("0x071 named", minimed_annunciation_name(0x071) != NULL &&
         strcmp(minimed_annunciation_name(0x071), "Reservoir empty") == 0);
+  // Reported (not our own HW confirmation): times out a started bolus without delivering it.
+  check("0x064 named", minimed_annunciation_name(0x064) != NULL &&
+        strcmp(minimed_annunciation_name(0x064), "Bolus not delivered") == 0);
   check("unknown code has no name", minimed_annunciation_name(0x999) == NULL);
+
+  // BG-suffix predicate: only the predicted/impending-low family says yes.
+  check("0x325 (alert before low) shows BG", minimed_annunciation_shows_bg(0x325));
+  check("0x32b (suspend before low) shows BG", minimed_annunciation_shows_bg(0x32b));
+  check("0x323 (already-low suspend) does not show BG", !minimed_annunciation_shows_bg(0x323));
+  check("0x068 (low battery, unrelated to BG) does not show BG",
+        !minimed_annunciation_shows_bg(0x068));
   printf("\n");
 }
 

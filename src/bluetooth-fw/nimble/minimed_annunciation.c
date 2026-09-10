@@ -37,7 +37,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
 // themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
 // are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19),
-// 0x31a and 0x33f (2026-08-30).
+// 0x31a and 0x33f (2026-08-30). 0x064 is not in the Python enum at all; wording is from a
+// reporter's on-pump reproduction, not our own HW confirmation.
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -50,6 +51,7 @@ static const AnnuncName s_names[] = {
     {0x047, "Max fill reached"},
     {0x048, "Max fill reached"},
     {0x054, "Insert battery"},
+    {0x064, "Bolus not delivered"},  // reported: bolus entry timed out before delivery
     {0x067, "Check bolus BG"},
     {0x068, "Low pump battery"},
     {0x069, "Low reservoir"},
@@ -98,4 +100,21 @@ const char *minimed_annunciation_name(uint16_t type) {
     if (s_names[i].type == type) return s_names[i].name;
   }
   return NULL;
+}
+
+// Types whose own pump alert is about a predicted/impending low: the "alert before low" and
+// "suspend before low" pair, LOW_SG_PLGM_ALERT (Predictive Low Glucose Management), and the
+// threshold-suspend alarm that fires on crossing the low limit. Deliberately excludes the
+// already-a-low alerts (0x323, 0x33b): those describe a current low, not a predicted one.
+bool minimed_annunciation_shows_bg(uint16_t type) {
+  switch (type) {
+    case 0x322:  // Low SG (PLGM)
+    case 0x325:  // Alert before low
+    case 0x329:  // Threshold suspend
+    case 0x32a:  // Suspend before low (quiet)
+    case 0x32b:  // Suspend before low
+      return true;
+    default:
+      return false;
+  }
 }

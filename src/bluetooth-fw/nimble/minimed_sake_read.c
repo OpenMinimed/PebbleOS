@@ -440,11 +440,12 @@ static void prv_annunc_record_done(void) {
     snprintf(name, sizeof(name), "Pump alert 0x%03x", (unsigned)a.type);
   }
   minimed_sake_log(name);
-  // Body: the alert name with the latest BG in parens, e.g. "Alert before low (4.2)". The BG is
-  // at most one 5-min cycle old, and the CGM read dispatches before this one on the same push,
-  // so on a fresh alert it is usually seconds old; dropped entirely when the pump has no value.
+  // Body: for a predicted-low alert, the name with the latest BG in parens, e.g.
+  // "Alert before low (4.2)" -- BG is at most one 5-min cycle old, and the CGM read dispatches
+  // before this one on the same push, so on a fresh alert it is usually seconds old. Every other
+  // alert just shows its name; the BG isn't relevant to e.g. a reservoir or battery alert.
   char body[48];
-  if (s_last_bg_str[0] != '\0') {
+  if (s_last_bg_str[0] != '\0' && minimed_annunciation_shows_bg(a.type)) {
     snprintf(body, sizeof(body), "%s (%s)", name, s_last_bg_str);
   } else {
     snprintf(body, sizeof(body), "%s", name);
