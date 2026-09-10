@@ -352,6 +352,9 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
       minimed_sake_log_evt(line);
     }
     minimed_sake_spike_report(MinimedSakeStageDisconnected);
+    // The pump just dropped and DUAL expects it to come straight back -- re-arm its advert job at
+    // the fast interval instead of leaving it wherever the back-off had gotten to.
+    minimed_sake_pump_advert_update();
     gap_le_advert_force_data_refresh();
     return;
   }

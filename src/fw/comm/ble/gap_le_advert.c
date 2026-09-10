@@ -54,6 +54,7 @@ static const uint32_t s_interval_ms[] = {
   [GAPLEAdvertisingInterval_Short] = 20,     // 20ms
   [GAPLEAdvertisingInterval_Long]  = 1022,   // 1022.5ms (truncated to ms)
   [GAPLEAdvertisingInterval_Medtronic] = 100,  // MiniMed pump advert job
+  [GAPLEAdvertisingInterval_MedtronicSlow] = 500,  // pump advert job, backed off
 };
 
 typedef struct GAPLEAdvertisingJob {
@@ -131,6 +132,7 @@ static void prv_analytics_start_timer(GAPLEAdvertisingInterval interval) {
       PBL_ANALYTICS_TIMER_START(ble_adv_short_intvl_time_ms);
       break;
     case GAPLEAdvertisingInterval_Long:
+    case GAPLEAdvertisingInterval_MedtronicSlow:  // backed-off pump job, close enough to the slow bucket
       PBL_ANALYTICS_TIMER_START(ble_adv_long_intvl_time_ms);
       break;
   }
