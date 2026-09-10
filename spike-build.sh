@@ -5,6 +5,13 @@
 #   ./spike-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
 #   ./spike-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
 #   ./spike-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
+#   ./spike-build.sh <desc> --allow-dirty  bypass the clean-tree check below
+#
+# Builds are identified by the git commit hash (short form), not a version counter: the tree must
+# be committed before building (--allow-dirty bypasses this) so a build's identity always matches
+# something in git history. The hash is stamped into the boot log and the MiniMed app top line via
+# TINTIN_METADATA.version_short (see src/fw/system/version.c) -- no build-script flag needed for
+# that part, it's baked in at configure time regardless of how the build was invoked.
 #
 # Two boards, two recipes. They differ in more than the --board flag, hence the profile block
 # below rather than one parametrised path:
@@ -32,6 +39,7 @@ cd "$(dirname "$0")"
 profile=asterix
 do_configure=0
 push=1
+allow_dirty=0
 desc=""
 for arg in "$@"; do
   case "$arg" in
@@ -39,28 +47,28 @@ for arg in "$@"; do
     --no-push)          push=0 ;;
     --pt2|--obelix)     profile=obelix ;;
     --asterix)          profile=asterix ;;
+    --allow-dirty)      allow_dirty=1 ;;
     -*)                 echo "unknown flag: $arg" >&2; exit 2 ;;
     *)                  desc="$arg" ;;
   esac
 done
-[ -n "$desc" ] || { echo "usage: $0 <desc> [--pt2] [--configure] [--no-push]" >&2; exit 2; }
+[ -n "$desc" ] || { echo "usage: $0 <desc> [--pt2] [--configure] [--no-push] [--allow-dirty]" >&2; exit 2; }
 
-# Next version = 1 + the highest spike version recorded in the version logs (VERSIONS.md /
-# PROGRESS.md), falling back to the local build artifacts. The logs are the authoritative lineage
-# shared with Morten, so a PT2 build continues the same counter instead of restarting at 1.
-log_ver=$( { grep -hoE '^[-*] v[0-9]+|#\*\* v[0-9]+|\*\*v[0-9]+' VERSIONS.md PROGRESS.md 2>/dev/null
-            grep -hoE 'v[0-9]{1,}' VERSIONS.md PROGRESS.md 2>/dev/null; } \
-  | grep -oE 'v[0-9]{1,}' | tr -d v | sort -n | tail -1 )
-local_ver=$(ls build/sake-spike-v*.pbz 2>/dev/null \
-  | sed -n 's#.*/sake-spike-v\([0-9]\{1,\}\)-.*#\1#p' | sort -n | tail -1)
-next_ver=$(( $( [ "${log_ver:-0}" -gt "${local_ver:-0}" ] && echo "$log_ver" || echo "${local_ver:-0}" ) + 1 ))
+# Every build must trace back to a commit: refuse a dirty tree unless explicitly bypassed.
+if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain)" ]; then
+  echo "ERROR: working tree has uncommitted changes; commit first (or pass --allow-dirty)." >&2
+  exit 1
+fi
+
+# Build identity = the commit being built, not a version counter.
+COMMIT=$(git rev-parse --short HEAD)
 
 if [ "$profile" = obelix ]; then
   IMAGE=ghcr.io/coredevices/pebbleos-docker:v6  # official CI image, not the local commit
   BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
   DOCKER_USER=()                                # the CI image needs root to pip install
   PIP_CMD='pip install -U pip >/dev/null 2>&1; pip install -r requirements.txt >/dev/null 2>&1;'
-  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE_SPIKE=y -DCONFIG_SPIKE_VERSION=v$next_ver"
+  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE_SPIKE=y"
   SLOTS=(0 1)
   NEED_TAG=1
   VERIFY_BAND=1
@@ -108,7 +116,7 @@ build_slot() {
   if [ "$VERIFY_BAND" = 1 ] && ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
-  echo ">> building ${slot:+slot$slot }(v$next_ver-$desc)${cfg:+ [configure]}..."
+  echo ">> building ${slot:+slot$slot }($COMMIT-$desc)${cfg:+ [configure]}..."
   docker run --rm "${DOCKER_USER[@]}" -e HOME=/tmp \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       git config --global --add safe.directory /pebbleos
@@ -144,7 +152,7 @@ outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
   fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
-  out="build/sake-spike-v${next_ver}-${desc}.pbz"
+  out="build/sake-spike-${COMMIT}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
   echo ">> $out"
@@ -153,7 +161,7 @@ else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
     fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
-    out="build/sake-spike-v${next_ver}-${desc}_slot${slot}.pbz"
+    out="build/sake-spike-${COMMIT}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
     outs+=("$out")
@@ -165,7 +173,7 @@ fi
 # Keep a per-build copy with full debug info for later readcore.py/addr2line analysis.
 mkdir -p build/elfs
 for slot in "${SLOTS[@]:-''}"; do
-  elf="build/elfs/sake-spike-v${next_ver}-${desc}${slot:+_slot${slot}}.elf"
+  elf="build/elfs/sake-spike-${COMMIT}-${desc}${slot:+_slot${slot}}.elf"
   cp build/pebbleos.elf "$elf"
   echo ">> archived: $elf"
 done
@@ -174,7 +182,7 @@ done
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f build/pebbleos_loghash_dict.json ]; then
-  cp build/pebbleos_loghash_dict.json "build/sake-spike-v${next_ver}-${desc}.loghash.json"
+  cp build/pebbleos_loghash_dict.json "build/sake-spike-${COMMIT}-${desc}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then
