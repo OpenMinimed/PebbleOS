@@ -44,12 +44,4 @@ config MINIMED_SAKE_SPIKE
       hardware bring-up only; hijacks BLE advertising, so the normal phone
       link is unavailable while enabled. Off by default.
 
-config SPIKE_VERSION
-    string "Spike build version label"
-    default ""
-    help
-      Version label stamped into the spike build (e.g. "v14"), shown in the
-      MiniMed App so a flashed image can be identified on the watch. Set by
-      spike-build.sh from the next-version counter.
-
 endmenu

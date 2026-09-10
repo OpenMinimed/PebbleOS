@@ -15,6 +15,7 @@
 #include "popups/minimed_sake_spike_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
+#include "system/version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -44,13 +45,8 @@ static void prv_refresh(MinimedSakeAppData *data) {
                          ? (minimed_sake_pump_paired() ? "MODE: DUAL (FE81)" : "MODE: DUAL (FE82)")
                          : "MODE: NORMAL";
 
-  // Version label stamped by spike-build.sh (-DCONFIG_SPIKE_VERSION=vN), so a flashed image can
-  // be identified on the watch itself. Empty when built without the spike build script.
-#ifdef CONFIG_SPIKE_VERSION
-  const char *ver = CONFIG_SPIKE_VERSION;
-#else
-  const char *ver = "";
-#endif
+  // Commit hash of the running build, so a flashed image can be identified on the watch itself.
+  const char *ver = TINTIN_METADATA.version_short;
   const bool has_ver = (ver[0] != '\0');
 
   // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
