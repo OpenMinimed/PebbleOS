@@ -23,7 +23,8 @@
 #define KEY_IOB_STRING 14
 #define KEY_STATUS_STRING 15
 #define KEY_SENDER_BATTERY 16
-// Keys 17-29 reserved
+#define KEY_PUMP_CONNECTED 17  // uint8, 0=offline 1=connected; offline is the default
+// Keys 18-29 reserved
 
 // Message keys: Sender -> watchface (raw graph)
 #define KEY_GRAPH_DATA 30
@@ -40,6 +41,7 @@
 #define CAP_IOB (1 << 3)
 #define CAP_STATUS (1 << 4)
 #define CAP_SENDER_BATTERY (1 << 5)
+#define CAP_PUMP_CONNECTED (1 << 6)
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0

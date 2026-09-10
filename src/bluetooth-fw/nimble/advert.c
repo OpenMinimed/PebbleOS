@@ -22,6 +22,7 @@
 #ifdef CONFIG_MINIMED_SAKE_SPIKE
 #include "comm/ble/gap_le_advert.h"
 #include "minimed_sake_read.h"
+#include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_spike_ui.h"
 #endif
@@ -68,6 +69,9 @@ void minimed_sake_force_readvertise(void) {
 void minimed_sake_clear_link_state(void) {
   s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
   s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
+  // The pump link is guaranteed dead here (see callers), so the watchface's indicator must not be
+  // left showing a stale "connected" from before the restart/toggle.
+  minimed_sake_sender_send_pump_connected(false);
 }
 
 // True while the pump link is tracked as connected. Used by the pump-liveness watchdog.
@@ -221,6 +225,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     // bookkeeping there, and routing the pump would flip its single-connection state and free the
     // advert scheduler incorrectly.
     s_sake_conn_handle = event->connect.conn_handle;
+    minimed_sake_sender_send_pump_connected(true);
     minimed_sake_spike_report(MinimedSakeStageConnected);
     {
       char line[32];
@@ -250,6 +255,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // connected forever. Handle reuse is possible now that there are two connection slots.
   if (event->connect.conn_handle == s_sake_conn_handle) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    minimed_sake_sender_send_pump_connected(false);  // the pump link this handle meant is gone
   }
   if (event->connect.conn_handle == s_rejected_pump_conn) {
     s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
@@ -345,6 +351,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
   if (conn_handle == s_sake_conn_handle ||
       minimed_sake_addr_is_pump(&event->disconnect.conn.peer_id_addr)) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    minimed_sake_sender_send_pump_connected(false);
     minimed_sake_read_stop();  // stop CGM polling; the link is gone
     {
       char line[32];

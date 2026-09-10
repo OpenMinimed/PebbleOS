@@ -13,8 +13,9 @@
 #define TUPLE_HEADER_LEN 7
 #define TYPE_UINT 2
 
-#define CAP_ALL \
-  (CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS | CAP_SENDER_BATTERY)
+#define CAP_ALL                                                                                 \
+  (CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS | CAP_SENDER_BATTERY |           \
+   CAP_PUMP_CONNECTED)
 
 static uint16_t prv_rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
 

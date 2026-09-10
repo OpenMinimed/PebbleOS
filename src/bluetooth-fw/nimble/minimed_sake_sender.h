@@ -42,3 +42,9 @@ void minimed_sake_sender_send_status(const char *status_str);
 //! NORMAL mode: a real phone connection would then compete with it. Called from the mode toggle;
 //! marshals to KernelMain internally.
 void minimed_sake_sender_set_mode(bool open);
+
+//! Report the pump link state for the watchface's connection indicator (KEY_PUMP_CONNECTED).
+//! `connected` mirrors minimed_sake_pump_connected() and should be pushed on every transition, not
+//! just polled -- offline is the default until the first "connected" call. Safe to call from the
+//! BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_pump_connected(bool connected);
