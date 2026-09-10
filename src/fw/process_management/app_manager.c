@@ -639,6 +639,10 @@ static const CompositorTransition *prv_get_transition(const LaunchConfigCommon *
 
 // ---------------------------------------------------------------------------------------------
 void app_manager_put_launch_app_event(const AppLaunchEventConfig *config) {
+  if (config->id == INSTALL_ID_INVALID) {
+    PBL_LOG_ERR("Launch requested with INSTALL_ID_INVALID, reason=%d button=%d",
+                config->common.reason, config->common.button);
+  }
   PBL_ASSERTN(config->id != INSTALL_ID_INVALID);
 
   PebbleLaunchAppEventExtended *data = kernel_malloc_check(sizeof(PebbleLaunchAppEventExtended));
