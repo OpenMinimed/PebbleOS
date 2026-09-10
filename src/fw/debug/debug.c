@@ -179,6 +179,7 @@ void debug_init(McuRebootReason mcu_reboot_reason) {
 
   // Log the firmware version in the first flash log line:
   PBL_LOG_ALWAYS("Firmware version: %s", TINTIN_METADATA.version_tag);
+  PBL_LOG_ALWAYS("Commit: %s", TINTIN_METADATA.version_short);
   PBL_LOG_ALWAYS("Platform: %u, hw: %s, sn: %s",
                  TINTIN_METADATA.hw_platform,
                  mfg_get_hw_version(),
