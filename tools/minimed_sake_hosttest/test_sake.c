@@ -476,8 +476,9 @@ static void section_status(void) {
   minimed_status_parse_idd(idd_normal, sizeof(idd_normal), &st);
   minimed_status_parse_tas(tas_normal, sizeof(tas_normal), &tas);
   minimed_status_update(&st, &tas, 1000);
-  check("normal composes to empty", minimed_status_compose(1000, out, sizeof(out)) && out[0] == '\0');
-  check("normal does not tick", !minimed_status_ticking());
+  check("normal composes to empty", minimed_status_compose(out, sizeof(out)) && out[0] == '\0');
+  MinimedStatusTimers timers = minimed_status_get_timers();
+  check("normal does not tick", timers.start == 0 && timers.end == 0);
   check("normal BG valid", !minimed_status_bg_invalid());
 
   // Sensor recovery latch: fires once on invalid -> valid, and is consumed by the read.
@@ -502,18 +503,19 @@ static void section_status(void) {
   MinimedIddStatus sus = st;
   sus.therapy = 0x33;
   minimed_status_update(&sus, &tas, 1000);
-  minimed_status_compose(1000, out, sizeof(out));
-  check("suspend at entry", strcmp(out, "SUSPENDED 0:00") == 0);
+  minimed_status_compose(out, sizeof(out));
+  check("suspend at entry", strcmp(out, "SUSPENDED") == 0);
   minimed_status_update(&sus, &tas, 1000 + 300);  // still suspended 5 min later
-  minimed_status_compose(1000 + 300, out, sizeof(out));
-  check("suspend counts up (not restamped)", strcmp(out, "SUSPENDED 0:05") == 0);
-  check("suspend ticks", minimed_status_ticking());
+  minimed_status_compose(out, sizeof(out));
+  check("suspend label remains stable", strcmp(out, "SUSPENDED") == 0);
+  timers = minimed_status_get_timers();
+  check("suspend timer starts at entry", timers.start == 1000 && timers.end == 0);
 
   // Load reservoir outranks plain suspend: therapy STOP but op mid-procedure.
   MinimedIddStatus load = sus;
   load.operational = 0x5A;  // PRIMING
   minimed_status_update(&load, &tas, 2000);
-  minimed_status_compose(2000, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("load reservoir label", strcmp(out, "LOAD RESERVOIR") == 0);
 
   // Warm-up: self-timed 2 h countdown, stamped on entry only.
@@ -521,17 +523,17 @@ static void section_status(void) {
   MinimedIddStatus warm = st;
   warm.sensor_msg = 0x08;  // WARM_UP
   minimed_status_update(&warm, &tas, 10000);
-  minimed_status_compose(10000 + 60, out, sizeof(out));
-  check("warm-up countdown after 1 min", strcmp(out, "WARM-UP 1:59") == 0);
+  minimed_status_compose(out, sizeof(out));
+  check("warm-up label", strcmp(out, "WARM-UP") == 0);
   minimed_status_update(&warm, &tas, 10000 + 600);  // re-read 10 min in: must NOT restart the clock
-  minimed_status_compose(10000 + 600, out, sizeof(out));
-  check("warm-up expiry not restamped", strcmp(out, "WARM-UP 1:50") == 0);
+  minimed_status_compose(out, sizeof(out));
+  check("warm-up label remains stable", strcmp(out, "WARM-UP") == 0);
   check("warm-up means BG invalid", minimed_status_bg_invalid());
   minimed_status_update(&st, &tas, 10000 + 700);  // sensor live again
   check("warm-up exit clears BG-invalid", !minimed_status_bg_invalid());
   minimed_status_update(&warm, &tas, 20000);  // re-enter: fresh 2 h
-  minimed_status_compose(20000, out, sizeof(out));
-  check("warm-up re-entry restamps", strcmp(out, "WARM-UP 2:00") == 0);
+  minimed_status_compose(out, sizeof(out));
+  check("warm-up re-entry", strcmp(out, "WARM-UP") == 0);
 
   // GST signal lost (connectivity bit 2) invalidates BG even with no sensor message.
   minimed_status_reset();
@@ -545,14 +547,14 @@ static void section_status(void) {
   MinimedIddStatus low = st;
   low.sensor_msg = 0x09;  // SG_BELOW_LOWER_LIMIT
   minimed_status_update(&low, &tas, 3100);
-  minimed_status_compose(3100, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("SG below composes to empty", out[0] == '\0');
   check("SG below reported", minimed_status_sg_below() && !minimed_status_sg_above());
   check("SG below keeps BG valid", !minimed_status_bg_invalid());
   MinimedIddStatus high = st;
   high.sensor_msg = 0x0A;  // SG_ABOVE_UPPER_LIMIT
   minimed_status_update(&high, &tas, 3200);
-  minimed_status_compose(3200, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("SG above composes to empty", out[0] == '\0');
   check("SG above reported", minimed_status_sg_above() && !minimed_status_sg_below());
   minimed_status_update(&st, &tas, 3300);
@@ -564,38 +566,39 @@ static void section_status(void) {
   MinimedTas tt = tas;
   tt.temp_target_min = 60;
   minimed_status_update(&st, &tt, 5000);
-  minimed_status_compose(5000 + 120, out, sizeof(out));
-  check("temp target countdown", strcmp(out, "TEMP TARGET 0:58") == 0);
-  check("temp target ticks", minimed_status_ticking());
+  minimed_status_compose(out, sizeof(out));
+  check("temp target label", strcmp(out, "TEMP TARGET") == 0);
+  timers = minimed_status_get_timers();
+  check("temp target timer has an end", timers.start == 0 && timers.end == 5000 + 60 * 60);
 
   // SmartGuard off / safe basal from the shield; BG REQUIRED outranks them.
   minimed_status_reset();
   MinimedTas open = tas;
   open.shield = 0x01;  // OPEN_LOOP
   minimed_status_update(&st, &open, 6000);
-  minimed_status_compose(6000, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("open loop -> SMARTGUARD OFF", strcmp(out, "SMARTGUARD OFF") == 0);
   open.readiness = 1;  // BG_REQUIRED
   minimed_status_update(&st, &open, 6100);
-  minimed_status_compose(6100, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("BG required outranks loop state", strcmp(out, "BG REQUIRED") == 0);
 
   // Both reads failed: previous state survives untouched.
   MinimedIddStatus bad_st = {.valid = false};
   MinimedTas bad_tas = {.valid = false};
   minimed_status_update(&bad_st, &bad_tas, 6200);
-  minimed_status_compose(6200, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("double read failure keeps last label", strcmp(out, "BG REQUIRED") == 0);
 
   // TAS-only (IDD read failed): loop-state clauses still fire.
   minimed_status_reset();
   minimed_status_update(&bad_st, &open, 6300);
-  minimed_status_compose(6300, out, sizeof(out));
+  minimed_status_compose(out, sizeof(out));
   check("TAS-only read still maps", strcmp(out, "BG REQUIRED") == 0);
 
   // Nothing ever seen: compose refuses.
   minimed_status_reset();
-  check("compose refuses before first data", !minimed_status_compose(0, out, sizeof(out)));
+  check("compose refuses before first data", !minimed_status_compose(out, sizeof(out)));
   printf("\n");
 }
 
