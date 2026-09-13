@@ -208,34 +208,16 @@ void minimed_status_update(const MinimedIddStatus *st, const MinimedTas *tas, ui
   }
 }
 
-// Minutes -> "H:MM" (e.g. 9 -> "0:09", 130 -> "2:10").
-static void prv_hmm(uint32_t minutes, char *out, uint16_t cap) {
-  snprintf(out, cap, "%lu:%02lu", (unsigned long)(minutes / 60), (unsigned long)(minutes % 60));
-}
-
-bool minimed_status_compose(uint32_t now, char *out, uint16_t cap) {
+bool minimed_status_compose(char *out, uint16_t cap) {
   if (s_label == LABEL_UNSET) return false;
-  char hmm[12];
   switch (s_label) {
-    case LABEL_WARMUP:
-      if (s_warmup_expiry == 0) { snprintf(out, cap, "SENSOR WARM-UP"); break; }
-      prv_hmm(s_warmup_expiry > now ? (s_warmup_expiry - now) / 60 : 0, hmm, sizeof(hmm));
-      snprintf(out, cap, "WARM-UP %s", hmm);  // shorter than the plain label; clearly a countdown
-      break;
-    case LABEL_TEMP_TARGET:
-      if (s_tt_expiry == 0) { snprintf(out, cap, "TEMP TARGET"); break; }
-      prv_hmm(s_tt_expiry > now ? (s_tt_expiry - now) / 60 : 0, hmm, sizeof(hmm));
-      snprintf(out, cap, "TEMP TARGET %s", hmm);
-      break;
-    case LABEL_SUSPENDED:
-      if (s_suspend_since == 0) { snprintf(out, cap, "SUSPENDED"); break; }
-      prv_hmm(now > s_suspend_since ? (now - s_suspend_since) / 60 : 0, hmm, sizeof(hmm));
-      snprintf(out, cap, "SUSPENDED %s", hmm);
-      break;
+    // "SENSOR WARM-UP 1:23" doesn't fit on flint displays, so abbreviate to "WARM-UP".
+    case LABEL_WARMUP: snprintf(out, cap, "WARM-UP"); break;
+    case LABEL_TEMP_TARGET: snprintf(out, cap, "TEMP TARGET"); break;
+    case LABEL_SUSPENDED: snprintf(out, cap, "SUSPENDED"); break;
     case LABEL_NORMAL: out[0] = '\0'; break;
     case LABEL_LOAD_RESERVOIR: snprintf(out, cap, "LOAD RESERVOIR"); break;
-    // Off-scale SG: the BG number shows LO/HI (like the pump), so a band would only repeat it
-    // and cover the graph's low/high region.
+    // When out of range, the BG number shows LO/HI, so no need to repeat it here.
     case LABEL_SG_LOW: out[0] = '\0'; break;
     case LABEL_SG_HIGH: out[0] = '\0'; break;
     case LABEL_SENSOR_UPDATING: snprintf(out, cap, "SENSOR UPDATING"); break;
@@ -254,8 +236,18 @@ bool minimed_status_compose(uint32_t now, char *out, uint16_t cap) {
   return true;
 }
 
-bool minimed_status_ticking(void) {
-  return s_warmup_expiry != 0 || s_suspend_since != 0 || s_tt_expiry != 0;
+MinimedStatusTimers minimed_status_get_timers()
+{
+  MinimedStatusTimers timers = {0};
+
+  switch (s_label) {
+  case LABEL_SUSPENDED: timers.start = s_suspend_since; break;
+  case LABEL_WARMUP: timers.end = s_warmup_expiry; break;
+  case LABEL_TEMP_TARGET: timers.end = s_tt_expiry; break;
+  default: break;
+  }
+
+  return timers;
 }
 
 bool minimed_status_bg_invalid(void) { return s_bg_invalid; }

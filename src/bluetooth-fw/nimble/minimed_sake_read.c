@@ -196,12 +196,6 @@ static uint16_t s_h_idd_racp, s_h_hist;
 static MinimedIddStatus s_idd_st;
 static MinimedTas s_tas;
 
-// Re-compose the status string every minute while a countdown/count-up label is active
-// (WARM-UP / TEMP TARGET / SUSPENDED), so it ticks on the watchface. Local AppMessage only --
-// no BLE traffic.
-#define STATUS_TICK_SECS 60
-static struct ble_npl_callout s_status_tick_co;
-
 // Reassembly buffer for a (decrypted) CGM Measurement record. The record's byte 0 is its total
 // length, so accumulate decrypted fragments until we have that many bytes.
 static uint8_t s_rec[64];
@@ -736,8 +730,9 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
   const uint32_t now = (uint32_t)rtc_get_time();
   minimed_status_update(&s_idd_st, &s_tas, now);
   char label[20];
-  if (minimed_status_compose(now, label, sizeof(label))) {
-    minimed_sake_sender_send_status(label);
+  if (minimed_status_compose(label, sizeof(label))) {
+    const MinimedStatusTimers timers = minimed_status_get_timers();
+    minimed_sake_sender_send_status(label, timers.start, timers.end);
     char line[32];
     snprintf(line, sizeof(line), "st: %s", label[0] != '\0' ? label : "(normal)");
     minimed_sake_log(line);
@@ -1097,25 +1092,12 @@ static void prv_poll_timer_cb(struct ble_npl_event *ev) {
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(secs * 1000));
 }
 
-// While a countdown/count-up status is showing, re-compose and re-send it every minute so it
-// ticks on the watchface. Purely local (AppMessage injection) -- costs no BLE traffic.
-static void prv_status_tick_cb(struct ble_npl_event *ev) {
-  if (minimed_status_ticking()) {
-    char label[20];
-    if (minimed_status_compose((uint32_t)rtc_get_time(), label, sizeof(label))) {
-      minimed_sake_sender_send_status(label);
-    }
-  }
-  ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
-}
-
 // Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
 // (s_h_srcp != 0); a missing/failed IDD discovery leaves BG working, just without IOB.
 static void prv_start_polling(void) {
   minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
   prv_request(prv_full_poll_mask());
   ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
-  ble_npl_callout_reset(&s_status_tick_co, ble_npl_time_ms_to_ticks32(STATUS_TICK_SECS * 1000));
   ble_npl_callout_reset(&s_battery_co,
                         ble_npl_time_ms_to_ticks32(BATTERY_FIRST_READ_DELAY_SECS * 1000));
   ble_npl_callout_reset(&s_devinfo_co,
@@ -1428,7 +1410,6 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_wd_co, nimble_port_get_dflt_eventq(), prv_wd_cb, NULL);
   ble_npl_callout_init(&s_dispatch_co, nimble_port_get_dflt_eventq(), prv_dispatch_cb, NULL);
   ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
-  ble_npl_callout_init(&s_status_tick_co, nimble_port_get_dflt_eventq(), prv_status_tick_cb, NULL);
   ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
   ble_npl_callout_init(&s_devinfo_co, nimble_port_get_dflt_eventq(), prv_devinfo_timer_cb, NULL);
 }
@@ -1478,7 +1459,6 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_wd_co);
   ble_npl_callout_stop(&s_dispatch_co);
   ble_npl_callout_stop(&s_op_timeout_co);
-  ble_npl_callout_stop(&s_status_tick_co);
   ble_npl_callout_stop(&s_battery_co);
   ble_npl_callout_stop(&s_devinfo_co);
 }

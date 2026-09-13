@@ -49,7 +49,7 @@ static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 
 #define BG_STR_MAX 8      // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
 #define IOB_STR_MAX 8     // "N.N"/"NN.N" IU
-#define STATUS_STR_MAX 20  // watchface s_status_string is 20; longest label "TEMP TARGET H:MM"
+#define STATUS_STR_MAX 20
 
 // Enough for any capability announcement: 3 tuples of at most 7 + 4 bytes plus the count byte.
 // Sized with slack so a future key or two still parses rather than being read as a foreign app.
@@ -73,6 +73,8 @@ static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
 static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
+static uint32_t s_status_start;
+static uint32_t s_status_end;
 
 static MinimedGraph s_graph;
 
@@ -301,6 +303,14 @@ static void prv_push_bg_cb(void *unused) {
   if (caps & CAP_STATUS) {
     res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
     n++;
+    if (s_status_start != 0) {
+      res |= dict_write_uint32(&iter, KEY_STATUS_START, s_status_start);
+      n++;
+    }
+    if (s_status_end != 0) {
+      res |= dict_write_uint32(&iter, KEY_STATUS_END, s_status_end);
+      n++;
+    }
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
@@ -421,10 +431,12 @@ void minimed_sake_sender_send_iob(const char *iob_str) {
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
-void minimed_sake_sender_send_status(const char *status_str) {
+void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uint32_t end) {
   // Same lock-free discipline as send_iob; likewise leaves s_bg_timestamp alone.
   strncpy(s_status_str, status_str, sizeof(s_status_str) - 1);
   s_status_str[sizeof(s_status_str) - 1] = '\0';
+  s_status_start = start;
+  s_status_end = end;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
