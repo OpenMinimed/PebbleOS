@@ -6,12 +6,15 @@ files are listed there.
 
 ## Versioning (since 2026-09-11)
 
-Build identity is the git commit hash (short form), not a version counter and not `git describe`.
-`minimed-build.sh` refuses to build a dirty tree and names bundles
-`minimed-<board>-<hash>-<desc>.pbz`; the firmware logs the same hash at every boot
-(`TINTIN_METADATA.version_short`) and shows it at the top of the MiniMed app, so a build is always
-identifiable regardless of how it was described at build time. `vNN` entries below are legacy;
-new entries should refer to a build by its commit hash (e.g. "build dc906629f").
+`minimed-build.sh` refuses to build a dirty tree, not a version counter, and names bundles
+`minimed-<board>-<describe>-<desc>.pbz` where `<describe>` is `git describe --dirty --always`
+(e.g. `v4.36.2-138-g6c6260855`). Separately, and unconditionally, the firmware logs the bare short
+commit hash at every boot (`TINTIN_METADATA.version_short`) and shows it at the top of the MiniMed
+app — that hash is baked in at configure time regardless of how the build was invoked, so it's the
+one to trust for "what commit is this watch actually running" even if a filename's `describe`
+string ever looks ambiguous (e.g. collapsed to a bare tag with no hash, if `HEAD` sat exactly on
+one). `vNN` entries below are legacy; new entries should refer to a build by its `describe` string
+or its commit hash, whichever you have on hand (e.g. "build dc906629f").
 
 - 2026-09-13, **HW-VERIFIED**;
   `build/minimed-asterix-v4.36.2-138-g6c6260855-graph-hours.pbz`: **respect the watchface's

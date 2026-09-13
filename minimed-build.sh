@@ -7,11 +7,14 @@
 #   ./minimed-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
 #   ./minimed-build.sh <desc> --allow-dirty  bypass the clean-tree check below
 #
-# Builds are identified by the git commit hash (short form), not a version counter: the tree must
-# be committed before building (--allow-dirty bypasses this) so a build's identity always matches
-# something in git history. The hash is stamped into the boot log and the MiniMed app top line via
-# TINTIN_METADATA.version_short (see src/fw/system/version.c) -- no build-script flag needed for
-# that part, it's baked in at configure time regardless of how the build was invoked.
+# Build artifacts (the .pbz/.elf/.loghash.json filenames) are named after `git describe --dirty
+# --always`, not a version counter: the tree must be committed before building (--allow-dirty
+# bypasses this) so a build's identity always matches something in git history. Separately, the
+# bare short commit hash (TINTIN_METADATA.version_short, see src/fw/system/version.c) is what the
+# boot log and the MiniMed app top line show at runtime -- no build-script flag needed for that
+# part, it's baked in at configure time regardless of how the build was invoked. The two will
+# usually share the same hash suffix, but describe's shape can vary (see TESTING.md); the runtime
+# one is the unconditional source of truth for "what commit is this watch actually running".
 #
 # Two boards, two recipes. They differ in more than the --board flag, hence the profile block
 # below rather than one parametrised path:
@@ -60,9 +63,6 @@ if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
-# Build identity = the commit being built, not a version counter.
-COMMIT=$(git rev-parse --short HEAD)
-
 if [ "$profile" = obelix ]; then
   IMAGE=ghcr.io/coredevices/pebbleos-docker:v6  # official CI image, not the local commit
   BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
@@ -84,6 +84,10 @@ else
 fi
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (BOARD_NORMALIZED strips @revision)
 RELEASE_TAG=${RELEASE_TAG:-v4.36.9}              # release-form tag stamped into the bundle
+
+# Identity BEFORE the release-tag dance below: once HEAD carries that tag, git describe collapses
+# to just the tag name (no hash, no commit count), which is the whole identity.
+DESCRIBE=$(git describe --dirty --always)
 echo ">> board $BOARD (image $IMAGE)"
 
 if [ "$NEED_TAG" = 1 ]; then
@@ -119,7 +123,7 @@ build_slot() {
   if [ "$VERIFY_BAND" = 1 ] && ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
-  echo ">> building ${slot:+slot$slot }($COMMIT-$desc)${cfg:+ [configure]}..."
+  echo ">> building ${slot:+slot$slot }($DESCRIBE-$desc)${cfg:+ [configure]}..."
   docker run --rm "${DOCKER_USER[@]}" -e HOME=/tmp \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       git config --global --add safe.directory /pebbleos
@@ -155,7 +159,7 @@ outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
   fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
-  out="build/minimed-${BOARD_SHORT}-${COMMIT}-${desc}.pbz"
+  out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
   echo ">> $out"
@@ -164,7 +168,7 @@ else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
     fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
-    out="build/minimed-${BOARD_SHORT}-${COMMIT}-${desc}_slot${slot}.pbz"
+    out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
     outs+=("$out")
@@ -176,7 +180,7 @@ fi
 # Keep a per-build copy with full debug info for later readcore.py/addr2line analysis.
 mkdir -p build/elfs
 for slot in "${SLOTS[@]:-''}"; do
-  elf="build/elfs/minimed-${BOARD_SHORT}-${COMMIT}-${desc}${slot:+_slot${slot}}.elf"
+  elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
   cp build/pebbleos.elf "$elf"
   echo ">> archived: $elf"
 done
@@ -185,7 +189,7 @@ done
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f build/pebbleos_loghash_dict.json ]; then
-  cp build/pebbleos_loghash_dict.json "build/minimed-${BOARD_SHORT}-${COMMIT}-${desc}.loghash.json"
+  cp build/pebbleos_loghash_dict.json "build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then

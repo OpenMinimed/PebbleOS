@@ -14,7 +14,7 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ## Build + deploy (one command)
 
 ```sh
-./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<hash>-<desc>.pbz
+./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<describe>-<desc>.pbz
 ./minimed-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
 ./minimed-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
 ./minimed-build.sh <desc> --configure  # add this after Kconfig / app-registry changes
@@ -22,10 +22,14 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ```
 
 - Refuses to build on a dirty tree (build identity = commit, so it must be committed first;
-  `--allow-dirty` bypasses this). Writes `build/minimed-<board>-<hash>-<desc>.pbz`, where `<hash>`
-  is the short git commit hash (`git rev-parse --short HEAD`) of the build. Refer to builds by
-  that hash, not a `vN` counter or `git describe` string — it's logged at boot (`Commit: <hash>`)
-  and shown in the MiniMed app top line, so it always matches the running binary.
+  `--allow-dirty` bypasses this). Writes `build/minimed-<board>-<describe>-<desc>.pbz`, where
+  `<describe>` is `git describe --dirty --always` (e.g. `v4.36.2-138-g6c6260855`). That's the
+  build-script/filename identity; separately, the running firmware's boot log and the MiniMed app
+  top line always show the bare short commit hash (`Commit: <hash>`,
+  `TINTIN_METADATA.version_short`) regardless of how the build was invoked — the two usually share
+  the same hash suffix, but the runtime one is the unconditional source of truth for "what commit
+  is this watch actually running" (describe's shape can collapse to just a tag name with no hash
+  at all if `HEAD` is sitting exactly on one, e.g. rebuilding an unchanged commit on the PT2 path).
 - Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect.
 - **asterix** (the default): Docker image `pebbleos-build:local`, one bundle, no release band.
 - **obelix** (`--pt2`): image `ghcr.io/coredevices/pebbleos-docker:v6` (official CI), two
