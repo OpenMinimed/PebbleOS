@@ -50,6 +50,13 @@ typedef struct {
   uint16_t temp_target_min; // remaining temp-target minutes; 0 = not active/absent
 } MinimedTas;
 
+//! Start and end timestamps for pump statuses (Unix epoch seconds)
+//! Can be used to display count-up/down status timers on watchface, like "TEMP TARGET 1:59".
+typedef struct {
+  uint32_t start;  // When the status started
+  uint32_t end;    // When the status is expected to end
+} MinimedStatusTimers;
+
 //! Parse a decrypted 9-byte IDD Status body (therapy, operational, reservoir medfloat32, flags,
 //! sensor connectivity, sensor message; no E2E on the 780G). Returns false (and leaves *out
 //! invalid) on a length mismatch.
@@ -68,15 +75,14 @@ bool minimed_status_parse_tas(const uint8_t *body, uint16_t len, MinimedTas *out
 //! expiry restamped from the pump's live remaining-minutes on every read.
 void minimed_status_update(const MinimedIddStatus *st, const MinimedTas *tas, uint32_t now);
 
-//! Compose the current display string for watchface key 15: the label, time-augmented when
-//! applicable ("WARM-UP 1:59" / "TEMP TARGET 0:45" countdowns, "SUSPENDED 0:12" count-up).
-//! "" = normal (the watchface hides the band). Returns false if update() has never run with
-//! valid data -- nothing should be sent yet.
-bool minimed_status_compose(uint32_t now, char *out, uint16_t cap);
+//! Compose the current display string for the watchface. No status to display = "".
+//! Returns false if update() has never run with valid data -- nothing should be sent yet.
+bool minimed_status_compose(char *out, uint16_t cap);
 
-//! True while the active label carries a time component, i.e. the caller should re-compose and
-//! re-send every minute so the countdown ticks.
-bool minimed_status_ticking(void);
+//! Get the active status timer as Unix epoch seconds.
+//! Set start for count-up timers and end for count-down timers.
+//! Set zero for unused timers.
+MinimedStatusTimers minimed_status_get_timers();
 
 //! True while the SG is off the sensor scale (SensorMessageState SG below / above limit). The
 //! read path shows "LO"/"HI" as the BG instead of the 0 mg/dL marker the pump sends, and the

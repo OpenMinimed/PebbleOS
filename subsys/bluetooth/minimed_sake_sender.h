@@ -34,9 +34,9 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
 void minimed_sake_sender_send_iob(const char *iob_str);
 
-//! Update the pump-status line (watchface KEY_STATUS_STRING). "" = normal, the watchface hides
-//! the band. Pushes the full cached frame like send_iob; does not touch the BG timestamp.
-void minimed_sake_sender_send_status(const char *status_str);
+//! Update the pump-status line (status string and start/end times).
+//! Pushes the full cached frame like send_iob; does not touch the BG timestamp.
+void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uint32_t end);
 
 //! Open (open=true) / close (open=false) the loopback session. The session must NOT exist in
 //! NORMAL mode: a real phone connection would then compete with it. Called from the mode toggle;
