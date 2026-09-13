@@ -6,6 +6,15 @@ files are listed there.
 
 ## Versioning (since 2026-09-11)
 
+- 2026-09-13, **HW-VERIFIED**;
+  `build/minimed-asterix-v4.36.2-138-g6c6260855-graph-hours.pbz`: **respect the watchface's
+  requested `GRAPH_HOURS`**. PebbleOS now retains up to 24 hours plus a 30-minute margin and
+  serializes only the announced window plus that margin. The graph buffer is sized for the
+  supported five-minute cadence, with a 300-point limit derived from the retention period. The
+  watchface requests its visible two-hour window. Verified on asterix: MiniMed app present,
+  DUAL mode, pump BG/IOB flowing, and the watchface ready ping received. Log:
+  `../logs/watch/2026-09-13-v4.36.2-138.txt`.
+
 Build identity is `git describe --dirty` (<base tag>-<n>-g<hash>[-dirty]). `minimed-build.sh` names
 bundles `minimed-<board>-<git describe>-<desc>.pbz`; the firmware logs the same string at every
 boot and shows it at the top of the MiniMed app. `vNN` entries below are legacy; new builds get
