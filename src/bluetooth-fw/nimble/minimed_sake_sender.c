@@ -72,7 +72,7 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
-static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
+static char s_status_str[STATUS_STR_MAX];
 static uint32_t s_status_start;
 static uint32_t s_status_end;
 
@@ -301,7 +301,7 @@ static void prv_push_bg_cb(void *unused) {
     n++;
   }
   if (caps & CAP_STATUS) {
-    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
+    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);
     n++;
     if (s_status_start != 0) {
       res |= dict_write_uint32(&iter, KEY_STATUS_START, s_status_start);
