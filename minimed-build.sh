@@ -99,7 +99,7 @@ build_slot() {
   local cfg=""
   # Configure if forced, or if the existing cache lacks the MiniMed config, targets a different slot,
   # or (obelix) is not a release build. Guards against stale caches from a plain configure.
-  if [ "$do_configure" = 1 ] || ! grep -q "MINIMED_SAKE" build/c4che/_cache.py 2>/dev/null; then
+  if [ "$do_configure" = 1 ] || ! grep -qE '^CONFIG_MINIMED_SAKE = (1|True)$' build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
   if [ -n "$slot" ] && ! grep -q "FIRMWARE_SLOT = $slot" build/c4che/_cache.py 2>/dev/null; then
