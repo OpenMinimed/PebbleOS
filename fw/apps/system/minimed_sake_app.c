@@ -15,7 +15,7 @@
 #include "popups/minimed_sake_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
-#include <pbl/version.h>
+#include "system/version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -45,6 +45,10 @@ static void prv_refresh(MinimedSakeAppData *data) {
                          ? (minimed_sake_pump_paired() ? "MODE: DUAL (FE81)" : "MODE: DUAL (FE82)")
                          : "MODE: NORMAL";
 
+  // Commit hash of the running build, so a flashed image can be identified on the watch itself.
+  const char *ver = TINTIN_METADATA.version_short;
+  const bool has_ver = (ver[0] != '\0');
+
   // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
   // deleted since boot. "FE81" above with pmp0 is the FE81/FE82 mismatch; pmp0 with del1 means
   // something pruned the pump bond; pmp0 with del0 means it was never stored.
@@ -55,9 +59,9 @@ static void prv_refresh(MinimedSakeAppData *data) {
   }
   data->bond_refresh_countdown--;
 
-  // PBL_VERSION_TAG is git describe; the shared identity for two people debugging the same build.
-  snprintf(data->buf, sizeof(data->buf), "fw %s\n%s\nbond gw%u pmp%u del%u\n%s", PBL_VERSION_TAG, mode,
-           data->bond_gateway, data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
+  snprintf(data->buf, sizeof(data->buf), "%s%s%s\nbond gw%u pmp%u del%u\n%s", has_ver ? ver : "",
+           has_ver ? " " : "", mode, data->bond_gateway, data->bond_non_gateway, data->bond_deleted,
+           minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 
@@ -101,8 +105,7 @@ static void prv_window_load(Window *window) {
   text_layer_set_font(&data->text, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   layer_add_child(root, &data->text.layer);
   // The window owns the recognizer and destroys it on unload.
-  data->swipe_recognizer =
-      swipe_recognizer_create(prv_swipe_handler, NULL, SwipeDirection_Right);
+  data->swipe_recognizer = swipe_recognizer_create(prv_swipe_handler, NULL, SwipeDirection_Right);
   window_attach_recognizer(window, data->swipe_recognizer);
   prv_refresh(data);
 }
@@ -114,7 +117,7 @@ static void prv_handle_init(void) {
 
   window_init(&data->window, "MiniMed App");
   window_set_window_handlers(&data->window, &(WindowHandlers){
-                                                .load = prv_window_load,
+                                              .load = prv_window_load,
                                             });
   window_set_click_config_provider(&data->window, prv_click_config);
   app_window_stack_push(&data->window, true /* animated */);
@@ -139,8 +142,8 @@ static void s_main(void) {
 
 const PebbleProcessMd *minimed_sake_app_get_info(void) {
   static const PebbleProcessMdSystem s_info = {
-      .common.main_func = s_main,
-      .name = "MiniMed App",
+    .common.main_func = s_main,
+    .name = "MiniMed App",
   };
   return (const PebbleProcessMd *)&s_info;
 }
