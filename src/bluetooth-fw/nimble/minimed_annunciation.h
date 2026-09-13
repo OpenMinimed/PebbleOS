@@ -31,3 +31,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 //! Short display name for an annunciation type code, or NULL if not in the table
 //! (caller shows the hex code instead). Codes: PythonPumpConnector AnnunciationType.
 const char *minimed_annunciation_name(uint16_t type);
+
+//! True if this alert is about a predicted/impending low BG, so showing the latest BG next to
+//! it is contextually useful. False for everything else (including alerts already about BG,
+//! e.g. an already-triggered low or a high SG, which don't need "predicted" framing).
+bool minimed_annunciation_shows_bg(uint16_t type);

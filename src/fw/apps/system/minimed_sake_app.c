@@ -15,7 +15,7 @@
 #include "popups/minimed_sake_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
-#include "git_version.auto.h"
+#include "system/version.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -45,6 +45,10 @@ static void prv_refresh(MinimedSakeAppData *data) {
                          ? (minimed_sake_pump_paired() ? "MODE: DUAL (FE81)" : "MODE: DUAL (FE82)")
                          : "MODE: NORMAL";
 
+  // Commit hash of the running build, so a flashed image can be identified on the watch itself.
+  const char *ver = TINTIN_METADATA.version_short;
+  const bool has_ver = (ver[0] != '\0');
+
   // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
   // deleted since boot. "FE81" above with pmp0 is the FE81/FE82 mismatch; pmp0 with del1 means
   // something pruned the pump bond; pmp0 with del0 means it was never stored.
@@ -55,9 +59,9 @@ static void prv_refresh(MinimedSakeAppData *data) {
   }
   data->bond_refresh_countdown--;
 
-  // GIT_TAG is git describe; the shared identity for two people debugging the same build.
-  snprintf(data->buf, sizeof(data->buf), "fw %s\n%s\nbond gw%u pmp%u del%u\n%s", GIT_TAG, mode,
-           data->bond_gateway, data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
+  snprintf(data->buf, sizeof(data->buf), "%s%s%s\nbond gw%u pmp%u del%u\n%s",
+           has_ver ? ver : "", has_ver ? " " : "", mode, data->bond_gateway,
+           data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 

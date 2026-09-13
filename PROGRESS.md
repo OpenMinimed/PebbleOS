@@ -180,8 +180,8 @@ Details worth knowing:
   `uv tool install pebble-tool --with pyelftools`.
 - **The dict is per build.** Log lines are stored hashed and the hashes change every build, so an
   older generation needs that firmware's dictionary. `minimed-build.sh` now archives one next to each
-  `.pbz` as `minimed-<board>-<git describe>-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
-  lines come back as raw `NL:xxxx`.
+  `.pbz` as `minimed-<board>-<hash>-<desc>.loghash.json` (`<hash>` = the build's short git commit
+  hash); pass it with `--dict`. Without the right dict the lines come back as raw `NL:xxxx`.
 - Requires **Developer Connection** enabled in the Pebble app *and* the watch in NORMAL. Re-pairing
   the watch turns Developer Connection off — that cost time once; the symptom is
   "Connection to remote host was lost" while port 9000 still accepts, i.e. the server is up but has

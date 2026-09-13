@@ -14,13 +14,18 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ## Build + deploy (one command)
 
 ```sh
-./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<git describe>-<desc>.pbz
+./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<hash>-<desc>.pbz
 ./minimed-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
 ./minimed-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
 ./minimed-build.sh <desc> --configure  # add this after Kconfig / app-registry changes
+./minimed-build.sh <desc> --allow-dirty  # bypass the clean-tree check (normally required)
 ```
 
-- Uses `git describe --dirty` for the build identity and writes `build/minimed-<board>-<git describe>-<desc>.pbz`.
+- Refuses to build on a dirty tree (build identity = commit, so it must be committed first;
+  `--allow-dirty` bypasses this). Writes `build/minimed-<board>-<hash>-<desc>.pbz`, where `<hash>`
+  is the short git commit hash (`git rev-parse --short HEAD`) of the build. Refer to builds by
+  that hash, not a `vN` counter or `git describe` string — it's logged at boot (`Commit: <hash>`)
+  and shown in the MiniMed app top line, so it always matches the running binary.
 - Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect.
 - **asterix** (the default): Docker image `pebbleos-build:local`, one bundle, no release band.
 - **obelix** (`--pt2`): image `ghcr.io/coredevices/pebbleos-docker:v6` (official CI), two

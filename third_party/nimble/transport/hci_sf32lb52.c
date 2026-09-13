@@ -7,7 +7,9 @@
 #endif // NIMBLE_HCI_SF32LB52_TRACE_BINARY
 
 #include <bf0_hal.h>
+#include <inttypes.h>
 #include <kernel/pebble_tasks.h>
+#include <pbl/drivers/rtc.h>
 #include <system/hexdump.h>
 #include <pbl/logging/logging.h>
 #include <system/passert.h>
@@ -257,6 +259,15 @@ static int prv_hci_frame_cb(uint8_t pkt_type, void *data) {
 
     return ble_transport_to_hs_acl(data);
   default:
+    // An HCI packet type the transport does not dispatch. The controller (LCPU) is not supposed
+    // to send these; when it does (observed during dual-link soak as a SIGABRT on the NimbleHCI
+    // task), WTF gave only a bare LR and no way to know which packet. Log the type and the first
+    // bytes so a recurring crash is diagnosable from the flash log / coredump without serial.
+    PBL_LOG_ERR("HCI unknown pkt type 0x%02x", pkt_type);
+    if (data != NULL) {
+      PBL_LOG_ERR("HCI unknown pkt head %02x %02x %02x %02x", ((uint8_t *)data)[0],
+                  ((uint8_t *)data)[1], ((uint8_t *)data)[2], ((uint8_t *)data)[3]);
+    }
     WTF;
     break;
   }
@@ -266,6 +277,8 @@ static int prv_hci_frame_cb(uint8_t pkt_type, void *data) {
 
 static void prv_hci_task_main(void *unused) {
   uint8_t buf[64];
+  uint64_t pkt_count = 0;
+  RtcTicks last_health_log = rtc_get_ticks();
 
   while (true) {
     xSemaphoreTake(s_ipc_data_ready, portMAX_DELAY);
@@ -275,6 +288,7 @@ static void prv_hci_task_main(void *unused) {
 
       len = ipc_queue_read(s_ipc_port, buf, sizeof(buf));
       if (len > 0U) {
+        pkt_count++;
         uint8_t *pbuf = buf;
         while (len > 0U) {
           int consumed_bytes;
@@ -295,6 +309,16 @@ static void prv_hci_task_main(void *unused) {
         break;
       }
     }
+
+    // Debuggability: log HCI health once a minute. A silent LCPU (no packets, but the semaphore
+    // still firing) or a stalled controller shows up in the flash log as either a flat packet
+    // count or a long gap -- the first sign of the wedge that ends in a NimbleHCI SIGABRT.
+    if ((rtc_get_ticks() - last_health_log) > (RTC_TICKS_HZ * 60)) {
+      // 64-bit values are not allowed in PBL_LOG (logging hashing); split the counter.
+      PBL_LOG_INFO("HCI health pkts=%"PRIu32".%06"PRIu32,
+                   (uint32_t)(pkt_count / 1000000), (uint32_t)(pkt_count % 1000000));
+      last_health_log = rtc_get_ticks();
+    }
   }
 }
 
@@ -304,6 +328,11 @@ void ble_transport_ll_reinit(void) {
   hci_h4_sm_init(&s_hci_h4sm, &s_hci_h4_allocs_from_ll, prv_hci_frame_cb);
 
   ret = prv_config_ipc();
+  if (ret != 0) {
+    // Debuggability: a bare assert here leaves no clue why the IPC re-init failed (observed as a
+    // SIGABRT on the NimbleHCI task during dual-link soak). Log the failure before faulting.
+    PBL_LOG_ERR("HCI ipc config failed ret=%d", ret);
+  }
   PBL_ASSERTN(ret == 0);
 
   lcpu_custom_nvds_config();

@@ -13,6 +13,7 @@
 #include "nimble/nimble_port.h"
 
 #include "drivers/rtc.h"
+#include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
@@ -163,6 +164,7 @@ static const struct {
 #define BATTERY_READ_INTERVAL_SECS (60 * 60)
 #define BATTERY_FIRST_READ_DELAY_SECS 30
 static struct ble_npl_callout s_battery_co;
+static struct ble_npl_callout s_heap_co;  // fixed-interval kernel heap watch
 
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
@@ -438,11 +440,12 @@ static void prv_annunc_record_done(void) {
     snprintf(name, sizeof(name), "Pump alert 0x%03x", (unsigned)a.type);
   }
   minimed_sake_log(name);
-  // Body: the alert name with the latest BG in parens, e.g. "Alert before low (4.2)". The BG is
-  // at most one 5-min cycle old, and the CGM read dispatches before this one on the same push,
-  // so on a fresh alert it is usually seconds old; dropped entirely when the pump has no value.
+  // Body: for a predicted-low alert, the name with the latest BG in parens, e.g.
+  // "Alert before low (4.2)" -- BG is at most one 5-min cycle old, and the CGM read dispatches
+  // before this one on the same push, so on a fresh alert it is usually seconds old. Every other
+  // alert just shows its name; the BG isn't relevant to e.g. a reservoir or battery alert.
   char body[48];
-  if (s_last_bg_str[0] != '\0') {
+  if (s_last_bg_str[0] != '\0' && minimed_annunciation_shows_bg(a.type)) {
     snprintf(body, sizeof(body), "%s (%s)", name, s_last_bg_str);
   } else {
     snprintf(body, sizeof(body), "%s", name);
@@ -1056,6 +1059,18 @@ static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error
   return 0;
 }
 
+// KernelMain heap watch on a fixed interval, independent of the pump poll (which push mode keeps
+// deferring). The OOM crash (kernel heap to ~2.7 KB, 2026-09-09) was only visible after the fact;
+// report free/max-free every 30 min so a slow leak shows in the flash log before it kills the
+// watch, without flooding the log.
+#define HEAP_LOG_INTERVAL_SECS (30 * 60)
+static void prv_heap_timer_cb(struct ble_npl_event *ev) {
+  unsigned int used = 0, free_bytes = 0, max_free = 0;
+  heap_calc_totals(kernel_heap_get(), &used, &free_bytes, &max_free);
+  PBL_LOG_INFO("SAKE: heap free=%u max_free=%u", free_bytes, max_free);
+  ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
+}
+
 // Read by UUID over the whole handle range: saves discovering the Battery service, and the GST
 // battery (vendor 128-bit 0x400) can't collide with a 16-bit match.
 static void prv_battery_timer_cb(struct ble_npl_event *ev) {
@@ -1411,6 +1426,7 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_dispatch_co, nimble_port_get_dflt_eventq(), prv_dispatch_cb, NULL);
   ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
   ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
+  ble_npl_callout_init(&s_heap_co, nimble_port_get_dflt_eventq(), prv_heap_timer_cb, NULL);
   ble_npl_callout_init(&s_devinfo_co, nimble_port_get_dflt_eventq(), prv_devinfo_timer_cb, NULL);
 }
 
@@ -1421,6 +1437,7 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_conn = conn_handle;
   s_last_pump_traffic = (uint32_t)rtc_get_time();  // fresh baseline; pump just connected
   ble_npl_callout_reset(&s_wd_co, ble_npl_time_ms_to_ticks32(60 * 1000));
+  ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
   s_cgm_start = s_cgm_end = 0;
   s_h_measurement = s_h_feature = s_h_racp = 0;
   s_idd_start = s_idd_end = s_h_srcp = 0;
@@ -1460,5 +1477,6 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_dispatch_co);
   ble_npl_callout_stop(&s_op_timeout_co);
   ble_npl_callout_stop(&s_battery_co);
+  ble_npl_callout_stop(&s_heap_co);
   ble_npl_callout_stop(&s_devinfo_co);
 }

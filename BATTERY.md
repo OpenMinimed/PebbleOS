@@ -167,7 +167,7 @@ attached, shows nothing for hours on an idle watch, and cannot see SPIKE mode at
 session). Reproduce the condition, then pull the history afterwards:
 
     adb forward tcp:9000 tcp:9000
-    tools/dump_flash_logs.py -g 0 --dict build/minimed-<board>-<git describe>-<desc>.loghash.json -o /tmp/gen0.log
+    tools/dump_flash_logs.py -g 0 --dict build/minimed-<board>-<hash>-<desc>.loghash.json -o /tmp/gen0.log
     grep 'Percent:' /tmp/gen0.log
 
 - Needs Developer Connection on and the watch connected to the phone — toggle out of SPIKE into
@@ -332,14 +332,52 @@ what the watch was doing** — so precision is not the thing to improve, experim
   `../Documentation/bluetooth.md`), and NOS Observation Mode is now not worth building for battery
   reasons alone. Still the honest explanation for the pump night's 0.96 vs the control's 0.65, if
   that difference is real at all.
-- **#2 SPIKE advertising is ~8.5× stock, forever, while the pump is away.** 100–140 ms with
-  `BLE_HS_FOREVER` (`advert.c`), vs stock 20 ms for 30 s then 1022 ms indefinitely
-  (`gap_le_advert.c`). Only bites during outages, but an all-night outage is an all-night drain —
-  a *conditional* lever, worth nothing on a good night. Fix would be a term schedule (fast bursts
-  alternating with slow); pump reconnect latency is already 1–2 min, so little is lost.
+- **#2 SPIKE advertising is ~8.5× stock, forever, while the pump is away — fix shipped
+  2026-09-11, unmeasured.** Was 100 ms with `GAPLE_ADVERTISING_DURATION_INFINITE` forever
+  (`minimed_sake_service.c`), vs stock 20 ms for 30 s then 1022 ms indefinitely
+  (`gap_le_advert.c`). Only bit during outages, but an all-night outage was an all-night drain — a
+  *conditional* lever, worth nothing on a good night. Now the pump's own advert job runs the same
+  fast-then-slow shape as the phone's reconnection job (100 ms for 30 s, then a new 500 ms
+  `GAPLEAdvertisingInterval_MedtronicSlow` term forever) and re-arms the fast term the moment the
+  pump disconnects, so a dropped pump is still found quickly. See "Pump advert back-off" below —
+  the fix is in, the before/after number is not yet taken.
 - **#3 Vibrations** — fixed in v34. The motor cost more per reconnect than the whole handshake.
 - **Not a lever: the 60 s poll.** ~10 GATT PDUs/min riding connection events that happen thousands
   of times a minute anyway. Stretching it to 5 min saves essentially nothing.
+
+## Pump advert back-off (shipped 2026-09-11, unmeasured)
+
+What changed: the pump's own Medtronic advert job (`minimed_sake_service.c`,
+`prv_pump_advert_rebuild`) used to be a single infinite term at the 100 ms Medtronic interval —
+no back-off, ever, even with the pump nowhere near the watch. It now runs two terms, the same
+fast-then-slow shape stock already uses for the phone's reconnection job
+(`gap_le_slave_reconnect.c`): 100 ms (`GAPLEAdvertisingInterval_Medtronic`) for 30 s, then forever
+at a new 500 ms interval (`GAPLEAdvertisingInterval_MedtronicSlow`, added to `gap_le_advert.h` /
+`gap_le_advert.c`). The job is rebuilt (fresh terms, back at the fast interval) whenever the pump
+is expected back soon: on a DUAL-mode advert start/update, and now also from the disconnect
+handler in `advert.c` right after `s_sake_conn_handle` is cleared — a pump that just dropped is
+found again at 100 ms, not whatever interval the back-off had reached.
+
+Why 500 ms and not stock's 1022 ms: the pump reportedly ignores adverts slower than ~150 ms
+(existing comment in `gap_le_advert.h`), so parity with the phone's ~1 s slow interval risks the
+pump missing more scan windows than necessary. 500 ms keeps the same order of magnitude as stock's
+"slow" bucket (both get folded into the `ble_adv_long_intvl_time_ms` analytics bucket) while
+giving the pump roughly 2× the scan opportunities stock's 1022 ms would. No documentation of the
+pump's own scan/reconnect timing turned up in `PythonPumpConnector/ble/` to pin the number more
+precisely (that code advertises *to* the pump from a Linux host using bluez, at a 1–5 s refresh
+cadence for its own unrelated reasons); 500 ms is a judgement call, not a measured optimum.
+
+Why this should help: confirms hypothesis #2 above — the pump job used to hold 100 ms
+(`GAPLE_ADVERTISING_DURATION_INFINITE`) for the entire time the pump was absent, which for a
+pump-forgotten watch, a pump left at home, or any other outage is effectively all night. Backing
+off to 500 ms after 30 s should cut that conditional cost roughly 5×, on the same order as the gap
+between stock's 20 ms and 1022 ms terms.
+
+**Not yet measured.** This needs a real multi-hour (ideally overnight, pump absent so the job
+actually reaches the slow term) before/after comparison on the physical watch, following the
+"Measuring drain" protocol above (flash-log `Percent:` steps or the `hb` heartbeat lines,
+same-SoC-band comparison, ≥8 h / ≥5 steps). No numbers are recorded here yet — do not treat the
+"roughly 5×" estimate above as a measurement.
 
 ## Remaining experiments
 
@@ -362,9 +400,10 @@ finding which part of our diff costs the 3.5–4×.
    never entering stationary/low-power mode (`hb sys stat`/`lowp`), a task of ours running
    constantly (`hb task main`/`bg`/`tmr`), or our own logging writing flash all night
    (`hb sys flashw`/`flashe` — 2688 pump-read lines in a day is not free).
-3. **Outage-mode advertising (#2 lever).** Cheap to build, but only pays off on bad nights — decide
-   with real numbers on how often all-night outages actually happen once `hb ble advs` has
-   reported a few nights.
+3. **Outage-mode advertising (#2 lever) — built 2026-09-11, needs measuring.** The pump advert job
+   now backs off from 100 ms to 500 ms after 30 s idle (see "Pump advert back-off" above). Next
+   step is a before/after run with the pump absent long enough to sit in the slow term, read off
+   `hb ble advs` and the `Percent:` steps.
 4. **NORMAL vs SPIKE over matched SoC ranges**, if the pump link is still implicated after the
    above. Both ≥8 h from the same start percentage, read off the `hb` lines rather than the 1%
    steps.

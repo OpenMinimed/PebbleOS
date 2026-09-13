@@ -72,11 +72,29 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
-static char s_status_str[STATUS_STR_MAX];
+static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
+static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
 
 static MinimedGraph s_graph;
+
+// True when a graph point was added since the last push. Serializing the graph on every push
+// (BG/IOB/status) allocates a fresh ~100 B blob in KernelMain each time; under 0x101 bursts that
+// accumulates faster than the watchface drains and was a contributor to the OOM crash (kernel heap
+// draining to ~2.7 KB, 2026-09-09). Only re-serialize the graph when it changed, or on a full BG
+// push (which the watchface treats as a fresh-data event and expects a graph with).
+static bool s_graph_dirty;
+
+// Push throttle: coalesce pushes that arrive within a short window into one. The pump's 0x101
+// bursts can fire several reads per second, each calling send_bg/send_iob/send_status, each
+// scheduling a push. If the watchface is busy (or not foreground) the injected frames sit in its
+// app-inbox, which is a fixed 2048 B buffer in KernelMain -- under a burst it accumulates faster
+// than the watchface drains and was a contributor to the OOM crash (kernel heap to ~2.7 KB,
+// 2026-09-09). Pushes within 150 ms of the previous one are dropped; the next one carries the
+// latest values, so nothing is lost, only coalesced.
+#define PUSH_COALESCE_MS 150
+static uint32_t s_last_push_ticks;
 
 // The one outbound frame: [PebbleProtocolHeader][AppMessagePush ... dictionary]. Static rather
 // than two nested stack buffers -- with the graph blob that pair came to ~500 B of KernelMain
@@ -245,9 +263,22 @@ static void prv_inject(uint16_t payload_len) {
 // sending only what is new, but this transport is a memcpy rather than a radio, so re-sending the
 // whole frame costs nothing and keeps the watchface correct after a relaunch.
 static void prv_push_bg_cb(void *unused) {
-  if (!s_session || s_bg_str[0] == '\0') {
-    return;  // nothing to say yet
+  // Coalesce bursts (see PUSH_COALESCE_MS). The injected frame would otherwise pile up in the
+  // watchface's app-inbox when the watchface is busy or not foreground.
+  const uint32_t now = (uint32_t)rtc_get_ticks();
+  if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
+    return;
   }
+  s_last_push_ticks = now;
+
+  if (!s_session) {
+    return;
+  }
+
+  // BG/IOB/status/graph have nothing to say until the first real reading arrives. Pump-connected
+  // is different: false (offline) is itself a real, correct value before that, so it must not
+  // wait behind this gate.
+  const bool have_bg = (s_bg_str[0] != '\0');
 
   // Before anyone has announced, send everything to the foreground watchface. Waiting for an
   // announcement is the protocol-correct behaviour but loses the first one in practice: the
@@ -271,7 +302,8 @@ static void prv_push_bg_cb(void *unused) {
       return;  // not a watchface, or one we already know isn't ours
     }
     target = *fg;
-    caps = CAP_BG | CAP_IOB | CAP_STATUS;  // everything we can currently supply
+    // Everything we can currently supply.
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -283,8 +315,16 @@ static void prv_push_bg_cb(void *unused) {
   };
 
   uint8_t graph[MINIMED_GRAPH_BLOB_MAX];
-  const uint16_t graph_len =
-      send_graph ? minimed_graph_serialize(&s_graph, graph_window_secs, graph) : 0;
+  // Only re-serialize the graph when it changed since the last push, or on a BG push (the
+  // watchface keys a fresh graph off a new BG). This avoids a KernelMain allocation on every
+  // IOB/status-only push, which under bursts was draining the heap.
+  bool graph_present = false;
+  uint16_t graph_len = 0;
+  if (have_bg && send_graph && (s_graph_dirty || (caps & CAP_BG))) {
+    graph_len = minimed_graph_serialize(&s_graph, graph_window_secs, graph);
+    s_graph_dirty = false;
+    graph_present = true;
+  }
 
   // Written key by key rather than from a Tuplet array: Tuplet's value union has const members,
   // so a conditionally-filled array can't be assigned into.
@@ -293,19 +333,20 @@ static void prv_push_bg_cb(void *unused) {
   uint8_t n = 0;
 
   // Only the announced fields (or, pre-announcement, everything). A field a watchface did not ask
-  // for is one it cannot render, and its key number may well mean something else there.
-  if (caps & CAP_BG) {
+  // for is one it cannot render, and its key number may well mean something else there. BG/IOB/
+  // status/graph additionally wait for have_bg -- there is nothing real to say there yet.
+  if (have_bg && (caps & CAP_BG)) {
     res |= dict_write_uint32(&iter, KEY_BG_TIMESTAMP, s_bg_timestamp);
     res |= dict_write_cstring(&iter, KEY_BG_STRING, s_bg_str);
     n += 2;
   }
-  if (caps & CAP_IOB) {
+  if (have_bg && (caps & CAP_IOB)) {
     // Empty until the first IOB read; the watchface blanks the field.
     res |= dict_write_cstring(&iter, KEY_IOB_STRING, s_iob_str);
     n++;
   }
-  if (caps & CAP_STATUS) {
-    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);
+  if (have_bg && (caps & CAP_STATUS)) {
+    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
     n++;
     if (s_status_start != 0) {
       res |= dict_write_uint32(&iter, KEY_STATUS_START, s_status_start);
@@ -316,9 +357,15 @@ static void prv_push_bg_cb(void *unused) {
       n++;
     }
   }
+  if (caps & CAP_PUMP_CONNECTED) {
+    // Not gated on have_bg: offline (0) is a real value from boot, not a placeholder waiting on
+    // the pump's first reading.
+    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_connected ? 1 : 0);
+    n++;
+  }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
-  if (send_graph && graph_len > 0) {
+  if (graph_present && graph_len > 0) {
     res |= dict_write_data(&iter, KEY_GRAPH_DATA, graph, graph_len);
     n++;
   }
@@ -425,6 +472,7 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
   // Runs on the BT host task; read on KernelMain during the push. Same lock-free discipline as the
   // BG string -- the worst case is one frame drawn from a half-updated array.
   minimed_graph_add(&s_graph, timestamp, mgdl);
+  s_graph_dirty = true;
 }
 
 void minimed_sake_sender_send_iob(const char *iob_str) {
@@ -446,4 +494,11 @@ void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uin
 
 void minimed_sake_sender_set_mode(bool open) {
   launcher_task_add_callback(prv_set_mode_cb, open ? (void *)1 : NULL);
+}
+
+void minimed_sake_sender_send_pump_connected(bool connected) {
+  // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
+  // KernelMain, depending on caller), read on KernelMain during the push.
+  s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
 }

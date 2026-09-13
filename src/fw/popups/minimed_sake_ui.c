@@ -114,6 +114,7 @@ void minimed_sake_watchdog_retoggle(void) {
   if (minimed_sake_get_mode() != MinimedSakeModeDual) {
     return;
   }
+  minimed_sake_log_evt("WD: re-toggle");  // flash + ring: a watchdog restart must be diagnosable
   minimed_sake_clear_link_state();  // a stale pump handle must not alias (and swallow) a phone link
   minimed_sake_pump_advert_stop();
   minimed_sake_sender_set_mode(false);

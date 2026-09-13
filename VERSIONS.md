@@ -6,6 +6,13 @@ files are listed there.
 
 ## Versioning (since 2026-09-11)
 
+Build identity is the git commit hash (short form), not a version counter and not `git describe`.
+`minimed-build.sh` refuses to build a dirty tree and names bundles
+`minimed-<board>-<hash>-<desc>.pbz`; the firmware logs the same hash at every boot
+(`TINTIN_METADATA.version_short`) and shows it at the top of the MiniMed app, so a build is always
+identifiable regardless of how it was described at build time. `vNN` entries below are legacy;
+new entries should refer to a build by its commit hash (e.g. "build dc906629f").
+
 - 2026-09-13, **HW-VERIFIED**;
   `build/minimed-asterix-v4.36.2-138-g6c6260855-graph-hours.pbz`: **respect the watchface's
   requested `GRAPH_HOURS`**. PebbleOS now retains up to 24 hours plus a 30-minute margin and
@@ -14,11 +21,6 @@ files are listed there.
   watchface requests its visible two-hour window. Verified on asterix: MiniMed app present,
   DUAL mode, pump BG/IOB flowing, and the watchface ready ping received. Log:
   `../logs/watch/2026-09-13-v4.36.2-138.txt`.
-
-Build identity is `git describe --dirty` (<base tag>-<n>-g<hash>[-dirty]). `minimed-build.sh` names
-bundles `minimed-<board>-<git describe>-<desc>.pbz`; the firmware logs the same string at every
-boot and shows it at the top of the MiniMed app. `vNN` entries below are legacy; new builds get
-no number.
 
 - 2026-09-13, **HW-TESTED**;
   `build/minimed-asterix-v4.36.2-134-gbaec41260-status-timers.pbz`: **move status timers to the
