@@ -502,8 +502,9 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    **Still unsent:** DELTA_STRING (12), TREND_ARROW (13), SENDER_BATTERY (16), GRAPH_HIGH_LINE
    (31), GRAPH_LOW_LINE (32). Delta and trend have no pump source — the pump gives neither, so both
    would have to be derived from `MinimedGraph` the way the bridge does it (2-point extrapolation,
-   see the trend-arrow-soak note). `GRAPH_HOURS` currently only switches the graph on and off; it
-   does not resize the fixed 2.5 h buffer.
+   see the trend-arrow-soak note). `GRAPH_HOURS` now selects the serialized graph window; PebbleOS
+   retains up to 24 hours plus a 30-minute margin. Faster-than-five-minute sources are still
+   limited by the 300-point buffer.
 
 11. **Three things the protocol spec itself needs** (`../pebble-glucose-protocol/`, propagate to all
    three implementations — watchface, bridge, PebbleOS — and reflash both sides together):
@@ -518,11 +519,8 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
      subscribing only `pebble_app_connection_handler` (the obvious choice, and what the reference
      watchface does) never gets its reconnect trigger. Watchfaces should subscribe both handlers;
      senders should not assume the announcement gets re-sent on session open. See item 10.
-   - **Say how much margin a sender should send past `GRAPH_HOURS`.** The key says what the
-     watchface *plots*, not what the sender should *send*. A sender that sends exactly N hours
-     leaves the graph's left edge bare between pushes, since the oldest point ages out and there
-     is no earlier point to draw the entering segment from. This is why `MINIMED_GRAPH_WINDOW_SECS`
-     is 2.5 h for a 2 h window. Every sender otherwise rediscovers this independently.
+   - **Margin semantics:** resolved. The protocol now allows a sender to include a reasonable
+     margin before the requested `GRAPH_HOURS` window; PebbleOS uses 30 minutes.
 
 ## References
 

@@ -309,12 +309,13 @@ static void section_graph(void) {
   printf("[5] Graph history buffer + wire encoding\n");
   MinimedGraph g = {0};
 
-  check("empty graph serializes to nothing", minimed_graph_serialize(&g, g_blob) == 0);
+  check("empty graph serializes to nothing",
+        minimed_graph_serialize(&g, MINIMED_GRAPH_MAX_HOURS * 60 * 60, g_blob) == 0);
 
   minimed_graph_add(&g, T0, 100);
   minimed_graph_add(&g, T0 + MIN(5), 110);
   minimed_graph_add(&g, T0 + MIN(10), 121);
-  g_blob_len = minimed_graph_serialize(&g, g_blob);
+  g_blob_len = minimed_graph_serialize(&g, MINIMED_GRAPH_MAX_HOURS * 60 * 60, g_blob);
   check("3 points -> 6 + 3N bytes", g_blob_len == 6 + 3 * 3);
   check("count field is 3", blob_count() == 3);
   check("ref timestamp is the oldest point", blob_ref() == T0);
@@ -332,12 +333,12 @@ static void section_graph(void) {
   // A point exactly WINDOW old ages out; the window is a half-open interval.
   MinimedGraph w = {0};
   minimed_graph_add(&w, T0, 100);
-  minimed_graph_add(&w, T0 + MINIMED_GRAPH_WINDOW_SECS, 120);
+  minimed_graph_add(&w, T0 + MINIMED_GRAPH_RETENTION_SECS, 120);
   check("point exactly one window old is dropped", w.count == 1 && w.bg[0] == 60);
 
   // Overflow: feed more points than the buffer holds. Spacing must be >= 1 min or the /60 in the
   // wire encoding collapses every offset to 0 and the ascending check below proves nothing --
-  // 4 min keeps all 30 retained points inside the 150 min window, so eviction is by capacity.
+  // 4 min keeps the points inside the retention window, so eviction is by capacity.
   MinimedGraph f = {0};
   const int n_fill = MINIMED_GRAPH_MAX_POINTS + 10;
   for (int i = 0; i < n_fill; i++) {
@@ -346,6 +347,19 @@ static void section_graph(void) {
   check("buffer caps at MAX_POINTS", f.count == MINIMED_GRAPH_MAX_POINTS);
   check("oldest points are the ones evicted", f.ts[0] == T0 + MIN(4 * 10));
   check("newest point is retained", f.ts[f.count - 1] == T0 + MIN(4 * (n_fill - 1)));
+
+  // A requested one-hour window includes the fixed 30-minute margin, but not older points.
+  MinimedGraph filtered = {0};
+  minimed_graph_add(&filtered, T0, 100);
+  minimed_graph_add(&filtered, T0 + MIN(30), 110);
+  minimed_graph_add(&filtered, T0 + MIN(60), 120);
+  minimed_graph_add(&filtered, T0 + MIN(90), 130);
+  minimed_graph_add(&filtered, T0 + MIN(120), 140);
+  g_blob_len = minimed_graph_serialize(&filtered, 60 * 60, g_blob);
+  check("zero graph window serializes to nothing",
+        minimed_graph_serialize(&filtered, 0, g_blob) == 0);
+  check("graph window includes margin", g_blob_len == 6 + 3 * 4 && blob_ref() == T0 + MIN(30));
+  check("graph window keeps newest points", blob_count() == 4 && blob_bg(3) == 70);
 
   // Clock stepping backwards (time sync / DST) must not produce an unsortable array.
   MinimedGraph b = {0};
@@ -362,7 +376,7 @@ static void section_graph(void) {
 
   // Serialized offsets must stay ascending across a full buffer -- this is what the watchface
   // relies on to draw a left-to-right trace.
-  g_blob_len = minimed_graph_serialize(&f, g_blob);
+  g_blob_len = minimed_graph_serialize(&f, MINIMED_GRAPH_MAX_HOURS * 60 * 60, g_blob);
   // Guard the guard: with sub-minute spacing every offset encodes to 0 and the ascending check
   // below can't fail for any implementation. Assert the offsets actually differ first.
   check("fill spacing yields distinct offsets", blob_offset(1) > blob_offset(0));

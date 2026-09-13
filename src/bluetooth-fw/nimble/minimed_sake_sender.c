@@ -258,10 +258,12 @@ static void prv_push_bg_cb(void *unused) {
   // watchface announces, after which we are exact.
   Uuid target;
   uint32_t caps;
+  uint32_t graph_window_secs;
   bool send_graph;
   if (s_have_target) {
     target = s_target_uuid;
     caps = s_caps;
+    graph_window_secs = (uint32_t)s_graph_hours * 60 * 60;
     send_graph = (s_graph_hours > 0);  // GRAPH_HOURS == 0 is how a watchface declines the graph
   } else {
     const Uuid *fg = prv_claimed_uuid();
@@ -270,6 +272,7 @@ static void prv_push_bg_cb(void *unused) {
     }
     target = *fg;
     caps = CAP_BG | CAP_IOB | CAP_STATUS;  // everything we can currently supply
+    graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
 
@@ -280,7 +283,8 @@ static void prv_push_bg_cb(void *unused) {
   };
 
   uint8_t graph[MINIMED_GRAPH_BLOB_MAX];
-  const uint16_t graph_len = minimed_graph_serialize(&s_graph, graph);
+  const uint16_t graph_len =
+      send_graph ? minimed_graph_serialize(&s_graph, graph_window_secs, graph) : 0;
 
   // Written key by key rather than from a Tuplet array: Tuplet's value union has const members,
   // so a conditionally-filled array can't be assigned into.
