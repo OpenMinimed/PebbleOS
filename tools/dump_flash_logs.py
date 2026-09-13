@@ -2,15 +2,15 @@
 """Dump the watch's flash-stored logs over the phone connection.
 
 Unlike `pebble logs`, which only streams lines as they happen, this retrieves logs the watch
-already wrote to flash -- including from earlier boots. That matters for the MiniMed spike: in
-SPIKE mode there is no phone session at all, so nothing can be watched live. Reproduce a problem
-in SPIKE, toggle back to NORMAL, and pull the history here.
+already wrote to flash -- including from earlier boots. That matters for the MiniMed pump link: in
+DUAL mode there is no phone session at all, so nothing can be watched live. Reproduce a problem
+in DUAL, toggle back to NORMAL, and pull the history here.
 
 Generations count backwards: 0 is the current boot, 1 the previous one, and so on.
 
 Caveat worth knowing before you rely on an old generation: PBL_LOG lines are stored *hashed*, and
 the hashes change between firmware builds. Reading back a boot logged by an older firmware needs
-that firmware's dictionary, so pass `--dict build/sake-spike-vNN-<desc>.loghash.json` (spike-build.sh
+that firmware's dictionary, so pass `--dict build/minimed-<board>-<git describe>-<desc>.loghash.json` (minimed-build.sh
 archives one next to every .pbz). With the wrong dict those lines stay as raw `NL:xxxx`.
 
 Usage (needs the USB tunnel and Developer Connection, same as `pebble logs`):
@@ -128,7 +128,7 @@ def main():
     except Exception as e:
         sys.exit("Could not reach the phone at {}:9000 ({}).\n"
                  "Run `adb forward tcp:9000 tcp:9000`, and check the Pebble app has Developer\n"
-                 "Connection enabled and the watch connected (NORMAL mode, not SPIKE)."
+                 "Connection enabled and the watch connected (NORMAL mode, not DUAL)."
                  .format(args.phone, e))
     connection.run_async()
 

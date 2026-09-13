@@ -1,4 +1,4 @@
-# Battery drain on the SAKE-spike firmware
+# Battery drain on the MiniMed firmware
 
 Why this file exists: the on-watch spike burns roughly **6–8 days per charge** where stock
 PebbleOS on this same Pebble 2 Duo runs **3.5–4× longer** — measured, not remembered
@@ -167,14 +167,14 @@ attached, shows nothing for hours on an idle watch, and cannot see SPIKE mode at
 session). Reproduce the condition, then pull the history afterwards:
 
     adb forward tcp:9000 tcp:9000
-    tools/dump_flash_logs.py -g 0 --dict build/sake-spike-vNN-<desc>.loghash.json -o /tmp/gen0.log
+    tools/dump_flash_logs.py -g 0 --dict build/minimed-<board>-<git describe>-<desc>.loghash.json -o /tmp/gen0.log
     grep 'Percent:' /tmp/gen0.log
 
 - Needs Developer Connection on and the watch connected to the phone — toggle out of SPIKE into
   NORMAL first, then dump.
 - `-g 0` is the current boot, `-g 1` the previous one. **A flash ends the generation**, so dump
   before reflashing or the window is split.
-- The dict must match the firmware that *wrote* the lines (`spike-build.sh` archives one next to
+- The dict must match the firmware that *wrote* the lines (`minimed-build.sh` archives one next to
   every `.pbz`); with the wrong dict the lines stay as raw `NL:xxxx`.
 - Output has HH:MM:SS and no date. Reconstruct dates by walking the file in order and incrementing
   the day on each backwards time jump.

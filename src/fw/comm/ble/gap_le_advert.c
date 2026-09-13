@@ -652,7 +652,7 @@ void gap_le_advert_force_data_refresh(void) {
 
     // Drop the cached pointer to what we last pushed, so prv_perform_next_job re-sends the
     // advertising data to the controller instead of skipping it as unchanged. Needed when the
-    // payload in the controller was changed behind the scheduler's back (MiniMed spike hijack) and
+    // payload in the controller was changed behind the scheduler's back (MiniMed pump link hijack) and
     // a mode switch must re-assert the correct payload. While connected there is nothing on air;
     // the re-air on disconnect (force refresh) picks up the invalidation.
     s_current_ad_data = NULL;

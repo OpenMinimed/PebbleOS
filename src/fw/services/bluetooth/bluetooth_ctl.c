@@ -24,7 +24,7 @@
 #include "pbl/services/system_task.h"
 #include "pbl/services/bluetooth/ble_hrm.h"
 #include <pbl/logging/logging.h>
-#include "popups/minimed_sake_spike_ui.h"
+#include "popups/minimed_sake_ui.h"
 
 PBL_LOG_MODULE_DEFINE(service_bluetooth, CONFIG_SERVICE_BLUETOOTH_LOG_LEVEL);
 
@@ -90,7 +90,7 @@ static void prv_comm_start(void) {
 #endif
     ble_bas_init();
     bt_pairability_init();
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
     // Must come after gap_le_init(): that resets the advert scheduler, so the pump's advert job
     // and the advertise-while-connected flag can only be set up once it has run.
     minimed_sake_bt_started();

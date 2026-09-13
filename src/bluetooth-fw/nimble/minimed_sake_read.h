@@ -9,7 +9,7 @@
 //! Post-handshake CGM read on the pump connection. Once the SAKE handshake completes, the pump
 //! exposes its CGM service as a GATT server over the same link and the watch reads it as a GATT
 //! client. v11: discover the CGM service (0x181F) + its characteristics and read CGM Feature,
-//! logging results to the on-watch spike log.
+//! logging results to the on-watch MiniMed log.
 
 //! Init the deferred-kickoff callout. Call once from the SAKE service init.
 void minimed_sake_read_init(void);

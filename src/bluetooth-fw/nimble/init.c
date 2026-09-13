@@ -31,7 +31,7 @@ extern void pebble_pairing_service_init(void);
 extern void ppog_reversed_service_init(void);
 extern void nimble_discover_init(void);
 extern void nimble_gattc_op_queue_init(void);
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
 extern int minimed_sake_service_init(void);
 #endif
 
@@ -157,7 +157,7 @@ bool bt_driver_start(BTDriverConfig *config) {
   gh3x2x_tuning_service_init();
 #endif
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
   minimed_sake_service_init();
 #endif
 

@@ -1152,12 +1152,12 @@
 #define MYNEWT_VAL_BLE_SM_KEYPRESS (0)
 #endif
 
-/* MiniMed SAKE spike: allow the pump's legacy Just Works pairing (mirrors the nRF52 port).
+/* MiniMed: allow the pump's legacy Just Works pairing (mirrors the nRF52 port).
  * The pump does not support Secure Connections, so SC-only would reject its pairing
  * request (ble_sm.c SM_SC_ONLY path -> auth failure, disconnect reason 0x05). The spike
- * still enforces the phone's LESC/MITM at runtime for NORMAL mode. Outside the spike build
+ * still enforces the phone's LESC/MITM at runtime for NORMAL mode. Outside the MiniMed pump link build
  * keep the stock SF32LB52 values. */
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
 #ifndef MYNEWT_VAL_BLE_SM_LEGACY
 #define MYNEWT_VAL_BLE_SM_LEGACY (1)
 #endif
@@ -1199,9 +1199,9 @@
 #define MYNEWT_VAL_BLE_SM_SC_DEBUG_KEYS (0)
 #endif
 
-/* MiniMed SAKE spike: not SC-only, so the pump's non-SC legacy pairing is accepted.
- * Outside the spike build keep the stock SF32LB52 SC-only setting. */
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+/* MiniMed: not SC-only, so the pump's non-SC legacy pairing is accepted.
+ * Outside the MiniMed pump link build keep the stock SF32LB52 SC-only setting. */
+#ifdef CONFIG_MINIMED_SAKE
 #ifndef MYNEWT_VAL_BLE_SM_SC_ONLY
 #define MYNEWT_VAL_BLE_SM_SC_ONLY (0)
 #endif

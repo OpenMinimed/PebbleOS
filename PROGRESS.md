@@ -1,4 +1,4 @@
-# On-Watch MiniMed → Pebble SAKE Spike — Progress & Notes
+# On-Watch MiniMed → Pebble — Progress & Notes
 
 Run the MiniMed pipeline on the Pebble 2 Duo directly, no phone. Spinoff of the working
 phone-bridge project (`../minimed-pebble-bridge`). This file is the stable map: current state,
@@ -73,7 +73,7 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 - **v60 BUILT 2026-09-03, awaiting HW: v59's dual link ported to asterix.** v59 raised
   `BLE_MAX_CONNECTIONS` only on sf32lb52, so DUAL had no second connection slot on this watch;
   the nrf52 syscfg now matches (spike-gated, +640 B KERNEL_RAM). Also fixes a stock-build compile
-  break in `advert.c` and restores the asterix recipe to `spike-build.sh` as a board profile
+  break in `advert.c` and restores the asterix recipe to `minimed-build.sh` as a board profile
   (default asterix, `--pt2` for obelix). Details + what to suspect first: VERSIONS.md v60 entry.
 - **v59 BUILT 2026-08-30, awaiting HW: dual link (phone + pump at once) PoC.** Toggle is now
   NORMAL⇄DUAL; NORMAL is a full `bt_ctl_reset_bluetooth()` restart (kill switch for sideload).
@@ -128,14 +128,14 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 
 ## Build / flash / test
 
-**→ See `TESTING.md`** for the full loop (`./spike-build.sh <desc>` builds+versions+adb-pushes;
+**→ See `TESTING.md`** for the full loop (`./minimed-build.sh <desc>` builds+versions+adb-pushes;
 BT sideload steps; pump + watchface test procedures; the FE81/FE82 reconciliation fix; log
 vocabulary). Quick facts kept here:
 
 - No local toolchain; build in Docker image **`ghcr.io/coredevices/pebbleos-docker:v6`** (official CI
-  image, not the old `pebbleos-build:local`). `spike-build.sh` wraps the whole Docker invocation.
-- Everything is behind Kconfig `CONFIG_MINIMED_SAKE_SPIKE`; boots NORMAL (ordinary Pebble).
-  "SAKE Spike" app: SELECT = NORMAL⇄SPIKE, DOWN = forget pump, Back = exit.
+  image, not the old `pebbleos-build:local`). `minimed-build.sh` wraps the whole Docker invocation.
+- Everything is behind Kconfig `CONFIG_MINIMED_SAKE`; boots NORMAL (ordinary Pebble).
+  MiniMed app: SELECT = NORMAL⇄DUAL, DOWN = forget pump, Back = exit.
 - Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`, 24/24) before reflashing.
 
 ### PT2 (obelix) port — verified build recipe
@@ -144,7 +144,7 @@ The spike now builds and boots on the Pebble Time 2 (`obelix@pvt`, SiFli SF32LB5
 recipe is exacting; see `TESTING.md` for the full failure table. Essentials:
 
 - Build **release** (`CONFIG_RELEASE=y`) and produce ONE correctly-linked single-slot bundle per
-  slot — no dual-slot repack, no manifest rewrite. `spike-build.sh` emits `_slot0.pbz` and
+  slot — no dual-slot repack, no manifest rewrite. `minimed-build.sh` emits `_slot0.pbz` and
   `_slot1.pbz` and shares both.
 - Keep a **release-form annotated git tag** (default `v4.36.9`) on HEAD so the manifest versionTag
   parses in the Pebble app and encodes as release band.
@@ -179,8 +179,8 @@ Details worth knowing:
   `NL:xxxx`. Reinstall it as a recorded extra so it survives:
   `uv tool install pebble-tool --with pyelftools`.
 - **The dict is per build.** Log lines are stored hashed and the hashes change every build, so an
-  older generation needs that firmware's dictionary. `spike-build.sh` now archives one next to each
-  `.pbz` as `sake-spike-<board>-<git describe>-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
+  older generation needs that firmware's dictionary. `minimed-build.sh` now archives one next to each
+  `.pbz` as `minimed-<board>-<git describe>-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
   lines come back as raw `NL:xxxx`.
 - Requires **Developer Connection** enabled in the Pebble app *and* the watch in NORMAL. Re-pairing
   the watch turns Developer Connection off — that cost time once; the symptom is
@@ -200,7 +200,7 @@ DB, so bond-storage work can be genuine TDD with no hardware. Run it in Docker l
         ./waf test -M '.*bluetooth_persistent_storage.*'"
 
 - **Never run `./waf configure` without `--board`** — it wipes `build/c4che` and de-configures the
-  firmware build. Restore with `./waf configure --board asterix -DCONFIG_MINIMED_SAKE_SPIKE=y`
+  firmware build. Restore with `./waf configure --board asterix -DCONFIG_MINIMED_SAKE=y`
   (in Docker, with `/opt/pebbleos-sdk/arm-none-eabi/bin` on PATH); verify with
   `grep MINIMED build/autoconf.h`.
 - **`-M` is an anchored `re.match` against the test source path.** `-M bluetooth_persistent_storage`
@@ -264,14 +264,14 @@ New files (all spike-only via wscript/ifdef):
 - `minimed_glucose_announce.{c,h}` — pure parser for the capability announcement, which doubles as
   the "is this watchface one of ours?" test. Host-tested (section 9).
 - `pebble_glucose_protocol.h` — verbatim copy of the spec's header (keys + capability bits).
-- `src/fw/popups/minimed_sake_spike_ui.{c,h}` — spike core: log ring buffer, mode flag, stage
+- `src/fw/popups/minimed_sake_ui.{c,h}` — MiniMed core: log ring buffer, mode flag, stage
   reports; declares the app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`,
   `sender_set_mode`).
 - `src/fw/apps/system/minimed_sake_app.{c,h}` — launcher app (viewer + buttons).
 
 Modified:
 
-- `Kconfig` (+`MINIMED_SAKE_SPIKE`), `wscript_build` (spike sources, incl. `minimed_iob.c`),
+- `Kconfig` (+`MINIMED_SAKE`), `wscript_build` (MiniMed sources, incl. `minimed_iob.c`),
   `init.c` (register service), `system_app_registry_list.json` (app id `-200`).
 - `minimed_sake_service.{c,h}` — added `minimed_sake_encrypt` (server-direction wrapper, mirror of
   `minimed_sake_decrypt`; used for the SRCP request) and `minimed_sake_addr_is_pump` (RAM-only pump

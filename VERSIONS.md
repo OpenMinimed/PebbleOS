@@ -6,8 +6,8 @@ files are listed there.
 
 ## Versioning (since 2026-09-11)
 
-Build identity is `git describe --dirty` (<base tag>-<n>-g<hash>[-dirty]). `spike-build.sh` names
-bundles `sake-spike-<board>-<git describe>-<desc>.pbz`; the firmware logs the same string at every
+Build identity is `git describe --dirty` (<base tag>-<n>-g<hash>[-dirty]). `minimed-build.sh` names
+bundles `minimed-<board>-<git describe>-<desc>.pbz`; the firmware logs the same string at every
 boot and shows it at the top of the MiniMed app. `vNN` entries below are legacy; new builds get
 no number.
 

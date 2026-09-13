@@ -6,8 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-//! Core state + on-watch log for the MiniMed SAKE spike. The BLE work runs in the firmware
-//! regardless of any UI; the "SAKE Spike" launcher app is just a viewer + a mode toggle, so the
+//! Core state + on-watch log for the MiniMed. The BLE work runs in the firmware
+//! regardless of any UI; the "MiniMed" launcher app is just a viewer + a mode toggle, so the
 //! standard system menus are never blocked.
 
 typedef enum {
@@ -42,7 +42,7 @@ void minimed_sake_toggle_mode(void);
 void minimed_sake_bt_started(void);
 
 //! Append a stage line to the on-watch log (+ a vibe on key stages). Safe from any task.
-void minimed_sake_spike_report(MinimedSakeStage stage);
+void minimed_sake_report(MinimedSakeStage stage);
 
 //! Append an arbitrary line to the on-watch log (rc codes, byte dumps, disconnect reasons).
 //! Safe from any task, including the BT host task.
@@ -60,12 +60,12 @@ const char *minimed_sake_get_log(void);
 void minimed_sake_force_readvertise(void);
 
 //! Implemented in the BT layer (minimed_sake_service.c): whether a SAKE handshake has completed,
-//! i.e. the pump is bonded and the spike advertises FE81 (reconnect) instead of FE82 (first-pair).
+//! i.e. the pump is bonded and the MiniMed pump link advertises FE81 (reconnect) instead of FE82 (first-pair).
 bool minimed_sake_pump_paired(void);
 
 //! Implemented in the BT layer (minimed_sake_service.c): clear the pump-paired state and go back
 //! to FE82 (first-pair) advertising -- for when the "Mobile PB" device was removed on the pump.
-//! Called from the spike app's DOWN handler.
+//! Called from the MiniMed app's DOWN handler.
 void minimed_sake_forget_pump(void);
 
 //! Implemented in the BT layer (minimed_sake_sender.c): open/close the loopback CommSession that
@@ -101,7 +101,7 @@ void minimed_sake_clear_link_state(void);
 //! the pump-liveness watchdog.
 bool minimed_sake_pump_connected(void);
 
-//! Implemented in the popups layer (minimed_sake_spike_ui.c): the pump-liveness watchdog's
+//! Implemented in the popups layer (minimed_sake_ui.c): the pump-liveness watchdog's
 //! recovery. Keeps the mode DUAL and runs the NORMAL kill-switch stack restart to free a phantom
 //! pump connection slot and re-arm the pump advert; the SAKE service re-arms DUAL after the
 //! restart completes (see minimed_sake_service_init).

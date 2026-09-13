@@ -3,7 +3,7 @@
 
 #include "minimed_sake_app.h"
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
 
 #include "applib/app.h"
 #include "applib/app_timer.h"
@@ -12,7 +12,7 @@
 #include "applib/ui/ui.h"
 #include "kernel/pbl_malloc.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
-#include "popups/minimed_sake_spike_ui.h"
+#include "popups/minimed_sake_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
 #include "git_version.auto.h"

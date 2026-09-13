@@ -140,7 +140,7 @@ void gap_le_advert_handle_disconnect_as_slave(void);
 
 //! Forget the cached record of what advertising data was last pushed to the controller and
 //! re-air the current job, forcing the data to be re-sent on the next airing. Use when something
-//! outside the scheduler has changed what the controller actually holds (e.g. the MiniMed spike
+//! outside the scheduler has changed what the controller actually holds (e.g. the MiniMed pump link
 //! rewrites the advert payload underneath us), so the scheduler's pointer-based skip would
 //! otherwise leave stale data live. No-op while connected -- the eventual re-air refreshes it.
 void gap_le_advert_force_data_refresh(void);

@@ -18,8 +18,8 @@
 
 #include "nimble_type_conversions.h"
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-#include "popups/minimed_sake_spike_ui.h"
+#ifdef CONFIG_MINIMED_SAKE
+#include "popups/minimed_sake_ui.h"
 #endif
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
@@ -260,7 +260,7 @@ static int prv_nimble_store_write_sec(const int obj_type,
 
   // Bonds are the OS gateway (phone) by default.
   bool is_gateway = true;
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
   // A bond written while the pump-pairing window is open (DUAL mode with the pump not yet bonded)
   // is the pump's. Persist it like any bond -- the keys are needed to reconnect after reboot --
   // but flag it non-gateway so it is NOT made the OS active gateway, which would displace the

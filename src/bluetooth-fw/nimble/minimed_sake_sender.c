@@ -17,7 +17,7 @@
 #include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
 #include "pbl/services/comm_session/session_transport.h"
-#include "popups/minimed_sake_spike_ui.h"
+#include "popups/minimed_sake_ui.h"
 #include <pbl/logging/logging.h>
 #include "util/dict.h"
 #include "util/net.h"
@@ -375,7 +375,7 @@ static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8
 // KernelMain only. ctx != NULL -> open (DUAL mode), NULL -> close (NORMAL mode).
 // NOTE: we deliberately do NOT emit PEBBLE_BT_CONNECTION_EVENT here (tried in v19). The watchface's
 // system "not connected" banner is a separate problem, tackled after pairing works; faking a
-// connection at SPIKE-entry is also a discovery confound we want out of the way.
+// connection at DUAL entry is also a discovery confound we want out of the way.
 static void prv_set_mode_cb(void *ctx) {
   const bool open = (ctx != NULL);
   bt_lock();
@@ -400,7 +400,7 @@ static void prv_set_mode_cb(void *ctx) {
 
 void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp) {
   // Written on the BT host task, consumed on KernelMain. A torn read would garble one displayed
-  // value for one 60s poll cycle -- tolerable, matching the spike's lock-free logging approach.
+  // value for one 60s poll cycle -- tolerable, matching the MiniMed pump link's lock-free logging approach.
   strncpy(s_bg_str, bg_str, sizeof(s_bg_str) - 1);
   s_bg_str[sizeof(s_bg_str) - 1] = '\0';
   s_bg_timestamp = timestamp;

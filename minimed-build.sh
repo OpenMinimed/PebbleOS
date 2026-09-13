@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# One-shot build/version/deploy for the MiniMed SAKE spike firmware.
+# One-shot build/version/deploy for the MiniMed firmware.
 #
-#   ./spike-build.sh <desc>              build + share to the phone (default board: asterix)
-#   ./spike-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
-#   ./spike-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
-#   ./spike-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
+#   ./minimed-build.sh <desc>              build + share to the phone (default board: asterix)
+#   ./minimed-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
+#   ./minimed-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
+#   ./minimed-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
 #
 # Two boards, two recipes. They differ in more than the --board flag, hence the profile block
 # below rather than one parametrised path:
@@ -50,7 +50,7 @@ if [ "$profile" = obelix ]; then
   BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
   DOCKER_USER=()                                # the CI image needs root to pip install
   PIP_CMD='pip install -U pip >/dev/null 2>&1; pip install -r requirements.txt >/dev/null 2>&1;'
-  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE_SPIKE=y"
+  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE=y"
   SLOTS=(0 1)
   NEED_TAG=1
   VERIFY_BAND=1
@@ -59,13 +59,13 @@ else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
   DOCKER_USER=(-u "$(id -u):$(id -g)")
   PIP_CMD=''
-  CORE_CFG="-DCONFIG_MINIMED_SAKE_SPIKE=y"
+  CORE_CFG="-DCONFIG_MINIMED_SAKE=y"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
 fi
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (BOARD_NORMALIZED strips @revision)
-SPIKE_TAG=${SPIKE_TAG:-v4.36.9}                 # release-form tag stamped into the bundle
+RELEASE_TAG=${RELEASE_TAG:-v4.36.9}              # release-form tag stamped into the bundle
 
 # Identity BEFORE the release-tag dance below: once HEAD carries that tag, git describe collapses
 # to it and loses the hash, which is the whole identity.
@@ -75,8 +75,8 @@ echo ">> board $BOARD (image $IMAGE)"
 if [ "$NEED_TAG" = 1 ]; then
   # Ensure a release-form annotated tag exists on HEAD so `git describe` in the build resolves to
   # something the Pebble app parses (vX.Y.Z / -beta / -rc) AND that encodes as release band.
-  # If SPIKE_TAG exists on an older commit, move it to HEAD (the bundle carries the HEAD build).
-  git tag -f -a "$SPIKE_TAG" -m "spike pt2 build" HEAD >/dev/null 2>&1
+  # If RELEASE_TAG exists on an older commit, move it to HEAD (the bundle carries the HEAD build).
+  git tag -f -a "$RELEASE_TAG" -m "MiniMed PT2 build" HEAD >/dev/null 2>&1
   git describe --dirty
 fi
 
@@ -97,9 +97,9 @@ fi
 build_slot() {
   local slot=${1:-}
   local cfg=""
-  # Configure if forced, or if the existing cache lacks the spike config, targets a different slot,
+  # Configure if forced, or if the existing cache lacks the MiniMed config, targets a different slot,
   # or (obelix) is not a release build. Guards against stale caches from a plain configure.
-  if [ "$do_configure" = 1 ] || ! grep -q "MINIMED_SAKE_SPIKE" build/c4che/_cache.py 2>/dev/null; then
+  if [ "$do_configure" = 1 ] || ! grep -q "MINIMED_SAKE" build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
   if [ -n "$slot" ] && ! grep -q "FIRMWARE_SLOT = $slot" build/c4che/_cache.py 2>/dev/null; then
@@ -144,7 +144,7 @@ outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
   fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
-  out="build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
+  out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
   echo ">> $out"
@@ -153,7 +153,7 @@ else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
     fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
-    out="build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
+    out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
     outs+=("$out")
@@ -164,7 +164,7 @@ fi
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f build/pebbleos_loghash_dict.json ]; then
-  cp build/pebbleos_loghash_dict.json "build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
+  cp build/pebbleos_loghash_dict.json "build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then

@@ -1,6 +1,6 @@
-# On-Watch SAKE Spike — Build, Flash & Test
+# On-Watch MiniMed — Build, Flash & Test
 
-The streamlined loop for iterating on the spike firmware. See `PROGRESS.md` for status/code map,
+The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` for status/code map,
 `VERSIONS.md` for the build and dev history.
 
 > **SPIKE is DUAL since v59.** The mode toggle is NORMAL<->DUAL and the watch now holds the phone
@@ -14,13 +14,13 @@ The streamlined loop for iterating on the spike firmware. See `PROGRESS.md` for 
 ## Build + deploy (one command)
 
 ```sh
-./spike-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/sake-spike-vN-<desc>.pbz
-./spike-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
-./spike-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
-./spike-build.sh <desc> --configure  # add this after Kconfig / app-registry changes
+./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<git describe>-<desc>.pbz
+./minimed-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
+./minimed-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
+./minimed-build.sh <desc> --configure  # add this after Kconfig / app-registry changes
 ```
 
-- Auto-increments the version number and writes `build/sake-spike-vN-<desc>.pbz`.
+- Uses `git describe --dirty` for the build identity and writes `build/minimed-<board>-<git describe>-<desc>.pbz`.
 - Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect.
 - **asterix** (the default): Docker image `pebbleos-build:local`, one bundle, no release band.
 - **obelix** (`--pt2`): image `ghcr.io/coredevices/pebbleos-docker:v6` (official CI), two
@@ -31,7 +31,7 @@ The streamlined loop for iterating on the spike firmware. See `PROGRESS.md` for 
 
 The only images that **parse in the Pebble app** AND **boot on the PT2** are RAW single-slot
 bundles built **release** (`CONFIG_RELEASE=y`) from a **release-form git tag** — one bundle per
-slot. `spike-build.sh` builds and shares both `_slot0.pbz` and `_slot1.pbz`.
+slot. `minimed-build.sh` builds and shares both `_slot0.pbz` and `_slot1.pbz`.
 
 **Slot race (why a working file suddenly "does not parse"):** the app resolves a sideload to the
 slot *not* currently running (`updateToSlot = 1 - runningSlot`) and its safety check requires
@@ -48,8 +48,8 @@ error. Hence: keep both slot builds on the phone and flash the one the app asks 
 | Single slot0-only build when watch runs slot0 | "did not parse" | app wants slot1 (slot race) — not a build fault |
 
 So: **one correctly-linked bundle per slot, release build, release-form tag. Do not repack, do
-not rewrite the manifest, do not run non-release.** `spike-build.sh` moves the annotated tag
-`SPIKE_TAG` (default `v4.36.9`) to HEAD each run, builds slot0 and slot1 separately, verifies each
+not rewrite the manifest, do not run non-release.** `minimed-build.sh` moves the annotated tag
+`RELEASE_TAG` (default `v4.36.9`) to HEAD each run, builds slot0 and slot1 separately, verifies each
 is release band 0x01 with version > stock (4.36.2), and shares both over kdeconnect.
 
 ## Flash (BT sideload — no dev kit)

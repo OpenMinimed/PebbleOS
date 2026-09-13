@@ -1273,8 +1273,8 @@
 #endif
 
 #ifndef MYNEWT_VAL_BLE_MAX_CONNECTIONS
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-/* MiniMed SAKE spike: DUAL mode holds the phone and the pump at the same time, so the host and
+#ifdef CONFIG_MINIMED_SAKE
+/* MiniMed: DUAL mode holds the phone and the pump at the same time, so the host and
  * the controller both need two connection slots. Mirrors the sf32lb52 port. */
 #define MYNEWT_VAL_BLE_MAX_CONNECTIONS (2)
 #else
@@ -2090,8 +2090,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_IO_CAP
-/* MiniMed SAKE spike: keep the stock DISPLAY_YESNO default so the *phone* bond is unchanged; the
- * spike relaxes this to NoInputNoOutput at RUNTIME (ble_hs_cfg.sm_io_cap) only while in SPIKE
+/* MiniMed: keep the stock DISPLAY_YESNO default so the *phone* bond is unchanged; the
+ * spike relaxes this to NoInputNoOutput at RUNTIME (ble_hs_cfg.sm_io_cap) only while in DUAL
  * mode, for the pump's legacy Just Works pairing. See minimed_sake_apply_sm_config. */
 #define MYNEWT_VAL_BLE_SM_IO_CAP (BLE_HS_IO_DISPLAY_YESNO)
 #endif
@@ -2102,8 +2102,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_LEGACY
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-/* MiniMed SAKE spike: pump only does legacy pairing, not LE Secure Connections. */
+#ifdef CONFIG_MINIMED_SAKE
+/* MiniMed: pump only does legacy pairing, not LE Secure Connections. */
 #define MYNEWT_VAL_BLE_SM_LEGACY (1)
 #else
 #define MYNEWT_VAL_BLE_SM_LEGACY (0)
@@ -2121,8 +2121,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_MITM
-/* MiniMed SAKE spike: keep the stock MITM default for the phone; the spike clears it at RUNTIME
- * in SPIKE mode (pump can't do MITM -> Just Works). See minimed_sake_apply_sm_config. */
+/* MiniMed: keep the stock MITM default for the phone; the MiniMed pump link clears it at RUNTIME
+ * in DUAL mode (pump can't do MITM -> Just Works). See minimed_sake_apply_sm_config. */
 #define MYNEWT_VAL_BLE_SM_MITM (1)
 #endif
 
@@ -2132,8 +2132,8 @@
 
 /* Overridden by app (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_OUR_KEY_DIST
-/* MiniMed SAKE spike: keep the stock LTK-only default for the phone; the spike adds the IRK +
- * identity (value 3) at RUNTIME in SPIKE mode so the pump can resolve our RPA on reconnect. See
+/* MiniMed: keep the stock LTK-only default for the phone; the MiniMed pump link adds the IRK +
+ * identity (value 3) at RUNTIME in DUAL mode so the pump can resolve our RPA on reconnect. See
  * minimed_sake_apply_sm_config. */
 #define MYNEWT_VAL_BLE_SM_OUR_KEY_DIST (1)
 #endif
@@ -2149,8 +2149,8 @@
 
 /* Overridden by targets/nrf52 (defined by @apache-mynewt-nimble/nimble/host) */
 #ifndef MYNEWT_VAL_BLE_SM_SC_ONLY
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
-/* MiniMed SAKE spike: must accept the pump's legacy Just Works pairing. */
+#ifdef CONFIG_MINIMED_SAKE
+/* MiniMed: must accept the pump's legacy Just Works pairing. */
 #define MYNEWT_VAL_BLE_SM_SC_ONLY (0)
 #else
 #define MYNEWT_VAL_BLE_SM_SC_ONLY (1)

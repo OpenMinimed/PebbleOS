@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-//! Pure pump-status logic for the on-watch spike: parse the IDD Status characteristic (0x102)
+//! Pure pump-status logic for the on-watch MiniMed pump link: parse the IDD Status characteristic (0x102)
 //! and the Therapy Algorithm States SRCP response (0x03FD -> 0x03FE), map them to the single
 //! status label the watchface shows (key 15), and compose the time-augmented display string
 //! (warm-up countdown, temp-target countdown, suspend count-up). Ported from the bridge's

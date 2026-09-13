@@ -20,7 +20,7 @@
 #include "comm/ble/gap_le_advert.h"
 #include "comm/bt_lock.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
-#include "popups/minimed_sake_spike_ui.h"
+#include "popups/minimed_sake_ui.h"
 #include "kernel/event_loop.h"
 #include "pbl/services/settings/settings_file.h"
 #include "pbl/util/size.h"
@@ -68,7 +68,7 @@ static sake_server s_server;
 
 // True once a SAKE handshake has completed, i.e. the pump holds a bond (LTK + our IRK) to this
 // watch. Selects the FE81 (reconnect) advert instead of FE82 (first-pair). Cleared by "forget
-// pump" in the spike app. Written on the BT host task, read on the BT task and the app task --
+// pump" in the MiniMed app. Written on the BT host task, read on the BT task and the app task --
 // a bool, torn reads impossible. Persisted to a settings file so a reboot/reflash goes straight
 // back to FE81 and the pump reconnects unattended (the NimBLE bond already persists).
 static bool s_pump_paired;
@@ -358,14 +358,14 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
                all_zero ? " (all-zero)" : "", buf[0], buf[1], buf[2], buf[3]);
   char line[32];
   if (all_zero) {
-    // The first (stage 0) write is the milestone that proved Spike 1; keep its distinct report.
-    minimed_sake_spike_report(MinimedSakeStageWrote);
+    // The first (stage 0) write is the milestone that proved the initial implementation; keep its distinct report.
+    minimed_sake_report(MinimedSakeStageWrote);
   }
   snprintf(line, sizeof(line), "wrote %u:%02x %02x %02x %02x", len, buf[0], buf[1], buf[2], buf[3]);
   minimed_sake_log_evt(line);
 
   if (!s_keydb_ok) {
-    return 0;  // no key DB -> stay inert (Spike 1 behaviour: log the write, don't handshake)
+    return 0;  // no key DB -> stay inert (initial implementation behavior: log the write, don't handshake)
   }
 
   // Advance the handshake. The wake-up (20 zeros on subscribe) is NOT fed here -- only pump writes.
@@ -392,7 +392,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
         launcher_task_add_callback(prv_store_pump_paired_cb, s_pump_paired ? (void *)1 : NULL);
       }
     }
-    minimed_sake_spike_report(MinimedSakeStageHandshakeComplete);
+    minimed_sake_report(MinimedSakeStageHandshakeComplete);
     minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
     // The pump is bonded now: close the pump-pairing window (back to strict LESC for the phone)
     // and re-air the pump advert as FE81.
@@ -504,7 +504,7 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
     return;
   }
 
-  minimed_sake_spike_report(MinimedSakeStageSubscribed);
+  minimed_sake_report(MinimedSakeStageSubscribed);
   // Start a fresh handshake for this subscription -- the pump restarts from stage 0 on every
   // pairing attempt, so re-init the server (and draw new server key material) each time.
   if (s_keydb_ok) {
@@ -661,7 +661,7 @@ int minimed_sake_service_init(void) {
     PBL_LOG_ERR("SAKE: add_svcs failed 0x%04x", (uint16_t)rc);
     return rc;
   }
-  PBL_LOG_INFO("SAKE: service registered (spike)");
-  minimed_sake_spike_report(MinimedSakeStageAdvertising);
+  PBL_LOG_INFO("SAKE: service registered (MiniMed)");
+  minimed_sake_report(MinimedSakeStageAdvertising);
   return 0;
 }
