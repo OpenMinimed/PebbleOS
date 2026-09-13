@@ -1,9 +1,9 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "minimed_sake_spike_ui.h"
+#include "minimed_sake_ui.h"
 
-#ifdef CONFIG_MINIMED_SAKE_SPIKE
+#ifdef CONFIG_MINIMED_SAKE
 
 #include "comm/ble/gap_le_advert.h"
 #include "kernel/event_loop.h"
@@ -99,7 +99,7 @@ void minimed_sake_log(const char *msg) {
 // the handshake milestones) back when reaching them at all was the news. Now the pump re-handshakes
 // on every reconnect, so a night of dropouts is a night of buzzing -- and these are raw vibes_*
 // calls that ignore Quiet Time. The on-watch log is the debugging channel.
-void minimed_sake_spike_report(MinimedSakeStage stage) { minimed_sake_log(prv_stage_text(stage)); }
+void minimed_sake_report(MinimedSakeStage stage) { minimed_sake_log(prv_stage_text(stage)); }
 
 MinimedSakeMode minimed_sake_get_mode(void) { return s_mode; }
 
@@ -168,7 +168,7 @@ void minimed_sake_toggle_mode(void) {
 MinimedSakeMode minimed_sake_get_mode(void) { return MinimedSakeModeNormal; }
 void minimed_sake_toggle_mode(void) {}
 void minimed_sake_bt_started(void) {}
-void minimed_sake_spike_report(MinimedSakeStage stage) { (void)stage; }
+void minimed_sake_report(MinimedSakeStage stage) { (void)stage; }
 void minimed_sake_log(const char *msg) { (void)msg; }
 void minimed_sake_log_evt(const char *msg) { (void)msg; }
 const char *minimed_sake_get_log(void) { return ""; }

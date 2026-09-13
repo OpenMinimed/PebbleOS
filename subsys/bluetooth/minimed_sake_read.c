@@ -20,7 +20,7 @@
 #include "minimed_sake_sender.h"
 #include "minimed_status.h"
 #include "minimed_sake_service.h"
-#include "popups/minimed_sake_spike_ui.h"
+#include "popups/minimed_sake_ui.h"
 #include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);

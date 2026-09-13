@@ -8,7 +8,7 @@
 
 #include "nimble/ble.h"  // ble_addr_t
 
-//! Bench spike: host the Medtronic "SAKE Port" GATT service so a MiniMed
+//! MiniMed pump link: host the Medtronic "SAKE Port" GATT service so a MiniMed
 //! 700-series pump (BLE Central) can connect into the watch (Peripheral) and
 //! start its SAKE handshake. Topology proof only -- no SAKE crypto yet.
 
@@ -18,7 +18,7 @@ int minimed_sake_service_init(void);
 
 //! Medtronic pairing advertising payload (flags + 16-bit svc UUID 0xfe82 +
 //! "Mobile PB" name). advert.c substitutes this for the normal Pebble advert
-//! while the spike is enabled. Returns the length written into `buf`.
+//! while the MiniMed pump link is enabled. Returns the length written into `buf`.
 uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len);
 
 //! Called from the GAP subscribe handler. When the pump enables notifications
@@ -42,5 +42,5 @@ bool minimed_sake_encrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t 
 //! True if `addr` matches the pump identity captured at the last SAKE handshake completion (the
 //! pump re-runs the full handshake on every reconnect, so this is refreshed each cycle). Used only
 //! by the v29 advert diagnostics to label a connection PUMP vs phone. NimBLE resolves the pump's
-//! RPA to this identity via the bond IRK, so it matches in both SPIKE and NORMAL.
+//! RPA to this identity via the bond IRK, so it matches in both DUAL and NORMAL.
 bool minimed_sake_addr_is_pump(const ble_addr_t *addr);

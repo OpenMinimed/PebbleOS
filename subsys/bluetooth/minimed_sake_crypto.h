@@ -3,7 +3,7 @@
 // The watch plays the SAKE *server* (MOBILE_APPLICATION); the pump is the
 // client (INSULIN_PUMP). Drive it from the SAKE-port GATT write handler:
 // feed each 20-byte pump write into sake_server_handshake() and notify the
-// 20-byte reply back. See PebbleOS/SPIKE-HANDOFF.md and Documentation/sake.md.
+// 20-byte reply back. See PebbleOS/Documentation/sake.md and Documentation/sake.md.
 #ifndef MINIMED_SAKE_CRYPTO_H
 #define MINIMED_SAKE_CRYPTO_H
 
