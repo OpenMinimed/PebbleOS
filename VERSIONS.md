@@ -11,6 +11,14 @@ bundles `minimed-<board>-<git describe>-<desc>.pbz`; the firmware logs the same 
 boot and shows it at the top of the MiniMed app. `vNN` entries below are legacy; new builds get
 no number.
 
+- 2026-09-13, **HW-TESTED**;
+  `build/minimed-asterix-v4.36.2-134-gbaec41260-status-timers.pbz`: **move status timers to the
+  watchface** (Fix #19). The firmware now sends plain status labels plus an optional, mutually
+  exclusive Unix-epoch start or end timestamp. The watchface formats the timer locally, so it can
+  choose which statuses show timers; this build hides the suspended timer. Removed the firmware's
+  minute-by-minute status resend and updated the protocol keys and documentation. Installed on
+  asterix and working in initial hardware testing.
+
 - v66 (2026-09-06, BUILT, **AWAITING HW**;
   `build/sake-spike-v66-cgm-fetch-on-sensor-recovery.pbz`): **fetch a CGM record as soon as the
   pump has glucose again**, instead of waiting for the pump to volunteer one.
