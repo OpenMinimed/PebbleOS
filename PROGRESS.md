@@ -180,7 +180,7 @@ Details worth knowing:
   `uv tool install pebble-tool --with pyelftools`.
 - **The dict is per build.** Log lines are stored hashed and the hashes change every build, so an
   older generation needs that firmware's dictionary. `spike-build.sh` now archives one next to each
-  `.pbz` as `sake-spike-vNN-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
+  `.pbz` as `sake-spike-<board>-<git describe>-<desc>.loghash.json`; pass it with `--dict`. Without the right dict the
   lines come back as raw `NL:xxxx`.
 - Requires **Developer Connection** enabled in the Pebble app *and* the watch in NORMAL. Re-pairing
   the watch turns Developer Connection off — that cost time once; the symptom is

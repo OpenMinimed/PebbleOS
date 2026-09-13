@@ -4,6 +4,12 @@ Every spike build, newest first, then the chronological dev/test log. This is a 
 archive — you rarely need it in context. Current state is in `PROGRESS.md`; the per-topic
 files are listed there.
 
+## Versioning (since 2026-09-11)
+
+Build identity is `git describe --dirty` (<base tag>-<n>-g<hash>[-dirty]). `spike-build.sh` names
+bundles `sake-spike-<board>-<git describe>-<desc>.pbz`; the firmware logs the same string at every
+boot and shows it at the top of the MiniMed app. `vNN` entries below are legacy; new builds get
+no number.
 
 - v66 (2026-09-06, BUILT, **AWAITING HW**;
   `build/sake-spike-v66-cgm-fetch-on-sensor-recovery.pbz`): **fetch a CGM record as soon as the

@@ -15,6 +15,7 @@
 #include "popups/minimed_sake_spike_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
+#include "git_version.auto.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -54,8 +55,9 @@ static void prv_refresh(MinimedSakeAppData *data) {
   }
   data->bond_refresh_countdown--;
 
-  snprintf(data->buf, sizeof(data->buf), "%s\nbond gw%u pmp%u del%u\n%s", mode, data->bond_gateway,
-           data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
+  // GIT_TAG is git describe; the shared identity for two people debugging the same build.
+  snprintf(data->buf, sizeof(data->buf), "fw %s\n%s\nbond gw%u pmp%u del%u\n%s", GIT_TAG, mode,
+           data->bond_gateway, data->bond_non_gateway, data->bond_deleted, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 

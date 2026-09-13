@@ -66,6 +66,10 @@ else
 fi
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (BOARD_NORMALIZED strips @revision)
 SPIKE_TAG=${SPIKE_TAG:-v4.36.9}                 # release-form tag stamped into the bundle
+
+# Identity BEFORE the release-tag dance below: once HEAD carries that tag, git describe collapses
+# to it and loses the hash, which is the whole identity.
+DESCRIBE=$(git describe --dirty --always)
 echo ">> board $BOARD (image $IMAGE)"
 
 if [ "$NEED_TAG" = 1 ]; then
@@ -83,9 +87,11 @@ if [ -d build/c4che ] && ! grep -q "BOARD = '${BOARD%@*}'" build/c4che/_cache.py
 fi
 [ -d build/c4che ] || do_configure=1
 
-# Next version = 1 + (max N across build/sake-spike-vN-*.pbz) (numeric, not lexical).
-next_ver=$(( $(ls build/sake-spike-v*.pbz 2>/dev/null \
-  | sed -n 's#.*/sake-spike-v\([0-9]\{1,\}\)-.*#\1#p' | sort -n | tail -1 | grep -E '^[0-9]+$' || echo 0) + 1 ))
+# Canonical identity is `git describe --dirty` (<tag>-<n>-g<hash>[-dirty]), not a per-scribe vN
+# counter: it is the one string two people on two divergent branches can both quote and it travels
+# with the source. BOARD_SHORT keeps the build/ listing unambiguous when the same desc is built
+# for both watches.
+[ "$profile" = obelix ] && BOARD_SHORT=pt2 || BOARD_SHORT=asterix
 
 # Build one image. With an argument it is a slot number (obelix); without, the board's single slot.
 build_slot() {
@@ -102,7 +108,7 @@ build_slot() {
   if [ "$VERIFY_BAND" = 1 ] && ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
     cfg="true"
   fi
-  echo ">> building ${slot:+slot$slot }(v$next_ver-$desc)${cfg:+ [configure]}..."
+  echo ">> building ${slot:+slot$slot }($DESCRIBE-$desc)${cfg:+ [configure]}..."
   docker run --rm "${DOCKER_USER[@]}" -e HOME=/tmp \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       git config --global --add safe.directory /pebbleos
@@ -138,7 +144,7 @@ outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
   fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
-  out="build/sake-spike-v${next_ver}-${desc}.pbz"
+  out="build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
   echo ">> $out"
@@ -147,7 +153,7 @@ else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
     fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
-    out="build/sake-spike-v${next_ver}-${desc}_slot${slot}.pbz"
+    out="build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
     outs+=("$out")
@@ -158,7 +164,7 @@ fi
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f build/pebbleos_loghash_dict.json ]; then
-  cp build/pebbleos_loghash_dict.json "build/sake-spike-v${next_ver}-${desc}.loghash.json"
+  cp build/pebbleos_loghash_dict.json "build/sake-spike-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then
