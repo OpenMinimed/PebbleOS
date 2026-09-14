@@ -143,8 +143,10 @@ NORETURN croak_oom(size_t bytes, int saved_lr, Heap *heap_ptr) {
   if (heap_ptr) {
     heap_calc_totals(heap_ptr, &used, &free_bytes, &max_free);
   }
-  PBL_LOG_ALWAYS("CROAK OOM: Failed to alloc %d bytes at LR: 0x%x (used %u, free %u, max_free %u)",
-                 bytes, saved_lr, used, free_bytes, max_free);
+  // Sync, not the usual async PBL_LOG_ALWAYS: the reset a few lines below is immediate, with no
+  // KernelBG turn for the normal buffered flush to run, so an async line here never reaches flash.
+  PBL_LOG_SYNC_ALWAYS("CROAK OOM: Failed to alloc %d bytes at LR: 0x%x (used %u, free %u, max_free %u)",
+                       bytes, saved_lr, used, free_bytes, max_free);
 
 #ifdef CONFIG_MALLOC_INSTRUMENTATION
   command_dump_malloc_kernel();
