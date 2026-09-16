@@ -48,3 +48,11 @@ void minimed_sake_sender_set_mode(bool open);
 //! just polled -- offline is the default until the first "connected" call. Safe to call from the
 //! BT host task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_pump_connected(bool connected);
+
+//! Latest trend arrow (one of the TREND_* constants in pebble_glucose_protocol.h), decoded from
+//! the pump's CGM Trend Information field -- never derived on the watch. `valid` is false when
+//! the current reading carried no trend field (sensor warmup, older transmitter firmware, etc.);
+//! the key is then omitted from the push entirely rather than sent as TREND_UNKNOWN, so the
+//! watchface can tell "no trend" from "flat" and hide the glyph. Safe to call from the BT host
+//! task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend);
