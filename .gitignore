@@ -69,3 +69,6 @@ artifacts/
 .claude/settings.local.json
 .envrc
 .direnv
+
+# Personal compile-time overrides (e.g. MINIMED_ALERT_POPUPS) -- see TESTING.md.
+src/bluetooth-fw/nimble/minimed_local_overrides.h

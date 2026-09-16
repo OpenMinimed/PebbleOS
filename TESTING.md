@@ -36,6 +36,14 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   single-slot bundles, release build, release-band check. The rest of this section is that recipe.
 - Switching boards re-runs `waf configure` automatically (the c4che board no longer matches).
 
+### Local compile-time overrides
+
+Some behaviour is gated behind a plain `#define` rather than Kconfig (e.g.
+`MINIMED_ALERT_POPUPS` in `minimed_sake_read.c`). To flip one of those on a personal build
+without it ever showing up in `git diff`: create
+`src/bluetooth-fw/nimble/minimed_local_overrides.h` (gitignored) and `#define` it there — the
+source file `#include`s it if present and only falls back to its own default otherwise.
+
 ### The PT2 build recipe — read before deviating
 
 The only images that **parse in the Pebble app** AND **boot on the PT2** are RAW single-slot
