@@ -20,6 +20,7 @@
 #include "popups/minimed_alert_popup.h"
 #include "minimed_sake_sender.h"
 #include "minimed_status.h"
+#include "pebble_glucose_protocol.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_ui.h"
 #include <pbl/logging/logging.h>
@@ -248,9 +249,10 @@ static uint16_t s_last_offset;
 static bool s_have_offset;
 static uint32_t s_reading_ts;  // wall-clock time we first saw the current reading
 
-// Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer mg/dL. Returns INT32_MIN for the
-// NaN/NRes/Inf sentinels (no usable value). Glucose normally has exponent 0.
-static int32_t prv_decode_medfloat16(uint16_t raw) {
+// Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer, scaled by `scale` before the exponent is
+// applied (e.g. scale=10 keeps one decimal digit instead of truncating it away). Returns INT32_MIN
+// for the NaN/NRes/Inf sentinels (no usable value).
+static int32_t prv_decode_medfloat16_scaled(uint16_t raw, int32_t scale) {
   uint16_t m12 = raw & 0x0FFF;
   if (m12 == 0x07FF || m12 == 0x0800 || m12 == 0x0801 || m12 == 0x07FE || m12 == 0x0802) {
     return INT32_MIN;
@@ -259,9 +261,53 @@ static int32_t prv_decode_medfloat16(uint16_t raw) {
   if (exp & 0x8) exp -= 0x10;
   int32_t mant = raw & 0x0FFF;
   if (mant & 0x800) mant -= 0x1000;
-  for (; exp > 0; exp--) mant *= 10;
-  for (; exp < 0; exp++) mant /= 10;
-  return mant;
+  int32_t val = mant * scale;
+  for (; exp > 0; exp--) val *= 10;
+  for (; exp < 0; exp++) val /= 10;
+  return val;
+}
+
+// Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer mg/dL. Glucose normally has exponent 0,
+// so scale=1 loses nothing.
+static int32_t prv_decode_medfloat16(uint16_t raw) {
+  return prv_decode_medfloat16_scaled(raw, 1);
+}
+
+// Bucket a CGM trend rate (tenths of mg/dL/min) into one of the protocol's TREND_* arrows.
+// Thresholds follow the usual CGM rate-to-arrow convention (Dexcom/Nightscout): flat under
+// 1 mg/dL/min, then one bucket per mg/dL/min up to the protocol's TRIPLE_* ceiling.
+static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
+  static const uint8_t up[] = {TREND_FLAT, TREND_SLANT_UP, TREND_UP, TREND_DOUBLE_UP,
+                               TREND_TRIPLE_UP};
+  static const uint8_t down[] = {TREND_FLAT, TREND_SLANT_DOWN, TREND_DOWN, TREND_DOUBLE_DOWN,
+                                 TREND_TRIPLE_DOWN};
+  int32_t mag = (rate_tenths < 0) ? -rate_tenths : rate_tenths;
+  int32_t level = mag / 10;  // whole mg/dL/min
+  if (level > 4) {
+    level = 4;  // cap at the table size (TRIPLE_*)
+  }
+  return (rate_tenths < 0) ? down[level] : up[level];
+}
+
+// CGM Measurement flags bit 0 ("CGM Trend Information present"), per the Bluetooth CGMS spec:
+// when set, a second SFLOAT (the rate of change, mg/dL/min) follows the mandatory prefix at
+// bytes 6-7.
+#define CGM_FLAG_TREND_INFO_PRESENT 0x01
+
+// Forward this reading's trend (or its absence) to the watchface. Called once per NEW reading,
+// same cadence as add_graph_point: a re-poll of an unchanged record must not re-derive or
+// re-announce a trend, and a reading that genuinely carries no trend field must clear any
+// previously shown arrow rather than let it go stale.
+static void prv_forward_trend(uint8_t flags) {
+  if ((flags & CGM_FLAG_TREND_INFO_PRESENT) && s_rec_len >= 8) {
+    uint16_t traw = (uint16_t)(s_rec[6] | (s_rec[7] << 8));
+    int32_t rate_tenths = prv_decode_medfloat16_scaled(traw, 10);
+    if (rate_tenths != INT32_MIN) {
+      minimed_sake_sender_send_trend_arrow(true, prv_trend_arrow_from_rate_tenths(rate_tenths));
+      return;
+    }
+  }
+  minimed_sake_sender_send_trend_arrow(false, TREND_UNKNOWN);
 }
 
 static void prv_parse_and_show(void) {
@@ -272,6 +318,7 @@ static void prv_parse_and_show(void) {
     minimed_sake_log(line);
     return;
   }
+  const uint8_t flags = s_rec[1];
   uint16_t raw = (uint16_t)(s_rec[2] | (s_rec[3] << 8));
   int32_t mgdl = prv_decode_medfloat16(raw);
   char line[32];
@@ -320,6 +367,7 @@ static void prv_parse_and_show(void) {
       s_have_offset = true;
       s_reading_ts = (uint32_t)rtc_get_time();
       minimed_sake_sender_add_graph_point(s_reading_ts, below ? SG_FLOOR_MGDL : SG_CEILING_MGDL);
+      prv_forward_trend(flags);
     }
     minimed_sake_log(below ? "*** BG LO ***" : "*** BG HI ***");
     strcpy(s_last_bg_str, below ? "LO" : "HI");
@@ -338,6 +386,7 @@ static void prv_parse_and_show(void) {
     s_have_offset = true;
     s_reading_ts = (uint32_t)rtc_get_time();
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
+    prv_forward_trend(flags);
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
              (long)(tenths % 10));
     // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor

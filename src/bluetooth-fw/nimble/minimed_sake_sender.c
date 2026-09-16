@@ -76,6 +76,8 @@ static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the b
 static uint32_t s_status_start;
 static uint32_t s_status_end;
 static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
+static bool s_trend_valid;     // false = no trend field in the last reading; omit the key
+static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
 
 static MinimedGraph s_graph;
 
@@ -303,7 +305,7 @@ static void prv_push_bg_cb(void *unused) {
     }
     target = *fg;
     // Everything we can currently supply.
-    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED;
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -361,6 +363,12 @@ static void prv_push_bg_cb(void *unused) {
     // Not gated on have_bg: offline (0) is a real value from boot, not a placeholder waiting on
     // the pump's first reading.
     res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_connected ? 1 : 0);
+    n++;
+  }
+  if (have_bg && (caps & CAP_TREND_ARROW) && s_trend_valid) {
+    // Omitted (not sent as TREND_UNKNOWN) when the pump didn't supply one -- see
+    // minimed_sake_sender_send_trend_arrow.
+    res |= dict_write_uint8(&iter, KEY_TREND_ARROW, s_trend_arrow);
     n++;
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
@@ -500,5 +508,12 @@ void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend) {
+  // Same lock-free discipline as send_bg/send_iob/send_status.
+  s_trend_valid = valid;
+  s_trend_arrow = trend;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
