@@ -37,8 +37,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
 // themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
 // are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19),
-// 0x31a and 0x33f (2026-08-30). 0x064 is not in the Python enum at all; wording is from a
-// reporter's on-pump reproduction, not our own HW confirmation.
+// 0x31a and 0x33f (2026-08-30). 0x064 and 0x366 are not in the Python enum at all; wording is from
+// a reporter's on-pump reproduction, not our own HW confirmation.
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -93,6 +93,9 @@ static const AnnuncName s_names[] = {
     {0x34b, "Calibration OK"},
     {0x34c, "Early calibration"},
     {0x365, "Calibrate reminder"},
+    // HW-confirmed 2026-09-16: live, unsilenced, non-baseline capture; wording is the reporter's
+    // on-pump reproduction (not in the Python reference).
+    {0x366, "Low transmitter battery"},
 };
 
 const char *minimed_annunciation_name(uint16_t type) {
