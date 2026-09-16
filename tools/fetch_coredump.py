@@ -72,10 +72,11 @@ def main():
     ap.add_argument("--retries", type=int, default=3,
                     help="retry a transfer that dies partway (leaves the coredump unread "
                          "on the watch) this many times before giving up (default 3)")
-    ap.add_argument("--verify", action="store_true",
-                    help="after a successful fetch, confirm the watch actually cleared its "
-                         "unread flag (does a cheap --fresh probe; no extra data transfer "
-                         "unless the ack unexpectedly did not take)")
+    ap.add_argument("--no-verify", dest="verify", action="store_false",
+                    help="skip the post-fetch ack check (on by default): confirming the watch "
+                         "actually cleared its unread flag via a cheap --fresh probe; no extra "
+                         "data transfer unless the ack unexpectedly did not take")
+    ap.set_defaults(verify=True)
     args = ap.parse_args()
 
     connection = PebbleConnection(WebsocketTransport("ws://{}:9000/".format(args.phone)))
