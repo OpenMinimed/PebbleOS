@@ -31,7 +31,14 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 // MedtronicProtocol.kt). The pump exposes these as a GATT server over the post-handshake link.
 #define CGM_SERVICE_UUID 0x181F
 #define CGM_MEASUREMENT_UUID 0x2AA7  // notify, SAKE-encrypted records
+// Local, gitignored, untracked by git: lets a personal build flip switches like
+// MINIMED_ALERT_POPUPS below without ever showing up in `git diff`. See TESTING.md.
+#if __has_include("minimed_local_overrides.h")
+#include "minimed_local_overrides.h"
+#endif
+#ifndef MINIMED_ALERT_POPUPS
 #define MINIMED_ALERT_POPUPS 0  // set 1 to re-enable watch popups for pump alarms (annunciations)
+#endif
 #define CGM_FEATURE_UUID 0x2AA8      // read, plaintext (E2E-CRC flag)
 #define RACP_UUID 0x2A52             // write/indicate, plaintext control point
 
