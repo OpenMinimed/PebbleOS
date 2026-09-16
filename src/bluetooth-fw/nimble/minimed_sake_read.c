@@ -32,6 +32,7 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 // MedtronicProtocol.kt). The pump exposes these as a GATT server over the post-handshake link.
 #define CGM_SERVICE_UUID 0x181F
 #define CGM_MEASUREMENT_UUID 0x2AA7  // notify, SAKE-encrypted records
+#define CGM_SESSION_START_UUID 0x2AAA  // read, SAKE-encrypted; standard CGMS DateTime format
 // Local, gitignored, untracked by git: lets a personal build flip switches like
 // MINIMED_ALERT_POPUPS below without ever showing up in `git diff`. See TESTING.md.
 #if __has_include("minimed_local_overrides.h")
@@ -51,6 +52,16 @@ static const uint8_t RACP_REPORT_SUCCESS[] = {0x06, 0x00, 0x01, 0x01};
 // IDD service 0x100, SRCP (Status Reader Control Point) char 0x105 (write + indicate). Byte order
 // is little-endian, same convention as the SAKE-port UUID in minimed_sake_service.c (last two data
 // bytes = the 16-bit short code low/high: 00 01 for 0x0100, 05 01 for 0x0105).
+// Medtronic 128-bit chars in the CGM service family (same base as the IDD ones above). 0x0202
+// Time Of Sensor Expiration is what the MiniMed app's "sensor days left" is computed from;
+// 0x0103 IDD Features advertises whether that (and other extensions) are supported.
+static const ble_uuid128_t s_sensor_exp_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x02, 0x02, 0x00, 0x00);
+static const ble_uuid128_t s_idd_features_uuid =
+    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
+                     0x00, 0x10, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00);
+
 static const ble_uuid128_t s_idd_svc_uuid =
     BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
                      0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00);
@@ -183,10 +194,36 @@ static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
 static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
                                   struct ble_gatt_attr *attr, void *arg);
+static void prv_sensorinfo_read(uint8_t step);
+static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n);
+static int prv_sensorinfo_session_start_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                           struct ble_gatt_attr *attr, void *arg);
+static int prv_sensorinfo_sub_exp_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                     struct ble_gatt_attr *attr, void *arg);
 static int prv_idd_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                                  struct ble_gatt_attr *attr, void *arg);
 
 static uint16_t s_conn;
+
+// ---- Sensor-info probe (spike for issue #16) ----
+// One chained sweep per connection, ~30 s after polling starts: Session Run Time (0x2AAB),
+// Time Of Sensor Expiration (0x0202), IDD Features (0x0103), Session Start Time (0x2AAA).
+// Every value is logged raw AND after a decrypt attempt, so the probe itself settles whether
+// each characteristic is plaintext or SAKE-encrypted, and its real field width.
+#define SENSORINFO_READ_DELAY_SECS 30
+static struct ble_npl_callout s_sensorinfo_co;
+static bool s_sensorinfo_done;
+// Steps of the sweep; each ends with a chained read of the next.
+#define SI_STEP_RUN_TIME 0
+#define SI_STEP_EXPIRATION 1
+#define SI_STEP_IDD_FEATURES 2
+#define SI_STEP_SESSION_START 3
+#define SI_STEP_COUNT 4
+static uint8_t s_sensorinfo_step;
+static uint16_t s_h_session_start;
+static uint16_t s_h_sensor_exp;  // 0x0202, indicate-only: subscribed during the probe
+// Shared line buffers: PBL_LOG is stack-hungry (see the v57 note on the devinfo sweep).
+static char s_sensorinfo_line[112];
 
 // Pump-liveness watchdog. If the pump was connected but no traffic arrives for this long, the link
 // is presumed silently dead (the controller may never deliver a disconnect), so re-toggle DUAL to
@@ -595,6 +632,14 @@ static void prv_annunc_record_done(void) {
   }
   s_annunc_seen = true;
   if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
+  if (r == MinimedAnnuncRecordOther) {
+    // Valid but non-annunciation history record: log type+seq so event streams we do not yet
+    // parse (e.g. the sensor-change burst) document themselves in the field log (#16 research).
+    PBL_LOG_INFO("SAKE: hist type=0x%04x seq=%lu len=%u %02x%02x%02x",
+                 (unsigned)(s_hist[0] | (s_hist[1] << 8)), (unsigned long)a.seq, rec_len,
+                 s_hist[2], s_hist[3], s_hist[4]);
+    return;
+  }
   if (r != MinimedAnnuncRecordYes) {
     if (s_backfill_run) {
       prv_backfill_record(rec_len);
@@ -641,6 +686,11 @@ static void prv_annunc_record_done(void) {
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
 bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len) {
   s_last_pump_traffic = (uint32_t)rtc_get_time();  // any pump notification = the link is alive
+  if (s_h_sensor_exp != 0 && attr_handle == s_h_sensor_exp) {
+    // Sensor-info probe: the pump pushes Time Of Sensor Expiration here (indicate-only char).
+    prv_sensorinfo_log_value("sensor exp", data, len);
+    return true;
+  }
   if (s_h_measurement != 0 && attr_handle == s_h_measurement) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
@@ -1285,6 +1335,142 @@ static void prv_battery_timer_cb(struct ble_npl_event *ev) {
                         ble_npl_time_ms_to_ticks32(BATTERY_READ_INTERVAL_SECS * 1000));
 }
 
+static const char *prv_sensorinfo_step_name(uint8_t step) {
+  switch (step) {
+    case SI_STEP_RUN_TIME: return "sess run";
+    case SI_STEP_EXPIRATION: return "sensor exp";
+    case SI_STEP_IDD_FEATURES: return "idd feat";
+    case SI_STEP_SESSION_START: return "sess start";
+    default: return "?";
+  }
+}
+
+// Append hex; returns the new offset. Caller guarantees room.
+static size_t prv_append_hex(char *dst, size_t cap, size_t off, const uint8_t *d, uint16_t n) {
+  for (uint16_t i = 0; i < n && off + 3 < cap; i++) {
+    off += (size_t)snprintf(&dst[off], 3, "%02x", d[i]);
+  }
+  dst[off] = '\0';
+  return off;
+}
+
+// Log one probe value: raw hex on one line, then hex of a decrypt attempt on a second line.
+// An encrypted characteristic shows up as a decrypt success; a plaintext one as a decrypt
+// failure with sane raw bytes. Two short lines, not one: long flash-log records get split.
+static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n) {
+  size_t off = (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s raw=", name);
+  off = prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, raw, n);
+  PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+  uint8_t plain[24];
+  uint16_t plain_len = 0;
+  if (minimed_sake_decrypt(raw, n, plain, sizeof(plain), &plain_len)) {
+    off = (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s plain=", name);
+    prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, plain, plain_len);
+    PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+  }
+}
+
+
+// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE; the next
+// step is chained off EDONE. One GATT procedure at a time per connection, like the devinfo sweep.
+static int prv_sensorinfo_by_uuid_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                     struct ble_gatt_attr *attr, void *arg) {
+  const uint8_t step = (uint8_t)(uintptr_t)arg;
+  if (error->status == BLE_HS_EDONE) {
+    prv_sensorinfo_read(step + 1);
+    return 0;
+  }
+  if (error->status != 0 || !attr || !attr->om || attr->om->om_len < 1) {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x",
+             prv_sensorinfo_step_name(step), (uint16_t)error->status);
+    PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+    prv_sensorinfo_read(step + 1);
+    return 0;
+  }
+  prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), attr->om->om_data, attr->om->om_len);
+  return 0;
+}
+
+// Chained sweep. Steps 0 and 2 issue read_by_uuid over the whole handle range; step 1 is an
+// indicate-only characteristic, so it subscribes (CCCD) instead of reading and the value logs
+// from the notify dispatcher when the pump pushes it; step 3 needs the handle captured during
+// CGM char discovery (0x2AAA is a SIG 16-bit UUID, so it is targeted by handle).
+static void prv_sensorinfo_read(uint8_t step) {
+  if (step >= SI_STEP_COUNT) {
+    s_sensorinfo_done = true;
+    minimed_sake_log("sensor probe done");
+    return;
+  }
+  s_sensorinfo_step = step;
+  int rc;
+  if (step == SI_STEP_SESSION_START) {
+    if (s_h_session_start == 0) {
+      minimed_sake_log("sensor: no sess start chr");
+      prv_sensorinfo_read(step + 1);
+      return;
+    }
+    rc = ble_gattc_read(s_conn, s_h_session_start, prv_sensorinfo_session_start_cb, NULL);
+  } else if (step == SI_STEP_EXPIRATION) {
+    if (s_h_sensor_exp == 0) {
+      minimed_sake_log("sensor: no sensor exp chr");
+      prv_sensorinfo_read(step + 1);
+      return;
+    }
+    static const uint8_t indicate[] = {0x02, 0x00};
+    rc = ble_gattc_write_flat(s_conn, s_h_sensor_exp + 1, indicate, sizeof(indicate),
+                              prv_sensorinfo_sub_exp_cb, NULL);
+  } else {
+    const ble_uuid_t *uuid;
+    const ble_uuid16_t run_time_uuid = BLE_UUID16_INIT(0x2AAB);
+    switch (step) {
+      case SI_STEP_IDD_FEATURES: uuid = &s_idd_features_uuid.u; break;
+      default: uuid = &run_time_uuid.u; break;
+    }
+    rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, uuid, prv_sensorinfo_by_uuid_cb,
+                                (void *)(uintptr_t)step);
+  }
+  if (rc != 0) {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s rc=0x%04x",
+             prv_sensorinfo_step_name(step), (uint16_t)rc);
+    minimed_sake_log(s_sensorinfo_line);
+    prv_sensorinfo_read(step + 1);  // keep sweeping; failure of one step is not fatal
+  }
+}
+
+static int prv_sensorinfo_sub_exp_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                     struct ble_gatt_attr *attr, void *arg) {
+  if (error->status != 0) {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: exp sub err=0x%04x",
+             (uint16_t)error->status);
+    minimed_sake_log(s_sensorinfo_line);
+  }
+  prv_sensorinfo_read(SI_STEP_IDD_FEATURES);
+  return 0;
+}
+
+// Session Start Time (0x2AAA) is read by discovered handle because it is a SIG UUID that other
+// services could theoretically also expose; read_by_uuid over the full range could hit more
+// than one match.
+static int prv_sensorinfo_session_start_cb(uint16_t conn, const struct ble_gatt_error *error,
+                                           struct ble_gatt_attr *attr, void *arg) {
+  if (error->status == 0 && attr && attr->om && attr->om->om_len >= 1) {
+    prv_sensorinfo_log_value("sess start", attr->om->om_data, attr->om->om_len);
+    prv_sensorinfo_read(SI_STEP_SESSION_START + 1);
+  } else {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: sess start err=0x%04x",
+             (uint16_t)error->status);
+    PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+    prv_sensorinfo_read(SI_STEP_COUNT);
+  }
+  return 0;
+}
+
+static void prv_sensorinfo_timer_cb(struct ble_npl_event *ev) {
+  if (s_sensorinfo_done) return;
+  minimed_sake_log("sensor probe start");
+  prv_sensorinfo_read(SI_STEP_RUN_TIME);
+}
+
 static void prv_poll_timer_cb(struct ble_npl_event *ev) {
   if (s_push_mode) minimed_sake_log("fallback poll");
   // Layer 4 diagnostic: does the host still believe the pump link is connected? Runs on the same
@@ -1319,6 +1505,8 @@ static void prv_start_polling(void) {
                         ble_npl_time_ms_to_ticks32(BATTERY_FIRST_READ_DELAY_SECS * 1000));
   ble_npl_callout_reset(&s_devinfo_co,
                         ble_npl_time_ms_to_ticks32(DEVINFO_READ_DELAY_SECS * 1000));
+  ble_npl_callout_reset(&s_sensorinfo_co,
+                        ble_npl_time_ms_to_ticks32(SENSORINFO_READ_DELAY_SECS * 1000));
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
@@ -1523,7 +1711,7 @@ static int prv_sub_meas_cb(uint16_t conn, const struct ble_gatt_error *error,
 
 static int prv_read_feature_cb(uint16_t conn, const struct ble_gatt_error *error,
                                struct ble_gatt_attr *attr, void *arg) {
-  char line[32];
+  char line[40];
   if (error->status != 0) {
     snprintf(line, sizeof(line), "feat read err=0x%04x", (uint16_t)error->status);
     minimed_sake_log(line);
@@ -1552,7 +1740,7 @@ static int prv_read_feature_cb(uint16_t conn, const struct ble_gatt_error *error
 
 static int prv_disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
                            const struct ble_gatt_chr *chr, void *arg) {
-  char line[32];
+  char line[40];
   if (error->status == 0 && chr) {
     uint16_t u = (chr->uuid.u.type == BLE_UUID_TYPE_16) ? ble_uuid_u16(&chr->uuid.u) : 0;
     if (u == CGM_MEASUREMENT_UUID) {
@@ -1561,11 +1749,16 @@ static int prv_disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
       s_h_feature = chr->val_handle;
     } else if (u == RACP_UUID) {
       s_h_racp = chr->val_handle;
+    } else if (u == CGM_SESSION_START_UUID) {
+      s_h_session_start = chr->val_handle;  // sensor-info probe reads this by handle
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_sensor_exp_uuid.u) == 0) {
+      s_h_sensor_exp = chr->val_handle;  // indicate-only: subscribed during the sensor-info probe
     }
     return 0;
   }
   if (error->status == BLE_HS_EDONE) {
-    snprintf(line, sizeof(line), "chrs: m=%u f=%u r=%u", s_h_measurement, s_h_feature, s_h_racp);
+    snprintf(line, sizeof(line), "chrs: m=%u f=%u r=%u ss=%u", s_h_measurement, s_h_feature,
+             s_h_racp, s_h_session_start);
     minimed_sake_log(line);
     if (s_h_feature != 0) {
       int rc = ble_gattc_read(s_conn, s_h_feature, prv_read_feature_cb, NULL);
@@ -1630,6 +1823,8 @@ void minimed_sake_read_init(void) {
   ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
   ble_npl_callout_init(&s_heap_co, nimble_port_get_dflt_eventq(), prv_heap_timer_cb, NULL);
   ble_npl_callout_init(&s_devinfo_co, nimble_port_get_dflt_eventq(), prv_devinfo_timer_cb, NULL);
+  ble_npl_callout_init(&s_sensorinfo_co, nimble_port_get_dflt_eventq(), prv_sensorinfo_timer_cb,
+                       NULL);
 }
 
 void minimed_sake_read_start(uint16_t conn_handle) {
@@ -1642,6 +1837,9 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
   s_cgm_start = s_cgm_end = 0;
   s_h_measurement = s_h_feature = s_h_racp = 0;
+  s_h_session_start = 0;
+  s_h_sensor_exp = 0;
+  s_sensorinfo_done = false;
   s_idd_start = s_idd_end = s_h_srcp = 0;
   s_h_status_changed = 0;  // re-discovered per connection; a stale handle could alias a new one
   s_h_idd_status = 0;
@@ -1686,4 +1884,5 @@ void minimed_sake_read_stop(void) {
   ble_npl_callout_stop(&s_battery_co);
   ble_npl_callout_stop(&s_heap_co);
   ble_npl_callout_stop(&s_devinfo_co);
+  ble_npl_callout_stop(&s_sensorinfo_co);
 }

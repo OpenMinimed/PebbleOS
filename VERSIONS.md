@@ -25,6 +25,14 @@ or its commit hash, whichever you have on hand (e.g. "build dc906629f").
   DUAL mode, pump BG/IOB flowing, and the watchface ready ping received. Log:
   `../logs/watch/2026-09-13-v4.36.2-138.txt`.
 
+- 2026-09-14, BUILT, **RUNNING OVERNIGHT (sensor EOL expected ~10:05)**;
+  `build/minimed-asterix-v4.36.2-140-ga88cc9471-dirty-sensor-probe3.pbz` (probe v2
+  `...-sensor-probe2.pbz` superseded): v2 additions kept (0x2AAB/0x0104 reads, 0x0202 CCCD
+  subscribe with notify logging, 0x2AAA handle read). v3 adds: flash log lines for valid but
+  non-annunciation IDD history records (`hist type=... seq=... len=...`) so the sensor-change
+  record burst documents itself. Session start HW-confirmed 2026-09-07 08:05:10 (0x2AAA),
+  run time 170 h — pump shows the same remaining time (11:45 at 22:20), so remaining =
+  `170 h − elapsed`; SOCP max life 168 h is wear-only (170 = 168 + 2 h warmup).
 - 2026-09-13, **HW-TESTED**;
   `build/minimed-asterix-v4.36.2-134-gbaec41260-status-timers.pbz`: **move status timers to the
   watchface** (Fix #19). The firmware now sends plain status labels plus an optional, mutually
