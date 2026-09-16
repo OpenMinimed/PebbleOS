@@ -280,25 +280,30 @@ static int32_t prv_decode_medfloat16(uint16_t raw) {
   return prv_decode_medfloat16_scaled(raw, 1);
 }
 
-// Bucket a CGM trend rate (tenths of mg/dL/min) into one of the protocol's TREND_* arrows.
-// Thresholds follow the usual CGM rate-to-arrow convention (Dexcom/Nightscout): flat under
-// 1 mg/dL/min, then one bucket per mg/dL/min up to the protocol's TRIPLE_* ceiling.
+// Bucket a CGM trend rate (tenths of mg/dL/min) into one of the protocol's TREND_* arrows. Per the
+// golden reference (medtronic_new/PythonPumpConnector cgm/measurement.py, quoting the 780G
+// manual): 1 arrow for 1-2 mg/dL/min, 2 arrows for 2-3, 3 arrows for more than 3 -- the pump's own
+// display never distinguishes further, so the top bucket maps to DOUBLE_*, not TRIPLE_* (the
+// protocol defines TRIPLE_* for other data sources with finer resolution; the pump just doesn't
+// have a 4th tier).
 static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
-  static const uint8_t up[] = {TREND_FLAT, TREND_SLANT_UP, TREND_UP, TREND_DOUBLE_UP,
-                               TREND_TRIPLE_UP};
-  static const uint8_t down[] = {TREND_FLAT, TREND_SLANT_DOWN, TREND_DOWN, TREND_DOUBLE_DOWN,
-                                 TREND_TRIPLE_DOWN};
+  static const uint8_t up[] = {TREND_FLAT, TREND_SLANT_UP, TREND_UP, TREND_DOUBLE_UP};
+  static const uint8_t down[] = {TREND_FLAT, TREND_SLANT_DOWN, TREND_DOWN, TREND_DOUBLE_DOWN};
   int32_t mag = (rate_tenths < 0) ? -rate_tenths : rate_tenths;
   int32_t level = mag / 10;  // whole mg/dL/min
-  if (level > 4) {
-    level = 4;  // cap at the table size (TRIPLE_*)
+  if (level > 3) {
+    level = 3;  // cap at the table size (DOUBLE_*, the pump's own worst-case bucket)
   }
   return (rate_tenths < 0) ? down[level] : up[level];
 }
 
-// CGM Measurement flags bit 0 ("CGM Trend Information present"), per the Bluetooth CGMS spec:
-// when set, a second SFLOAT (the rate of change, mg/dL/min) follows the mandatory prefix at
-// bytes 6-7.
+// CGM Measurement flags bit 0 ("CGM Trend Information present"), per the Bluetooth CGMS spec and
+// the golden reference's parse(): bits 0x80/0x40/0x20 gate optional Status/Cal-Temp/Warning
+// octets that, when present, each push the trend field's offset one byte further out -- it is
+// NOT always right after the mandatory 6-byte prefix.
+#define CGM_FLAG_STATUS_PRESENT 0x80
+#define CGM_FLAG_CAL_TEMP_PRESENT 0x40
+#define CGM_FLAG_WARNING_PRESENT 0x20
 #define CGM_FLAG_TREND_INFO_PRESENT 0x01
 
 // Forward this reading's trend (or its absence) to the watchface. Called once per NEW reading,
@@ -306,8 +311,12 @@ static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
 // re-announce a trend, and a reading that genuinely carries no trend field must clear any
 // previously shown arrow rather than let it go stale.
 static void prv_forward_trend(uint8_t flags) {
-  if ((flags & CGM_FLAG_TREND_INFO_PRESENT) && s_rec_len >= 8) {
-    uint16_t traw = (uint16_t)(s_rec[6] | (s_rec[7] << 8));
+  size_t off = 6;  // end of the mandatory prefix: size(1) flags(1) glucose(2) offset(2)
+  if (flags & CGM_FLAG_STATUS_PRESENT) off += 1;
+  if (flags & CGM_FLAG_CAL_TEMP_PRESENT) off += 1;
+  if (flags & CGM_FLAG_WARNING_PRESENT) off += 1;
+  if ((flags & CGM_FLAG_TREND_INFO_PRESENT) && s_rec_len >= off + 2) {
+    uint16_t traw = (uint16_t)(s_rec[off] | (s_rec[off + 1] << 8));
     int32_t rate_tenths = prv_decode_medfloat16_scaled(traw, 10);
     if (rate_tenths != INT32_MIN) {
       minimed_sake_sender_send_trend_arrow(true, prv_trend_arrow_from_rate_tenths(rate_tenths));
