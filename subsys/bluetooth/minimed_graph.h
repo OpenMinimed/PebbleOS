@@ -8,9 +8,8 @@
 //! The BG history the watchface plots, and its wire encoding. Pure (no NimBLE, no firmware
 //! dependencies) so the host harness in tools/minimed_sake_hosttest can test it directly.
 //!
-//! There is no pump-side backfill: the watch simply remembers the readings it has seen since it
-//! last connected. A cold start therefore shows an empty graph that fills in over the following
-//! hours.
+//! Readings arrive live as the pump reports them; on connect the recent past is filled in from the
+//! pump's event log (minimed_graph_insert_past).
 
 
 //! The protocol permits requests for up to 24 hours. At five-minute intervals, the derived point
@@ -38,6 +37,14 @@ typedef struct {
 //! are now in the future are discarded: the offset-from-oldest encoding cannot represent an
 //! out-of-order point.
 void minimed_graph_add(MinimedGraph *graph, uint32_t timestamp, int32_t mgdl);
+
+//! Insert a reading older than the newest point, keeping the array ascending. Dropped if a point
+//! already lies within MINIMED_GRAPH_DEDUPE_SECS of `timestamp` (the live reading it duplicates
+//! was stamped on arrival, so its time is only approximately the sample's), if it has aged out of
+//! the window, or if `mgdl` is negative. When full, the oldest point makes room unless the new
+//! one is older still.
+#define MINIMED_GRAPH_DEDUPE_SECS 120
+void minimed_graph_insert_past(MinimedGraph *graph, uint32_t timestamp, int32_t mgdl);
 
 //! Serialize the requested history plus MINIMED_GRAPH_MARGIN_SECS to `out` (at least
 //! MINIMED_GRAPH_BLOB_MAX bytes). A zero window returns 0. Returns the byte count, or 0 when

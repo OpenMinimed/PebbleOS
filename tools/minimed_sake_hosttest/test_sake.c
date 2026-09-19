@@ -14,6 +14,7 @@
 #include "minimed_glucose_announce.h"
 #include "pebble_glucose_protocol.h"
 #include "minimed_graph.h"
+#include "minimed_history.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "minimed_status.h"
@@ -285,8 +286,7 @@ static void section_iob(void) {
 }
 
 // --- Section 5: graph history buffer + wire encoding ----------------------
-// The watch has no pump-side backfill, so the graph is whatever readings it has accumulated. The
-// awkward cases are all about keeping the array strictly ascending (the offset-from-oldest wire
+// Live readings append; the pump's event log fills in the past on connect. The awkward cases are all about keeping the array strictly ascending (the offset-from-oldest wire
 // format cannot express anything else) and aging points out of the window.
 
 #define T0 1800000000u  // arbitrary epoch base for readable arithmetic
@@ -396,6 +396,148 @@ static void section_graph(void) {
 // continuation bits (the bridge echoes them back to Reset Status verbatim); encode recomputes
 // them from the width, because pending resets accumulate as a union whose observations may have
 // had different widths.
+
+// --- Section 5b: backfill of past readings from the pump's event log -------
+static void section_backfill(void) {
+  MinimedGraph g = {0};
+  minimed_graph_add(&g, T0 + MIN(60), 100);  // live reading
+  minimed_graph_insert_past(&g, T0 + MIN(50), 90);
+  minimed_graph_insert_past(&g, T0 + MIN(30), 80);
+  minimed_graph_insert_past(&g, T0 + MIN(40), 84);
+  check("past points land in order",
+        g.count == 4 && g.ts[0] == T0 + MIN(30) && g.ts[1] == T0 + MIN(40) &&
+            g.ts[2] == T0 + MIN(50) && g.ts[3] == T0 + MIN(60));
+  check("past point values follow their timestamps",
+        g.bg[0] == 40 && g.bg[1] == 42 && g.bg[2] == 45 && g.bg[3] == 50);
+
+  // The live reading was stamped on arrival, so its backfilled twin is a minute or so off.
+  minimed_graph_insert_past(&g, T0 + MIN(60) - 70, 100);
+  minimed_graph_insert_past(&g, T0 + MIN(50) + 60, 91);
+  check("near-duplicates are dropped", g.count == 4);
+  minimed_graph_insert_past(&g, T0 + MIN(20), -1);
+  check("negative mg/dL is ignored", g.count == 4);
+
+  MinimedGraph e = {0};
+  minimed_graph_insert_past(&e, T0, 100);
+  check("insert into an empty graph works", e.count == 1 && e.ts[0] == T0);
+
+  MinimedGraph w = {0};
+  minimed_graph_add(&w, T0 + MINIMED_GRAPH_RETENTION_SECS + MIN(10), 100);
+  minimed_graph_insert_past(&w, T0, 100);
+  check("a point older than the window is dropped", w.count == 1);
+
+  // Full buffer: room is made from the oldest end, but never for a point older than everything.
+  MinimedGraph f = {0};
+  for (int i = 0; i < MINIMED_GRAPH_MAX_POINTS; i++) {
+    minimed_graph_add(&f, T0 + 299u * i, 100);
+  }
+  const uint32_t oldest = f.ts[0];
+  minimed_graph_insert_past(&f, oldest - MIN(3), 100);
+  check("full graph ignores a point older than all", f.count == MINIMED_GRAPH_MAX_POINTS &&
+                                                       f.ts[0] == oldest);
+  minimed_graph_insert_past(&f, f.ts[5] + 150, 100);
+  bool ascending = true;
+  for (int i = 1; i < f.count; i++) ascending &= f.ts[i] > f.ts[i - 1];
+  check("full graph inserts in the middle and stays ascending",
+        f.count == MINIMED_GRAPH_MAX_POINTS && ascending && f.ts[0] > oldest);
+
+  // Real records from a pump's event log (database/history.db): the 03:38 reference time, the
+  // two samples logged together at 03:47:46 (offsets 4 and 9, so 5 min apart), and the next one.
+  static const uint8_t ref0338[] = {0x0e, 0xf0, 0x32, 0x4d, 0x0b, 0x00, 0x10, 0x0e,
+                                    0x3c, 0xea, 0x07, 0x06, 0x1a, 0x03, 0x26, 0x00};
+  static const uint8_t sg_a[] = {0x0c, 0xf0, 0x3b, 0x4d, 0x0b, 0x00, 0x4a, 0x02,
+                                 0x04, 0x00, 0x36, 0x00, 0xf1, 0x04, 0xc7, 0xff};
+  static const uint8_t sg_b[] = {0x0c, 0xf0, 0x3d, 0x4d, 0x0b, 0x00, 0x4a, 0x02,
+                                 0x09, 0x00, 0x47, 0x00, 0xe6, 0x05, 0xc7, 0xff};
+  static const uint8_t sg_c[] = {0x0c, 0xf0, 0x3f, 0x4d, 0x0b, 0x00, 0x6f, 0x03,
+                                 0x0e, 0x00, 0x4c, 0x00, 0x89, 0x06, 0xc8, 0xff};
+  static const uint8_t sg_below[] = {0x0c, 0xf0, 0x5b, 0x4d, 0x0b, 0x00, 0x16, 0x01,
+                                     0x04, 0x00, 0x0d, 0x03, 0x72, 0x04, 0xcc, 0xff};
+  MinimedHistRef ref;
+  MinimedHistSg a, b, c2, bl;
+  check("real reference time parses",
+        minimed_history_parse_ref_time(ref0338, sizeof(ref0338), &ref) && ref.seq == 740658);
+  check("real SG records parse", minimed_history_parse_sg(sg_a, sizeof(sg_a), &a) &&
+                                     minimed_history_parse_sg(sg_b, sizeof(sg_b), &b) &&
+                                     minimed_history_parse_sg(sg_c, sizeof(sg_c), &c2) &&
+                                     minimed_history_parse_sg(sg_below, sizeof(sg_below), &bl));
+  check("real SG values", a.sg == 54 && b.sg == 71 && c2.sg == 76 && a.offset_min == 4 &&
+                              b.offset_min == 9 && c2.offset_min == 14);
+  check("samples logged together are 5 min apart by their offsets",
+        minimed_history_sg_secs(&ref, &b) - minimed_history_sg_secs(&ref, &a) == 300 &&
+            minimed_history_sg_secs(&ref, &c2) - minimed_history_sg_secs(&ref, &b) == 300);
+  // 03:38:00 + 4 min = 03:42:00, against the same day's midnight.
+  MinimedHistRef midnight = ref;
+  static const uint8_t ref0000[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x3c, 0xea, 0x07, 0x06, 0x1a, 0x00, 0x00, 0x00};
+  check("reference time decodes the date",
+        minimed_history_parse_ref_time(ref0000, sizeof(ref0000), &midnight) &&
+            ref.secs - midnight.secs == 3 * 3600 + 38 * 60);
+  static const uint8_t ref_prev_day[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                         0x3c, 0xea, 0x07, 0x06, 0x19, 0x17, 0x26, 0x00};
+  MinimedHistRef prev;
+  check("reference time spans midnight",
+        minimed_history_parse_ref_time(ref_prev_day, sizeof(ref_prev_day), &prev) &&
+            midnight.secs - prev.secs == 22 * 60);
+  static const uint8_t ref_bad[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x3c, 0xea, 0x07, 0x0d, 0x1a, 0x03, 0x26, 0x00};
+  check("reference time with month 13 is rejected",
+        !minimed_history_parse_ref_time(ref_bad, sizeof(ref_bad), &prev));
+  check("an SG record is not a reference time",
+        !minimed_history_parse_ref_time(sg_a, sizeof(sg_a), &prev));
+  check("real below-range sample maps to the floor",
+        minimed_history_sg_to_mgdl(bl.sg, 50, 400) == 50);
+
+  // History SG records.
+  const uint8_t rec[] = {0x0c, 0xf0, 0x39, 0x05, 0x00, 0x00, 0x2a, 0x00,  // type, seq=1337, rel
+                         0x31, 0x24, 0x8d, 0x00, 0x11, 0x02, 0x05, 0x00};   // off=9265 sg=141
+  MinimedHistSg sg;
+  check("SG record parses", minimed_history_parse_sg(rec, sizeof(rec), &sg) && sg.seq == 1337 &&
+                                sg.offset_min == 9265 && sg.sg == 141);
+  check("SG truncated after the value still parses",
+        minimed_history_parse_sg(rec, 12, &sg) && sg.sg == 141);
+  check("SG too short is rejected", !minimed_history_parse_sg(rec, 11, &sg));
+  uint8_t other[sizeof(rec)];
+  for (unsigned i = 0; i < sizeof(rec); i++) other[i] = rec[i];
+  other[1] = 0xf1;
+  check("another event type is not an SG record", !minimed_history_parse_sg(other, sizeof(other), &sg));
+  check("normal SG maps to itself", minimed_history_sg_to_mgdl(141, 50, 400) == 141);
+  check("below-range code maps to the floor",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_BELOW, 50, 400) == 50);
+  check("above-range code maps to the ceiling",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_ABOVE, 50, 400) == 400);
+  check("starting/updating/zero yield no sample",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_STARTING, 50, 400) == -1 &&
+            minimed_history_sg_to_mgdl(MINIMED_HIST_SG_UPDATING, 50, 400) == -1 &&
+            minimed_history_sg_to_mgdl(0, 50, 400) == -1);
+
+  // Meal records (0xf005): food amount as a MedFloat16.
+  const uint8_t meal[] = {0x05, 0xf0, 0x10, 0x00, 0x00, 0x00, 0x05, 0x00, 0x2d, 0x00};  // 45 g
+  MinimedHistMeal m;
+  check("meal record parses", minimed_history_parse_meal(meal, sizeof(meal), &m) && m.seq == 16 &&
+                                  m.grams == 45);
+  const uint8_t meal_dec[] = {0x05, 0xf0, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7d, 0xf0};  // 12.5
+  check("fractional grams round half up",
+        minimed_history_parse_meal(meal_dec, sizeof(meal_dec), &m) && m.grams == 13);
+  const uint8_t meal_nan[] = {0x05, 0xf0, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x07};
+  check("NaN food amount is rejected", !minimed_history_parse_meal(meal_nan, sizeof(meal_nan), &m));
+  const uint8_t meal_neg[] = {0x05, 0xf0, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfb, 0x0f};
+  check("negative food amount is rejected", !minimed_history_parse_meal(meal_neg, sizeof(meal_neg), &m));
+  check("meal record too short is rejected", !minimed_history_parse_meal(meal, 9, &m));
+  check("an SG record is not a meal", !minimed_history_parse_meal(rec, sizeof(rec), &m));
+  const uint8_t meal_zero[] = {0x05, 0xf0, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  check("zero grams parses as zero", minimed_history_parse_meal(meal_zero, sizeof(meal_zero), &m) &&
+                                        m.grams == 0);
+  // Real Meal records from a pump's event log: 59 g, 65 g, and a zero-carb one.
+  static const uint8_t real59[] = {0x05, 0xf0, 0xb1, 0x4d, 0x0b, 0x00, 0x30, 0x0a, 0x3b, 0x00};
+  static const uint8_t real65[] = {0x05, 0xf0, 0xc8, 0x4a, 0x0b, 0x00, 0x36, 0x0d, 0x41, 0x00};
+  static const uint8_t real0[] = {0x05, 0xf0, 0xbc, 0x4c, 0x0b, 0x00, 0xf4, 0x05, 0x00, 0x00};
+  check("real meal records parse",
+        minimed_history_parse_meal(real59, sizeof(real59), &m) && m.grams == 59 &&
+            minimed_history_parse_meal(real65, sizeof(real65), &m) && m.grams == 65 &&
+            minimed_history_parse_meal(real0, sizeof(real0), &m) && m.grams == 0);
+  check("history-event flag is bit 7", MINIMED_IDD_FLAG_HISTORY_EVENT == 0x80);
+}
 
 static void section_idd_flags(void) {
   printf("--- IDD Status Changed flags ---\n");
@@ -801,7 +943,7 @@ static void section_announce(void) {
 
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
-  dict_put_uint(KEY_CAPABILITIES, 0x80, 4);  // bit 7 is not a defined capability
+  dict_put_uint(KEY_CAPABILITIES, 0x100, 4);  // bit 8 is not a defined capability
   check("undefined capability bit rejected",
         !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
 
@@ -834,6 +976,7 @@ int main(void) {
   section_seqcrypt();
   section_iob();
   section_graph();
+  section_backfill();
   section_idd_flags();
   section_status();
   section_annunciation();

@@ -59,7 +59,7 @@ static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 // strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
 // blob). Sized with room to spare -- an undersized buffer is a silent "wf dict fail", not a
 // crash, but it would also mean no data reaches the watchface at all.
-#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 128)
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 192)
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
@@ -76,6 +76,9 @@ static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the b
 static uint32_t s_status_start;
 static uint32_t s_status_end;
 static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
+static bool s_meal_valid;
+static uint16_t s_meal_grams;
+static uint32_t s_meal_timestamp;
 static bool s_trend_valid;     // false = no trend field in the last reading; omit the key
 static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
 
@@ -269,11 +272,13 @@ static void prv_push_bg_cb(void *unused) {
   // watchface's app-inbox when the watchface is busy or not foreground.
   const uint32_t now = (uint32_t)rtc_get_ticks();
   if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
+    PBL_LOG_INFO("wf push: dropped, within coalesce window");
     return;
   }
   s_last_push_ticks = now;
 
   if (!s_session) {
+    PBL_LOG_INFO("wf push: dropped, no session");
     return;
   }
 
@@ -301,11 +306,12 @@ static void prv_push_bg_cb(void *unused) {
   } else {
     const Uuid *fg = prv_claimed_uuid();
     if (uuid_equal(fg, &s_no_claim_uuid)) {
+      PBL_LOG_INFO("wf push: dropped, foreground is not a glucose watchface");
       return;  // not a watchface, or one we already know isn't ours
     }
     target = *fg;
     // Everything we can currently supply.
-    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW;
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -371,6 +377,11 @@ static void prv_push_bg_cb(void *unused) {
     res |= dict_write_uint8(&iter, KEY_TREND_ARROW, s_trend_arrow);
     n++;
   }
+  if (s_meal_valid && (caps & CAP_MEAL)) {
+    res |= dict_write_uint16(&iter, KEY_MEAL_CARBS, s_meal_grams);
+    res |= dict_write_uint32(&iter, KEY_MEAL_TIMESTAMP, s_meal_timestamp);
+    n += 2;
+  }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
   if (graph_present && graph_len > 0) {
@@ -378,12 +389,18 @@ static void prv_push_bg_cb(void *unused) {
     n++;
   }
   if (n == 0) {
+    PBL_LOG_INFO("wf push: dropped, nothing to send");
     return;  // a watchface that announced nothing we can currently supply
   }
   if (res != DICT_OK) {
     minimed_sake_log_evt("wf dict fail");
     return;
   }
+  // Injection cannot report a drop (no inbox, wrong foreground app), so log whether the
+  // target is in the foreground to tell a delivered push from a discarded one.
+  const PebbleProcessMd *fg = app_manager_get_current_app_md();
+  PBL_LOG_INFO("wf push: sent n=%u bg=%u fg_match=%d", (unsigned)n, (unsigned)have_bg,
+               (int)(fg && uuid_equal(&fg->uuid, &target)));
   prv_inject(offsetof(AppMessagePush, dictionary) + dict_write_end(&iter));
 }
 
@@ -483,6 +500,33 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
   s_graph_dirty = true;
 }
 
+// Staging for a backfill: filled on the BT host task, consumed on KernelMain so the sorted inserts
+// never run concurrently with a serialize. One backfill happens per connection, so a second call
+// racing the first is not a case worth a lock.
+static uint32_t s_backfill_ts[MINIMED_BACKFILL_MAX_POINTS];
+static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
+static uint8_t s_backfill_count;
+
+static void prv_backfill_cb(void *unused) {
+  for (uint8_t i = 0; i < s_backfill_count; i++) {
+    minimed_graph_insert_past(&s_graph, s_backfill_ts[i], s_backfill_mgdl[i]);
+  }
+  s_backfill_count = 0;
+  s_graph_dirty = true;
+  prv_push_bg_cb(NULL);
+}
+
+void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
+                                        uint8_t count) {
+  if (count > MINIMED_BACKFILL_MAX_POINTS) {
+    count = MINIMED_BACKFILL_MAX_POINTS;
+  }
+  memcpy(s_backfill_ts, timestamps, count * sizeof(timestamps[0]));
+  memcpy(s_backfill_mgdl, mgdl, count * sizeof(mgdl[0]));
+  s_backfill_count = count;
+  launcher_task_add_callback(prv_backfill_cb, NULL);
+}
+
 void minimed_sake_sender_send_iob(const char *iob_str) {
   // Same lock-free discipline as send_bg. Deliberately does NOT touch s_bg_timestamp: an IOB
   // update must not make a stale BG look fresh (the watchface keys staleness off the BG timestamp).
@@ -508,6 +552,14 @@ void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
+  // Same lock-free discipline as the other setters.
+  s_meal_grams = grams;
+  s_meal_timestamp = timestamp;
+  s_meal_valid = true;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 

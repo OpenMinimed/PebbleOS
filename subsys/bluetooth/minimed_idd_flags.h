@@ -15,6 +15,7 @@
 #define MINIMED_IDD_FLAG_THERAPY_CONTROL (1ULL << 0)   // suspend/resume -> status re-read
 #define MINIMED_IDD_FLAG_OPERATIONAL (1ULL << 1)       // reservoir-change walk -> status re-read
 #define MINIMED_IDD_FLAG_ANNUNCIATION (1ULL << 3)      // alarm raised/cleared -> history read
+#define MINIMED_IDD_FLAG_HISTORY_EVENT (1ULL << 7)     // an event was logged -> history read
 #define MINIMED_IDD_FLAG_THERAPY_ALGORITHM (1ULL << 16) // SmartGuard/temp-target -> status re-read
 #define MINIMED_IDD_FLAG_IOB (1ULL << 17)
 #define MINIMED_IDD_FLAG_NEW_CGM (1ULL << 18)
