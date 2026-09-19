@@ -269,11 +269,13 @@ static void prv_push_bg_cb(void *unused) {
   // watchface's app-inbox when the watchface is busy or not foreground.
   const uint32_t now = (uint32_t)rtc_get_ticks();
   if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
+    PBL_LOG_INFO("wf push: dropped, within coalesce window");
     return;
   }
   s_last_push_ticks = now;
 
   if (!s_session) {
+    PBL_LOG_INFO("wf push: dropped, no session");
     return;
   }
 
@@ -301,6 +303,7 @@ static void prv_push_bg_cb(void *unused) {
   } else {
     const Uuid *fg = prv_claimed_uuid();
     if (uuid_equal(fg, &s_no_claim_uuid)) {
+      PBL_LOG_INFO("wf push: dropped, foreground is not a glucose watchface");
       return;  // not a watchface, or one we already know isn't ours
     }
     target = *fg;
@@ -378,12 +381,18 @@ static void prv_push_bg_cb(void *unused) {
     n++;
   }
   if (n == 0) {
+    PBL_LOG_INFO("wf push: dropped, nothing to send");
     return;  // a watchface that announced nothing we can currently supply
   }
   if (res != DICT_OK) {
     minimed_sake_log_evt("wf dict fail");
     return;
   }
+  // Injection cannot report a drop (no inbox, wrong foreground app), so log whether the
+  // target is in the foreground to tell a delivered push from a discarded one.
+  const PebbleProcessMd *fg = app_manager_get_current_app_md();
+  PBL_LOG_INFO("wf push: sent n=%u bg=%u fg_match=%d", (unsigned)n, (unsigned)have_bg,
+               (int)(fg && uuid_equal(&fg->uuid, &target)));
   prv_inject(offsetof(AppMessagePush, dictionary) + dict_write_end(&iter));
 }
 
