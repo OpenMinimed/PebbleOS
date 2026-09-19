@@ -14,6 +14,7 @@
 #include "minimed_glucose_announce.h"
 #include "pebble_glucose_protocol.h"
 #include "minimed_graph.h"
+#include "minimed_history.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "minimed_status.h"
@@ -285,8 +286,7 @@ static void section_iob(void) {
 }
 
 // --- Section 5: graph history buffer + wire encoding ----------------------
-// The watch has no pump-side backfill, so the graph is whatever readings it has accumulated. The
-// awkward cases are all about keeping the array strictly ascending (the offset-from-oldest wire
+// Live readings append; the pump's event log fills in the past on connect. The awkward cases are all about keeping the array strictly ascending (the offset-from-oldest wire
 // format cannot express anything else) and aging points out of the window.
 
 #define T0 1800000000u  // arbitrary epoch base for readable arithmetic
@@ -396,6 +396,74 @@ static void section_graph(void) {
 // continuation bits (the bridge echoes them back to Reset Status verbatim); encode recomputes
 // them from the width, because pending resets accumulate as a union whose observations may have
 // had different widths.
+
+// --- Section 5b: backfill of past readings from the pump's event log -------
+static void section_backfill(void) {
+  MinimedGraph g = {0};
+  minimed_graph_add(&g, T0 + MIN(60), 100);  // live reading
+  minimed_graph_insert_past(&g, T0 + MIN(50), 90);
+  minimed_graph_insert_past(&g, T0 + MIN(30), 80);
+  minimed_graph_insert_past(&g, T0 + MIN(40), 84);
+  check("past points land in order",
+        g.count == 4 && g.ts[0] == T0 + MIN(30) && g.ts[1] == T0 + MIN(40) &&
+            g.ts[2] == T0 + MIN(50) && g.ts[3] == T0 + MIN(60));
+  check("past point values follow their timestamps",
+        g.bg[0] == 40 && g.bg[1] == 42 && g.bg[2] == 45 && g.bg[3] == 50);
+
+  // The live reading was stamped on arrival, so its backfilled twin is a minute or so off.
+  minimed_graph_insert_past(&g, T0 + MIN(60) - 70, 100);
+  minimed_graph_insert_past(&g, T0 + MIN(50) + 60, 91);
+  check("near-duplicates are dropped", g.count == 4);
+  minimed_graph_insert_past(&g, T0 + MIN(20), -1);
+  check("negative mg/dL is ignored", g.count == 4);
+
+  MinimedGraph e = {0};
+  minimed_graph_insert_past(&e, T0, 100);
+  check("insert into an empty graph works", e.count == 1 && e.ts[0] == T0);
+
+  MinimedGraph w = {0};
+  minimed_graph_add(&w, T0 + MINIMED_GRAPH_RETENTION_SECS + MIN(10), 100);
+  minimed_graph_insert_past(&w, T0, 100);
+  check("a point older than the window is dropped", w.count == 1);
+
+  // Full buffer: room is made from the oldest end, but never for a point older than everything.
+  MinimedGraph f = {0};
+  for (int i = 0; i < MINIMED_GRAPH_MAX_POINTS; i++) {
+    minimed_graph_add(&f, T0 + 299u * i, 100);
+  }
+  const uint32_t oldest = f.ts[0];
+  minimed_graph_insert_past(&f, oldest - MIN(3), 100);
+  check("full graph ignores a point older than all", f.count == MINIMED_GRAPH_MAX_POINTS &&
+                                                       f.ts[0] == oldest);
+  minimed_graph_insert_past(&f, f.ts[5] + 150, 100);
+  bool ascending = true;
+  for (int i = 1; i < f.count; i++) ascending &= f.ts[i] > f.ts[i - 1];
+  check("full graph inserts in the middle and stays ascending",
+        f.count == MINIMED_GRAPH_MAX_POINTS && ascending && f.ts[0] > oldest);
+
+  // History SG records.
+  const uint8_t rec[] = {0x0c, 0xf0, 0x39, 0x05, 0x00, 0x00, 0x2a, 0x00,  // type, seq=1337, rel
+                         0x31, 0x24, 0x8d, 0x00, 0x11, 0x02, 0x05, 0x00};   // off=9265 sg=141
+  MinimedHistSg sg;
+  check("SG record parses", minimed_history_parse_sg(rec, sizeof(rec), &sg) && sg.seq == 1337 &&
+                                sg.offset_min == 9265 && sg.sg == 141);
+  check("SG truncated after the value still parses",
+        minimed_history_parse_sg(rec, 12, &sg) && sg.sg == 141);
+  check("SG too short is rejected", !minimed_history_parse_sg(rec, 11, &sg));
+  uint8_t other[sizeof(rec)];
+  for (unsigned i = 0; i < sizeof(rec); i++) other[i] = rec[i];
+  other[1] = 0xf1;
+  check("another event type is not an SG record", !minimed_history_parse_sg(other, sizeof(other), &sg));
+  check("normal SG maps to itself", minimed_history_sg_to_mgdl(141, 50, 400) == 141);
+  check("below-range code maps to the floor",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_BELOW, 50, 400) == 50);
+  check("above-range code maps to the ceiling",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_ABOVE, 50, 400) == 400);
+  check("starting/updating/zero yield no sample",
+        minimed_history_sg_to_mgdl(MINIMED_HIST_SG_STARTING, 50, 400) == -1 &&
+            minimed_history_sg_to_mgdl(MINIMED_HIST_SG_UPDATING, 50, 400) == -1 &&
+            minimed_history_sg_to_mgdl(0, 50, 400) == -1);
+}
 
 static void section_idd_flags(void) {
   printf("--- IDD Status Changed flags ---\n");
@@ -834,6 +902,7 @@ int main(void) {
   section_seqcrypt();
   section_iob();
   section_graph();
+  section_backfill();
   section_idd_flags();
   section_status();
   section_annunciation();

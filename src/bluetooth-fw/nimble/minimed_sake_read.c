@@ -15,6 +15,7 @@
 #include "drivers/rtc.h"
 #include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
+#include "minimed_history.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "popups/minimed_alert_popup.h"
@@ -176,6 +177,7 @@ static struct ble_npl_callout s_heap_co;  // fixed-interval kernel heap watch
 
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
+static void prv_backfill_maybe_request(void);
 static void prv_status_publish_if_done(uint8_t completed_op);
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
@@ -233,6 +235,21 @@ static uint32_t s_annunc_seq;
 static bool s_annunc_have;      // baseline done; catch-up reads may notify
 static bool s_annunc_baseline;  // the in-flight PEND_ANNUNC exchange is the baseline read
 static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
+
+// Graph backfill: once per connection, after the annunciation baseline and the first CGM read (the
+// anchor), read the SG Measurement records covering the visible graph window from the event log
+// and hand them to the graph. The log has no time filter, so it is read by sequence number: a
+// fixed span behind the newest record, which comfortably covers the window (SG samples share the
+// log with basal, bolus and reference-time records). Runs through the PEND_ANNUNC exchange, with
+// notifications suppressed as in the baseline read.
+#define BACKFILL_WINDOW_MIN 120
+#define BACKFILL_SEQ_SPAN 300
+static bool s_backfill_done;    // this connection's backfill has been issued
+static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
+static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
+static uint8_t s_backfill_n;
+static uint32_t s_backfill_ts[MINIMED_BACKFILL_MAX_POINTS];
+static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
 
 // Latest BG as shown on the watchface ("4.2" mmol/L, "LO"/"HI"; "" while the pump has no valid
 // glucose). Alert notifications carry it as their body -- a low alert without the number is
@@ -384,6 +401,7 @@ static void prv_parse_and_show(void) {
       s_reading_ts = (uint32_t)rtc_get_time();
       minimed_sake_sender_add_graph_point(s_reading_ts, below ? SG_FLOOR_MGDL : SG_CEILING_MGDL);
       prv_forward_trend(flags);
+      prv_backfill_maybe_request();
     }
     minimed_sake_log(below ? "*** BG LO ***" : "*** BG HI ***");
     strcpy(s_last_bg_str, below ? "LO" : "HI");
@@ -403,6 +421,7 @@ static void prv_parse_and_show(void) {
     s_reading_ts = (uint32_t)rtc_get_time();
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
     prv_forward_trend(flags);
+    prv_backfill_maybe_request();
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
              (long)(tenths % 10));
     // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor
@@ -471,6 +490,43 @@ static bool prv_annunc_already_notified(uint16_t id) {
 }
 #endif
 
+// A history record read during the backfill: keep it if it is an SG sample inside the window. The
+// record's Time Offset is on the CGM Measurement's clock, so its age is the gap to the newest CGM
+// reading, which is the one thing whose wall-clock time we know.
+static void prv_backfill_record(uint8_t rec_len) {
+  MinimedHistSg sg;
+  if (!minimed_history_parse_sg(s_hist, rec_len, &sg)) return;
+  const int32_t mgdl = minimed_history_sg_to_mgdl(sg.sg, SG_FLOOR_MGDL, SG_CEILING_MGDL);
+  const int32_t age_min = (int32_t)s_last_offset - (int32_t)sg.offset_min;
+  if (mgdl < 0 || age_min < 0 || age_min > BACKFILL_WINDOW_MIN) return;
+  if (s_backfill_n >= MINIMED_BACKFILL_MAX_POINTS) return;
+  s_backfill_ts[s_backfill_n] = s_reading_ts - (uint32_t)age_min * 60;
+  s_backfill_mgdl[s_backfill_n] = mgdl;
+  s_backfill_n++;
+}
+
+// The backfill exchange ended: hand what it collected to the graph.
+static void prv_backfill_finish(void) {
+  s_backfill_run = false;
+  PBL_LOG_INFO("SAKE: backfill %u samples, newest seq=%lu", (unsigned)s_backfill_n,
+               (unsigned long)s_annunc_seq);
+  if (s_backfill_n > 0) {
+    minimed_sake_sender_backfill_graph(s_backfill_ts, s_backfill_mgdl, s_backfill_n);
+  }
+  s_backfill_n = 0;
+}
+
+// Queue the backfill read once both of its inputs exist: the log cursor (baseline) and a CGM
+// reading to anchor sample times on.
+static void prv_backfill_maybe_request(void) {
+  if (s_backfill_done || !s_annunc_have || !s_have_offset || s_h_idd_racp == 0 || s_h_hist == 0) {
+    return;
+  }
+  s_backfill_done = true;
+  s_backfill_wanted = true;
+  prv_request(PEND_ANNUNC);
+}
+
 // One reassembled history record is complete: advance the cursor, and post a notification for a
 // new, un-silenced annunciation raise (never during the baseline read).
 static void prv_annunc_record_done(void) {
@@ -485,7 +541,10 @@ static void prv_annunc_record_done(void) {
   }
   s_annunc_seen = true;
   if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
-  if (r != MinimedAnnuncRecordYes) return;
+  if (r != MinimedAnnuncRecordYes) {
+    if (s_backfill_run) prv_backfill_record(rec_len);
+    return;
+  }
 
   // Every annunciation to flash, notified or not: this is also the field log that grows the
   // code/status catalog (docs/PUMP-DATA.md table).
@@ -659,9 +718,14 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       minimed_sake_log(line);
     }
     if (s_op == PEND_ANNUNC) {
-      if (s_annunc_baseline && s_annunc_seen) {
+      if (s_backfill_run) {
+        prv_backfill_finish();
+        // The backfill exchange stood in for any annunciation catch-up queued behind it.
+        s_pending |= PEND_ANNUNC;
+      } else if (s_annunc_baseline && s_annunc_seen) {
         s_annunc_have = true;
         PBL_LOG_INFO("SAKE: annunc baseline seq=%lu", (unsigned long)s_annunc_seq);
+        prv_backfill_maybe_request();
       }
       prv_op_complete();
     }
@@ -904,7 +968,11 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
     s_pending &= ~PEND_ANNUNC;
     s_op = PEND_ANNUNC;
     s_hist_len = 0;
-    s_annunc_baseline = !s_annunc_have;
+    s_backfill_run = s_backfill_wanted;
+    s_backfill_wanted = false;
+    s_backfill_n = 0;
+    // Backfill reads history the pump already showed: suppress notifications like the baseline.
+    s_annunc_baseline = !s_annunc_have || s_backfill_run;
     s_annunc_seen = false;
     // IDD RACP is plaintext. Baseline: report last record (33 69 0f) to learn the newest
     // sequence number. Catch-up: report within range (33 5a 0f + min/max u32 LE) from the
@@ -912,14 +980,19 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
     // pump insists on a real upper bound.
     uint8_t req[11] = {0x33, 0x69, 0x0F};
     uint16_t req_len = 3;
-    if (!s_annunc_baseline) {
+    if (s_annunc_have) {
       req[1] = 0x5A;
-      const uint32_t lo = s_annunc_seq + 1;
-      req[3] = (uint8_t)lo;
-      req[4] = (uint8_t)(lo >> 8);
-      req[5] = (uint8_t)(lo >> 16);
-      req[6] = (uint8_t)(lo >> 24);
-      req[7] = req[8] = req[9] = req[10] = 0xFF;
+      // Backfill: the fixed span behind the newest known record. Catch-up: everything after it.
+      uint32_t lo = s_annunc_seq + 1;
+      uint32_t hi = 0xFFFFFFFF;
+      if (s_backfill_run) {
+        lo = (s_annunc_seq > BACKFILL_SEQ_SPAN) ? s_annunc_seq - BACKFILL_SEQ_SPAN : 1;
+        hi = s_annunc_seq;
+      }
+      for (int i = 0; i < 4; i++) {
+        req[3 + i] = (uint8_t)(lo >> (8 * i));
+        req[7 + i] = (uint8_t)(hi >> (8 * i));
+      }
       req_len = 11;
     }
     int rc = ble_gattc_write_flat(s_conn, s_h_idd_racp, req, req_len, prv_idd_racp_write_cb, NULL);
@@ -1013,6 +1086,9 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
   s_srcp_len = 0;
   s_hist_len = 0;
   s_op = 0;
+  if (op == PEND_ANNUNC && s_backfill_run) {
+    prv_backfill_finish();  // keep what arrived; the samples read so far are still good
+  }
   if (op == PEND_STATUS || op == PEND_TAS) {
     // The timed-out read stays invalid; publish whatever the pair's other half delivered.
     prv_status_publish_if_done(op);
@@ -1520,6 +1596,10 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_annunc_seq = 0;
   s_annunc_baseline = false;
   s_annunc_seen = false;
+  s_backfill_done = false;
+  s_backfill_wanted = false;
+  s_backfill_run = false;
+  s_backfill_n = 0;
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;

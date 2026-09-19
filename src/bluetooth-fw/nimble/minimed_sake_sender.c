@@ -492,6 +492,33 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
   s_graph_dirty = true;
 }
 
+// Staging for a backfill: filled on the BT host task, consumed on KernelMain so the sorted inserts
+// never run concurrently with a serialize. One backfill happens per connection, so a second call
+// racing the first is not a case worth a lock.
+static uint32_t s_backfill_ts[MINIMED_BACKFILL_MAX_POINTS];
+static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
+static uint8_t s_backfill_count;
+
+static void prv_backfill_cb(void *unused) {
+  for (uint8_t i = 0; i < s_backfill_count; i++) {
+    minimed_graph_insert_past(&s_graph, s_backfill_ts[i], s_backfill_mgdl[i]);
+  }
+  s_backfill_count = 0;
+  s_graph_dirty = true;
+  prv_push_bg_cb(NULL);
+}
+
+void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
+                                        uint8_t count) {
+  if (count > MINIMED_BACKFILL_MAX_POINTS) {
+    count = MINIMED_BACKFILL_MAX_POINTS;
+  }
+  memcpy(s_backfill_ts, timestamps, count * sizeof(timestamps[0]));
+  memcpy(s_backfill_mgdl, mgdl, count * sizeof(mgdl[0]));
+  s_backfill_count = count;
+  launcher_task_add_callback(prv_backfill_cb, NULL);
+}
+
 void minimed_sake_sender_send_iob(const char *iob_str) {
   // Same lock-free discipline as send_bg. Deliberately does NOT touch s_bg_timestamp: an IOB
   // update must not make a stale BG look fresh (the watchface keys staleness off the BG timestamp).

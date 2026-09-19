@@ -29,6 +29,15 @@ void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp);
 //! reboot -- the watchface persists its own copy across relaunch.
 void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
 
+//! Fill in readings from the past (e.g. the pump's event log after a connect). Unlike
+//! add_graph_point these may lie anywhere in the window, in any order; points that duplicate one
+//! already plotted are dropped. At most MINIMED_BACKFILL_MAX_POINTS are taken per call. Pushes the
+//! updated graph to the watchface. Safe to call from the BT host task; the insert runs on
+//! KernelMain.
+#define MINIMED_BACKFILL_MAX_POINTS 32
+void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
+                                        uint8_t count);
+
 //! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
 //! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
