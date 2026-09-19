@@ -72,3 +72,7 @@ artifacts/
 
 # Personal compile-time overrides (e.g. MINIMED_ALERT_POPUPS) -- see TESTING.md.
 src/bluetooth-fw/nimble/minimed_local_overrides.h
+tools/minimed_sake_hosttest/history.hex
+tools/minimed_sake_hosttest/testvec.bin
+tools/minimed_sake_hosttest/replay
+tools/minimed_sake_hosttest/test_sake

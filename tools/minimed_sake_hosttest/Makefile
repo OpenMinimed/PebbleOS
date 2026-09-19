@@ -9,14 +9,20 @@
 
 MOD := ../../src/bluetooth-fw/nimble
 CFLAGS := -std=c99 -Wall -Wextra -O2 -DSAKE_TEST_HOOKS -I$(MOD)
-SRC := $(MOD)/minimed_sake_aes.c $(MOD)/minimed_sake_crypto.c $(MOD)/minimed_annunciation.c $(MOD)/minimed_iob.c $(MOD)/minimed_graph.c $(MOD)/minimed_history.c $(MOD)/minimed_idd_flags.c $(MOD)/minimed_status.c $(MOD)/minimed_glucose_announce.c test_sake.c
+SRC := $(MOD)/minimed_sake_aes.c $(MOD)/minimed_sake_crypto.c $(MOD)/minimed_annunciation.c $(MOD)/minimed_iob.c $(MOD)/minimed_graph.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c $(MOD)/minimed_idd_flags.c $(MOD)/minimed_status.c $(MOD)/minimed_glucose_announce.c test_sake.c
 
 test_sake: $(SRC)
-	$(CC) $(CFLAGS) $(SRC) -o $@
+	$(CC) $(CFLAGS) $(SRC) -o $@ -lm
 
 .PHONY: run clean
 run: test_sake
 	./test_sake
 
 clean:
-	rm -f test_sake
+	rm -f test_sake replay
+
+# Replay a pump event log through the history decoding and the predictor:
+#   ./export_history_db.py <history.db> > history.hex && make replay
+replay: replay.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c
+	$(CC) $(CFLAGS) -I$(MOD) replay.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c -o replay -lm
+	./replay history.hex
