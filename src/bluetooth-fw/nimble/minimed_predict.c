@@ -48,9 +48,16 @@ static void prv_shift_past(const float *src, float *dst) {
   for (int i = 1; i < BGP_HIST; i++) dst[i] = src[i - 1];
 }
 
+// Working buffers are static, not on the stack: this runs on the NimBLE host task, whose stack is
+// small (a logging call there has overflowed it before), and about 1.5 KB of locals is not free.
+// Nothing here is reentrant; the one caller is that task.
+static float s_ins[BGP_HIST], s_carb[BGP_HIST];
+static float s_features[BGP_DIN], s_scaled[BGP_DIN];
+static MinimedPredictWindow s_window;
+
 static void prv_build_features(const ModelInput *in, float *f) {
   const float *bg = in->bg;
-  float ins[BGP_HIST], carb[BGP_HIST];
+  float *ins = s_ins, *carb = s_carb;
   const float now = bg[BGP_HIST - 1];
   // lag(k) in the training feature builder is bg[HIST - k]
   const float l2 = bg[BGP_HIST - 2], l3 = bg[BGP_HIST - 3], l4 = bg[BGP_HIST - 4];
@@ -118,7 +125,7 @@ static void prv_build_features(const ModelInput *in, float *f) {
 }
 
 static float prv_model_predict(const float *f_raw) {
-  float f[BGP_DIN];
+  float *f = s_scaled;
   float out = bgp_b2;
   for (int i = 0; i < BGP_DIN; i++) f[i] = (f_raw[i] - bgp_mu[i]) / bgp_sd[i];
   for (int j = 0; j < BGP_HID; j++) {
@@ -138,7 +145,7 @@ static float prv_model_low_probability(const float *f_raw) {
 }
 
 void minimed_predict_window(const MinimedPredictWindow *in, MinimedPrediction *out) {
-  float f[BGP_DIN];
+  float *f = s_features;
   prv_build_features(in, f);
   out->mgdl = in->bg[WINDOW - 1] + prv_model_predict(f);
   out->low_prob = prv_model_low_probability(f);
@@ -235,7 +242,7 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
     return false;
   }
 
-  ModelInput in;
+  ModelInput *inp = &s_window;
   const int32_t first = newest - (WINDOW - 1);
   // BG: forward-fill gaps (the pump keeps showing its last reading), and repeat the oldest known
   // reading into any leading cells that were never seen.
@@ -248,22 +255,22 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
       last = v;
       have_last = true;
     }
-    in.bg[k] = have_last ? last : 0.0f;
+    inp->bg[k] = have_last ? last : 0.0f;
   }
   int lead = 0;
-  while (lead < WINDOW && in.bg[lead] == 0.0f) lead++;
-  for (int k = 0; k < lead && lead < WINDOW; k++) in.bg[k] = in.bg[lead];
+  while (lead < WINDOW && inp->bg[lead] == 0.0f) lead++;
+  for (int k = 0; k < lead && lead < WINDOW; k++) inp->bg[k] = inp->bg[lead];
 
   for (int k = 0; k < WINDOW; k++) {
     const int32_t cell = first + k;
-    in.ins[k] = 0.0f;
-    in.carb[k] = 0.0f;
+    inp->ins[k] = 0.0f;
+    inp->carb[k] = 0.0f;
     if (cell <= st->head && cell > st->head - CELLS) {
-      in.ins[k] = st->ins[prv_slot(cell)];
-      in.carb[k] = st->carb[prv_slot(cell)];
+      inp->ins[k] = st->ins[prv_slot(cell)];
+      inp->carb[k] = st->carb[prv_slot(cell)];
     }
     if (st->basal_u_per_h > 0.0f && cell >= st->basal_from) {
-      in.ins[k] += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
+      inp->ins[k] += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
     }
   }
 
@@ -275,12 +282,12 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
   const int dow = (int)(((days % 7) + 7) % 7);
   const float minutes = (float)sec_of_day / 60.0f;
   const float two_pi = 6.28318530717958647692f;
-  in.tod_sin = sinf(two_pi * minutes / 1440.0f);
-  in.tod_cos = cosf(two_pi * minutes / 1440.0f);
-  in.dow_sin = sinf(two_pi * (float)dow / 7.0f);
-  in.dow_cos = cosf(two_pi * (float)dow / 7.0f);
-  in.hour = (int)(sec_of_day / 3600);
+  inp->tod_sin = sinf(two_pi * minutes / 1440.0f);
+  inp->tod_cos = cosf(two_pi * minutes / 1440.0f);
+  inp->dow_sin = sinf(two_pi * (float)dow / 7.0f);
+  inp->dow_cos = cosf(two_pi * (float)dow / 7.0f);
+  inp->hour = (int)(sec_of_day / 3600);
 
-  minimed_predict_window(&in, out);
+  minimed_predict_window(inp, out);
   return true;
 }
