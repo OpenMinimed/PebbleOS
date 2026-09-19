@@ -280,6 +280,7 @@ static uint8_t s_annunc_ids_next;
 static uint16_t s_last_offset;
 static bool s_have_offset;
 static uint32_t s_reading_ts;  // wall-clock time we first saw the current reading
+static int32_t s_reading_mgdl;  // its value, for checking the backfill anchor
 
 // Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer, scaled by `scale` before the exponent is
 // applied (e.g. scale=10 keeps one decimal digit instead of truncating it away). Returns INT32_MIN
@@ -407,7 +408,8 @@ static void prv_parse_and_show(void) {
       s_last_offset = offset;
       s_have_offset = true;
       s_reading_ts = (uint32_t)rtc_get_time();
-      minimed_sake_sender_add_graph_point(s_reading_ts, below ? SG_FLOOR_MGDL : SG_CEILING_MGDL);
+      s_reading_mgdl = below ? SG_FLOOR_MGDL : SG_CEILING_MGDL;
+      minimed_sake_sender_add_graph_point(s_reading_ts, s_reading_mgdl);
       prv_forward_trend(flags);
       prv_backfill_maybe_request();
     }
@@ -427,6 +429,7 @@ static void prv_parse_and_show(void) {
     s_last_offset = offset;
     s_have_offset = true;
     s_reading_ts = (uint32_t)rtc_get_time();
+    s_reading_mgdl = mgdl;
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
     prv_forward_trend(flags);
     prv_backfill_maybe_request();
@@ -551,10 +554,16 @@ static void prv_backfill_finish(void) {
     mgdl[kept] = s_backfill_mgdl[i];
     kept++;
   }
-  PBL_LOG_INFO("SAKE: backfill %u of %u samples, newest sg=%ld, newest seq=%lu", (unsigned)kept,
-               (unsigned)s_backfill_n,
-               (long)(s_backfill_n > 0 ? s_backfill_mgdl[s_backfill_n - 1] : -1),
-               (unsigned long)s_annunc_seq);
+  // The anchor check: the newest logged sample should be the reading the watch already shows. If
+  // the values differ, a newer sample landed mid-read (or the two are not the same sample) and
+  // the backfilled trace may sit one step off.
+  int32_t newest_mgdl = -1;
+  for (uint8_t i = 0; i < s_backfill_n; i++) {
+    if (s_backfill_secs[i] == newest) newest_mgdl = s_backfill_mgdl[i];
+  }
+  PBL_LOG_INFO("SAKE: backfill %u of %u samples, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
+               (unsigned)kept, (unsigned)s_backfill_n, (long)newest_mgdl, (long)s_reading_mgdl,
+               newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH", (unsigned long)s_annunc_seq);
   if (kept > 0) {
     minimed_sake_sender_backfill_graph(ts, mgdl, kept);
   }
