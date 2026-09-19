@@ -373,7 +373,7 @@ static void prv_parse_and_show(void) {
     minimed_sake_log("SG: no value (warmup?)");
     // Raw bytes to flash: which sentinel the pump uses (and that records flow at all) during
     // warm-up / transmitter charging is undocumented.
-    PBL_LOG_INFO("SAKE: CGM sentinel rec %02x %02x %02x %02x %02x %02x",
+    PBL_LOG_INFO("minimed: CGM sentinel rec %02x %02x %02x %02x %02x %02x",
                  s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5]);
     return;
   }
@@ -385,7 +385,7 @@ static void prv_parse_and_show(void) {
     // HW 2026-08-16 during SG-below and "sensor updating"; what SG-above sends is an assumption
     // (0 like below?), so a real HIGH capture is what would correct the branch below.
     // side: 0 = neither, 1 = SG below, 2 = SG above (max 7 conversions per PBL_LOG).
-    PBL_LOG_INFO("SAKE: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d",
+    PBL_LOG_INFO("minimed: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d",
                  s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5],
                  minimed_status_sg_below() ? 1 : (minimed_status_sg_above() ? 2 : 0));
   }
@@ -437,7 +437,7 @@ static void prv_parse_and_show(void) {
              (long)(tenths % 10));
     // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor
     // state, and at what offset, is otherwise invisible in a dump.
-    PBL_LOG_INFO("SAKE: BG new %ld mg/dL offset=%u", (long)mgdl, (unsigned)offset);
+    PBL_LOG_INFO("minimed: BG new %ld mg/dL offset=%u", (long)mgdl, (unsigned)offset);
   } else {
     // Same reading re-polled. Worth a line so the log still shows the link is alive, and the age
     // makes a stalled sensor obvious instead of looking like fresh data. Clamp at 0 rather than
@@ -477,7 +477,7 @@ static void prv_parse_iob(void) {
   }
   // Raw milliunits to the flash log: minute-cadence IOB traces from routine dumps are the data
   // for recovering the pump's decay curve (true-IOB investigation, 2026-08-17).
-  PBL_LOG_INFO("SAKE: IOB %ld mu", (long)iob_mu);
+  PBL_LOG_INFO("minimed: IOB %ld mu", (long)iob_mu);
 
   // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
   int32_t tenths = (iob_mu + 50) / 100;
@@ -531,7 +531,7 @@ static void prv_meal_record(uint8_t rec_len) {
   MinimedHistMeal meal;
   if (!minimed_history_parse_meal(s_hist, rec_len, &meal)) return;
   if (meal.grams == 0) return;  // the pump logs a Meal record for a bolus without carbs too
-  PBL_LOG_INFO("SAKE: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
+  PBL_LOG_INFO("minimed: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
   minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
 }
 
@@ -561,7 +561,7 @@ static void prv_backfill_finish(void) {
   for (uint8_t i = 0; i < s_backfill_n; i++) {
     if (s_backfill_secs[i] == newest) newest_mgdl = s_backfill_mgdl[i];
   }
-  PBL_LOG_INFO("SAKE: backfill %u of %u samples, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
+  PBL_LOG_INFO("minimed: backfill %u of %u samples, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
                (unsigned)kept, (unsigned)s_backfill_n, (long)newest_mgdl, (long)s_reading_mgdl,
                newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH", (unsigned long)s_annunc_seq);
   if (kept > 0) {
@@ -589,7 +589,7 @@ static void prv_annunc_record_done(void) {
   const uint8_t rec_len = s_hist_len;
   s_hist_len = 0;
   if (r == MinimedAnnuncRecordBad) {
-    PBL_LOG_INFO("SAKE: bad hist rec len=%u %02x %02x %02x %02x", (unsigned)rec_len, s_hist[0],
+    PBL_LOG_INFO("minimed: bad hist rec len=%u %02x %02x %02x %02x", (unsigned)rec_len, s_hist[0],
                  s_hist[1], s_hist[2], s_hist[3]);
     return;
   }
@@ -606,7 +606,7 @@ static void prv_annunc_record_done(void) {
 
   // Every annunciation to flash, notified or not: this is also the field log that grows the
   // code/status catalog (docs/PUMP-DATA.md table).
-  PBL_LOG_INFO("SAKE: annunc type=0x%03x id=%u status=0x%02x sil=%d seq=%lu base=%d",
+  PBL_LOG_INFO("minimed: annunc type=0x%03x id=%u status=0x%02x sil=%d seq=%lu base=%d",
                (unsigned)a.type, (unsigned)a.id, (unsigned)a.status, (int)a.silenced,
                (unsigned long)a.seq, (int)s_annunc_baseline);
   if (s_annunc_baseline) return;
@@ -664,7 +664,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("0x101 decrypt failed");
-      PBL_LOG_INFO("SAKE: 0x101 decrypt failed (%u bytes on the wire)", (unsigned)len);
+      PBL_LOG_INFO("minimed: 0x101 decrypt failed (%u bytes on the wire)", (unsigned)len);
       return true;
     }
 
@@ -682,7 +682,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
     char line[32];
     snprintf(line, sizeof(line), "0x101 %08x%08x", (unsigned)(flags >> 32), (unsigned)flags);
     minimed_sake_log(line);
-    PBL_LOG_INFO("SAKE: 0x101 push flags=0x%08x%08x (%u plaintext bytes)",
+    PBL_LOG_INFO("minimed: 0x101 push flags=0x%08x%08x (%u plaintext bytes)",
                  (unsigned)(flags >> 32), (unsigned)flags, (unsigned)plain_len);
 
     uint8_t req = 0;
@@ -784,7 +784,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
         s_pending |= PEND_ANNUNC;
       } else if (s_annunc_baseline && s_annunc_seen) {
         s_annunc_have = true;
-        PBL_LOG_INFO("SAKE: annunc baseline seq=%lu", (unsigned long)s_annunc_seq);
+        PBL_LOG_INFO("minimed: annunc baseline seq=%lu", (unsigned long)s_annunc_seq);
         prv_backfill_maybe_request();
       }
       prv_op_complete();
@@ -816,7 +816,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       if (!minimed_status_parse_tas(plain, plain_len, &s_tas)) {
         minimed_sake_log("TAS bad resp");
       } else {
-        PBL_LOG_INFO("SAKE: tas auto=%d shield=%02x ready=%02x tt=%u", (int)s_tas.has_auto_mode,
+        PBL_LOG_INFO("minimed: tas auto=%d shield=%02x ready=%02x tt=%u", (int)s_tas.has_auto_mode,
                      s_tas.shield, s_tas.readiness, (unsigned)s_tas.temp_target_min);
       }
       prv_status_publish_if_done(PEND_TAS);
@@ -864,7 +864,7 @@ static void prv_log_gatt_err(const char *op, uint16_t status) {
   }
   minimed_sake_log(line);
   if (link_dead) {
-    PBL_LOG_WRN("SAKE: %s failed with link-dead status 0x%04x", op, (unsigned)status);
+    PBL_LOG_WRN("minimed: %s failed with link-dead status 0x%04x", op, (unsigned)status);
   }
 }
 
@@ -905,7 +905,7 @@ static void prv_wd_cb(struct ble_npl_event *ev) {
   if (minimed_sake_get_mode() == MinimedSakeModeDual && minimed_sake_pump_connected() &&
       ((uint32_t)rtc_get_time() - s_last_pump_traffic) > PUMP_WD_NO_TRAFFIC_SECS) {
     minimed_sake_log("WD: pump silent, re-toggle");
-    PBL_LOG_WRN("SAKE: pump silent %us, re-toggling DUAL",
+    PBL_LOG_WRN("minimed: pump silent %us, re-toggling DUAL",
                 (unsigned)((uint32_t)rtc_get_time() - s_last_pump_traffic));
     minimed_sake_watchdog_retoggle();
   }
@@ -928,7 +928,7 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
     char line[32];
     snprintf(line, sizeof(line), "st: %s", label[0] != '\0' ? label : "(normal)");
     minimed_sake_log(line);
-    PBL_LOG_INFO("SAKE: status label '%s' bg_invalid=%d", label,
+    PBL_LOG_INFO("minimed: status label '%s' bg_invalid=%d", label,
                  (int)minimed_status_bg_invalid());
     if (minimed_status_bg_invalid()) {
       // The pump has no valid glucose right now (warm-up, signal lost, ...): blank the BG
@@ -967,7 +967,7 @@ static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *er
       snprintf(line, sizeof(line), "st bad len=%u", plain_len);
       minimed_sake_log(line);
     } else {
-      PBL_LOG_INFO("SAKE: status t=%02x o=%02x fl=%02x conn=%02x msg=%02x res=%ld mu",
+      PBL_LOG_INFO("minimed: status t=%02x o=%02x fl=%02x conn=%02x msg=%02x res=%ld mu",
                    s_idd_st.therapy, s_idd_st.operational, s_idd_st.flags, s_idd_st.sensor_conn,
                    s_idd_st.sensor_msg, (long)s_idd_st.reservoir_mu);
     }
@@ -1195,7 +1195,7 @@ static int prv_devinfo_read_cb(uint16_t conn, const struct ble_gatt_error *error
     // stalled the sweep on that characteristic and re-read it every session.
     snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s read err=0x%04x", s_devinfo_chrs[idx].name,
              (uint16_t)error->status);
-    PBL_LOG_INFO("SAKE: pump %s", s_devinfo_line);
+    PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
     s_devinfo_idx = idx + 1;
     prv_devinfo_read_next();
     return 0;
@@ -1218,7 +1218,7 @@ static int prv_devinfo_read_cb(uint16_t conn, const struct ble_gatt_error *error
     while (len > 0 && s_devinfo_line[off + len - 1] == '\0') len--;  // trim a trailing NUL
     s_devinfo_line[off + len] = '\0';
   }
-  PBL_LOG_INFO("SAKE: pump %s", s_devinfo_line);
+  PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
   return 0;
 }
 
@@ -1235,7 +1235,7 @@ static void prv_devinfo_read_next(void) {
                                   (void *)(uintptr_t)idx);
   if (rc != 0) {
     // Abandon the sweep without latching, so the next session retries from the start.
-    PBL_LOG_INFO("SAKE: pump %s read rc=0x%04x", s_devinfo_chrs[idx].name, (uint16_t)rc);
+    PBL_LOG_INFO("minimed: pump %s read rc=0x%04x", s_devinfo_chrs[idx].name, (uint16_t)rc);
     s_devinfo_idx = 0;
   }
 }
@@ -1254,7 +1254,7 @@ static void prv_devinfo_timer_cb(struct ble_npl_event *ev) {
 static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error,
                                struct ble_gatt_attr *attr, void *arg) {
   if (error->status == 0 && attr && attr->om && attr->om->om_len >= 1) {
-    PBL_LOG_INFO("SAKE: pump battery %u pct", (unsigned)attr->om->om_data[0]);
+    PBL_LOG_INFO("minimed: pump battery %u pct", (unsigned)attr->om->om_data[0]);
   } else if (error->status != BLE_HS_EDONE) {
     prv_log_gatt_err("battery read", (uint16_t)error->status);
   }
@@ -1269,7 +1269,7 @@ static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error
 static void prv_heap_timer_cb(struct ble_npl_event *ev) {
   unsigned int used = 0, free_bytes = 0, max_free = 0;
   heap_calc_totals(kernel_heap_get(), &used, &free_bytes, &max_free);
-  PBL_LOG_INFO("SAKE: heap free=%u max_free=%u", free_bytes, max_free);
+  PBL_LOG_INFO("minimed: heap free=%u max_free=%u", free_bytes, max_free);
   ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
 }
 
@@ -1279,7 +1279,7 @@ static void prv_battery_timer_cb(struct ble_npl_event *ev) {
   const ble_uuid16_t uuid = BLE_UUID16_INIT(BATTERY_LEVEL_UUID);
   int rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, &uuid.u, prv_battery_read_cb, NULL);
   if (rc != 0) {
-    PBL_LOG_INFO("SAKE: pump battery read rc=0x%04x", (uint16_t)rc);
+    PBL_LOG_INFO("minimed: pump battery read rc=0x%04x", (uint16_t)rc);
   }
   ble_npl_callout_reset(&s_battery_co,
                         ble_npl_time_ms_to_ticks32(BATTERY_READ_INTERVAL_SECS * 1000));
@@ -1330,9 +1330,9 @@ static void prv_start_polling(void) {
     char line[32];
     snprintf(line, sizeof(line), "0x101 sub rc=%d", rc);
     minimed_sake_log(line);
-    PBL_LOG_INFO("SAKE: subscribed IDD Status Changed (0x101): rc=%d", rc);
+    PBL_LOG_INFO("minimed: subscribed IDD Status Changed (0x101): rc=%d", rc);
   } else {
-    PBL_LOG_INFO("SAKE: no IDD Status Changed (0x101) characteristic found");
+    PBL_LOG_INFO("minimed: no IDD Status Changed (0x101) characteristic found");
   }
 }
 

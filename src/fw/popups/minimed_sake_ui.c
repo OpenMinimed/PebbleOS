@@ -81,7 +81,7 @@ static const char *prv_stage_text(MinimedSakeStage stage) {
 // that. Deliberately NOT used for the per-poll read path, which has its own PBL_LOGs, nor for
 // anything on the advert rotation path, which fires about once a second while two jobs exist.
 void minimed_sake_log_evt(const char *msg) {
-  PBL_LOG_INFO("SAKE: %s", msg);
+  PBL_LOG_INFO("minimed: %s", msg);
   minimed_sake_log(msg);
 }
 
