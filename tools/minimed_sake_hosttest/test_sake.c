@@ -441,6 +441,53 @@ static void section_backfill(void) {
   check("full graph inserts in the middle and stays ascending",
         f.count == MINIMED_GRAPH_MAX_POINTS && ascending && f.ts[0] > oldest);
 
+  // Real records from a pump's event log (database/history.db): the 03:38 reference time, the
+  // two samples logged together at 03:47:46 (offsets 4 and 9, so 5 min apart), and the next one.
+  static const uint8_t ref0338[] = {0x0e, 0xf0, 0x32, 0x4d, 0x0b, 0x00, 0x10, 0x0e,
+                                    0x3c, 0xea, 0x07, 0x06, 0x1a, 0x03, 0x26, 0x00};
+  static const uint8_t sg_a[] = {0x0c, 0xf0, 0x3b, 0x4d, 0x0b, 0x00, 0x4a, 0x02,
+                                 0x04, 0x00, 0x36, 0x00, 0xf1, 0x04, 0xc7, 0xff};
+  static const uint8_t sg_b[] = {0x0c, 0xf0, 0x3d, 0x4d, 0x0b, 0x00, 0x4a, 0x02,
+                                 0x09, 0x00, 0x47, 0x00, 0xe6, 0x05, 0xc7, 0xff};
+  static const uint8_t sg_c[] = {0x0c, 0xf0, 0x3f, 0x4d, 0x0b, 0x00, 0x6f, 0x03,
+                                 0x0e, 0x00, 0x4c, 0x00, 0x89, 0x06, 0xc8, 0xff};
+  static const uint8_t sg_below[] = {0x0c, 0xf0, 0x5b, 0x4d, 0x0b, 0x00, 0x16, 0x01,
+                                     0x04, 0x00, 0x0d, 0x03, 0x72, 0x04, 0xcc, 0xff};
+  MinimedHistRef ref;
+  MinimedHistSg a, b, c2, bl;
+  check("real reference time parses",
+        minimed_history_parse_ref_time(ref0338, sizeof(ref0338), &ref) && ref.seq == 740658);
+  check("real SG records parse", minimed_history_parse_sg(sg_a, sizeof(sg_a), &a) &&
+                                     minimed_history_parse_sg(sg_b, sizeof(sg_b), &b) &&
+                                     minimed_history_parse_sg(sg_c, sizeof(sg_c), &c2) &&
+                                     minimed_history_parse_sg(sg_below, sizeof(sg_below), &bl));
+  check("real SG values", a.sg == 54 && b.sg == 71 && c2.sg == 76 && a.offset_min == 4 &&
+                              b.offset_min == 9 && c2.offset_min == 14);
+  check("samples logged together are 5 min apart by their offsets",
+        minimed_history_sg_secs(&ref, &b) - minimed_history_sg_secs(&ref, &a) == 300 &&
+            minimed_history_sg_secs(&ref, &c2) - minimed_history_sg_secs(&ref, &b) == 300);
+  // 03:38:00 + 4 min = 03:42:00, against the same day's midnight.
+  MinimedHistRef midnight = ref;
+  static const uint8_t ref0000[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x3c, 0xea, 0x07, 0x06, 0x1a, 0x00, 0x00, 0x00};
+  check("reference time decodes the date",
+        minimed_history_parse_ref_time(ref0000, sizeof(ref0000), &midnight) &&
+            ref.secs - midnight.secs == 3 * 3600 + 38 * 60);
+  static const uint8_t ref_prev_day[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                         0x3c, 0xea, 0x07, 0x06, 0x19, 0x17, 0x26, 0x00};
+  MinimedHistRef prev;
+  check("reference time spans midnight",
+        minimed_history_parse_ref_time(ref_prev_day, sizeof(ref_prev_day), &prev) &&
+            midnight.secs - prev.secs == 22 * 60);
+  static const uint8_t ref_bad[] = {0x0e, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                    0x3c, 0xea, 0x07, 0x0d, 0x1a, 0x03, 0x26, 0x00};
+  check("reference time with month 13 is rejected",
+        !minimed_history_parse_ref_time(ref_bad, sizeof(ref_bad), &prev));
+  check("an SG record is not a reference time",
+        !minimed_history_parse_ref_time(sg_a, sizeof(sg_a), &prev));
+  check("real below-range sample maps to the floor",
+        minimed_history_sg_to_mgdl(bl.sg, 50, 400) == 50);
+
   // History SG records.
   const uint8_t rec[] = {0x0c, 0xf0, 0x39, 0x05, 0x00, 0x00, 0x2a, 0x00,  // type, seq=1337, rel
                          0x31, 0x24, 0x8d, 0x00, 0x11, 0x02, 0x05, 0x00};   // off=9265 sg=141
@@ -481,6 +528,14 @@ static void section_backfill(void) {
   const uint8_t meal_zero[] = {0x05, 0xf0, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   check("zero grams parses as zero", minimed_history_parse_meal(meal_zero, sizeof(meal_zero), &m) &&
                                         m.grams == 0);
+  // Real Meal records from a pump's event log: 59 g, 65 g, and a zero-carb one.
+  static const uint8_t real59[] = {0x05, 0xf0, 0xb1, 0x4d, 0x0b, 0x00, 0x30, 0x0a, 0x3b, 0x00};
+  static const uint8_t real65[] = {0x05, 0xf0, 0xc8, 0x4a, 0x0b, 0x00, 0x36, 0x0d, 0x41, 0x00};
+  static const uint8_t real0[] = {0x05, 0xf0, 0xbc, 0x4c, 0x0b, 0x00, 0xf4, 0x05, 0x00, 0x00};
+  check("real meal records parse",
+        minimed_history_parse_meal(real59, sizeof(real59), &m) && m.grams == 59 &&
+            minimed_history_parse_meal(real65, sizeof(real65), &m) && m.grams == 65 &&
+            minimed_history_parse_meal(real0, sizeof(real0), &m) && m.grams == 0);
   check("history-event flag is bit 7", MINIMED_IDD_FLAG_HISTORY_EVENT == 0x80);
 }
 

@@ -9,6 +9,9 @@
 #define SG_MIN_LEN (REC_HEADER_LEN + 4)
 
 #define EVENT_MEAL 0xf005
+#define EVENT_NGP_REFERENCE_TIME 0xf00e
+// Recording reason(1) + date time: year(2) month(1) day(1) hours(1) minutes(1) seconds(1)
+#define REF_MIN_LEN (REC_HEADER_LEN + 8)
 #define EVENT_SG_MEASUREMENT 0xf00c
 // Food amount(2)
 #define MEAL_MIN_LEN (REC_HEADER_LEN + 2)
@@ -17,6 +20,35 @@
 #define SG_SPECIAL_MIN 0x0300
 
 static uint16_t prv_u16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+
+// Days since 2000-01-01 of a proleptic Gregorian date (Howard Hinnant's days_from_civil).
+static int32_t prv_days_from_civil(int32_t y, int32_t m, int32_t d) {
+  y -= m <= 2;
+  const int32_t era = (y >= 0 ? y : y - 399) / 400;
+  const int32_t yoe = y - era * 400;
+  const int32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const int32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + doe - 719468 - 10957;  // 10957 days from 1970 to 2000
+}
+
+bool minimed_history_parse_ref_time(const uint8_t *rec, uint16_t len, MinimedHistRef *out) {
+  if (len < REF_MIN_LEN || prv_u16(rec) != EVENT_NGP_REFERENCE_TIME) return false;
+  const uint16_t year = prv_u16(rec + 9);
+  const uint8_t month = rec[11], day = rec[12], hour = rec[13], min = rec[14], sec = rec[15];
+  if (year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 ||
+      min > 59 || sec > 59) {
+    return false;
+  }
+  out->seq = (uint32_t)rec[2] | ((uint32_t)rec[3] << 8) | ((uint32_t)rec[4] << 16) |
+             ((uint32_t)rec[5] << 24);
+  out->secs = (uint32_t)prv_days_from_civil(year, month, day) * 86400u + hour * 3600u + min * 60u +
+              sec;
+  return true;
+}
+
+uint32_t minimed_history_sg_secs(const MinimedHistRef *ref, const MinimedHistSg *sg) {
+  return ref->secs + (uint32_t)((int32_t)sg->offset_min * 60);
+}
 
 bool minimed_history_parse_sg(const uint8_t *rec, uint16_t len, MinimedHistSg *out) {
   if (len < SG_MIN_LEN || prv_u16(rec) != EVENT_SG_MEASUREMENT) return false;
