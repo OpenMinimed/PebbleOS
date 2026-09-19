@@ -76,6 +76,8 @@ static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the b
 static uint32_t s_status_start;
 static uint32_t s_status_end;
 static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
+static bool s_pred_valid;
+static uint16_t s_pred_mgdl;
 static bool s_meal_valid;
 static uint16_t s_meal_grams;
 static uint32_t s_meal_timestamp;
@@ -311,7 +313,8 @@ static void prv_push_bg_cb(void *unused) {
     }
     target = *fg;
     // Everything we can currently supply.
-    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL;
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
+           CAP_PREDICTION;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -375,6 +378,10 @@ static void prv_push_bg_cb(void *unused) {
     // Omitted (not sent as TREND_UNKNOWN) when the pump didn't supply one -- see
     // minimed_sake_sender_send_trend_arrow.
     res |= dict_write_uint8(&iter, KEY_TREND_ARROW, s_trend_arrow);
+    n++;
+  }
+  if (have_bg && s_pred_valid && (caps & CAP_PREDICTION)) {
+    res |= dict_write_uint16(&iter, KEY_PREDICTED_BG, s_pred_mgdl);
     n++;
   }
   if (s_meal_valid && (caps & CAP_MEAL)) {
@@ -552,6 +559,13 @@ void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl) {
+  // Same lock-free discipline as the other setters.
+  s_pred_valid = valid && mgdl > 0;
+  s_pred_mgdl = (uint16_t)(mgdl > 0 ? (mgdl > 1000 ? 1000 : mgdl) : 0);
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 

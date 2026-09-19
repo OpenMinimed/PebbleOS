@@ -970,7 +970,7 @@ static void section_announce(void) {
 
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
-  dict_put_uint(KEY_CAPABILITIES, 0x100, 4);  // bit 8 is not a defined capability
+  dict_put_uint(KEY_CAPABILITIES, 0x200, 4);  // bit 9 is not a defined capability
   check("undefined capability bit rejected",
         !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
 

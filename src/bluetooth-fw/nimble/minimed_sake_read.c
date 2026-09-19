@@ -13,10 +13,12 @@
 #include "nimble/nimble_port.h"
 
 #include "drivers/rtc.h"
+#include "util/time/time.h"
 #include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
 #include "minimed_history.h"
 #include "minimed_idd_flags.h"
+#include "minimed_predict.h"
 #include "minimed_iob.h"
 #include "popups/minimed_alert_popup.h"
 #include "minimed_sake_sender.h"
@@ -178,6 +180,7 @@ static struct ble_npl_callout s_heap_co;  // fixed-interval kernel heap watch
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
 static void prv_backfill_maybe_request(void);
+static void prv_predict_reading(int32_t mgdl);
 static void prv_status_publish_if_done(uint8_t completed_op);
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
@@ -248,16 +251,27 @@ static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
 // time zone, so only differences are used: the newest sample is taken to be the CGM reading the
 // watch already showed (stamped s_reading_ts), and older samples sit their pump-clock distance
 // behind it.
-#define BACKFILL_WINDOW_MIN 120
+#define BACKFILL_WINDOW_MIN 240  // the predictor reads 4 hours; the graph keeps what it shows
 #define BACKFILL_SEQ_SPAN 300
 static bool s_backfill_done;    // this connection's backfill has been issued
 static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
 static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
-static bool s_backfill_have_ref;  // a Reference Time has been seen in this read
-static MinimedHistRef s_backfill_ref;
+static MinimedHistClock s_backfill_clock;
 static uint8_t s_backfill_n;  // the newest MINIMED_BACKFILL_MAX_POINTS samples, oldest first
 static uint32_t s_backfill_secs[MINIMED_BACKFILL_MAX_POINTS];  // pump clock
 static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
+// The insulin, meal and basal-rate events of the same read, for the predictor, oldest first.
+#define BACKFILL_MAX_EVENTS 64
+static uint8_t s_backfill_ne;
+static uint32_t s_backfill_esecs[BACKFILL_MAX_EVENTS];
+static float s_backfill_evalue[BACKFILL_MAX_EVENTS];
+static uint8_t s_backfill_ekind[BACKFILL_MAX_EVENTS];  // MinimedHistEventKind
+
+// The glucose predictor's view of the last 4 hours. Filled from the backfill (which resets it, so
+// a reconnect cannot count an event twice) and then live; it predicts only once the backfill has
+// given it the insulin and meals of the window, or it would see a body with no history.
+static MinimedPredictState s_pred;
+static bool s_pred_ready;
 
 // Latest BG as shown on the watchface ("4.2" mmol/L, "LO"/"HI"; "" while the pump has no valid
 // glucose). Alert notifications carry it as their body -- a low alert without the number is
@@ -410,6 +424,7 @@ static void prv_parse_and_show(void) {
       s_reading_ts = (uint32_t)rtc_get_time();
       s_reading_mgdl = below ? SG_FLOOR_MGDL : SG_CEILING_MGDL;
       minimed_sake_sender_add_graph_point(s_reading_ts, s_reading_mgdl);
+      prv_predict_reading(s_reading_mgdl);
       prv_forward_trend(flags);
       prv_backfill_maybe_request();
     }
@@ -431,6 +446,7 @@ static void prv_parse_and_show(void) {
     s_reading_ts = (uint32_t)rtc_get_time();
     s_reading_mgdl = mgdl;
     minimed_sake_sender_add_graph_point(s_reading_ts, mgdl);
+    prv_predict_reading(mgdl);
     prv_forward_trend(flags);
     prv_backfill_maybe_request();
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
@@ -501,56 +517,121 @@ static bool prv_annunc_already_notified(uint16_t id) {
 }
 #endif
 
-// A history record read during the backfill: track the reference time, and keep SG samples. The
-// read starts hours back, so old samples are shifted out to keep the newest ones.
+// A history record read during the backfill: keep its event, timed on the pump's clock. The read
+// starts hours back, so the oldest are shifted out to keep the newest.
 static void prv_backfill_record(uint8_t rec_len) {
-  MinimedHistRef ref;
-  if (minimed_history_parse_ref_time(s_hist, rec_len, &ref)) {
-    s_backfill_ref = ref;
-    s_backfill_have_ref = true;
+  MinimedHistEvent ev;
+  if (!minimed_history_decode(&s_backfill_clock, s_hist, rec_len, SG_FLOOR_MGDL, SG_CEILING_MGDL,
+                              &ev)) {
     return;
   }
-  MinimedHistSg sg;
-  if (!s_backfill_have_ref || !minimed_history_parse_sg(s_hist, rec_len, &sg)) return;
-  const int32_t mgdl = minimed_history_sg_to_mgdl(sg.sg, SG_FLOOR_MGDL, SG_CEILING_MGDL);
-  if (mgdl < 0 || sg.offset_min < 0) return;
-  if (s_backfill_n == MINIMED_BACKFILL_MAX_POINTS) {
-    memmove(s_backfill_secs, s_backfill_secs + 1, (s_backfill_n - 1) * sizeof(s_backfill_secs[0]));
-    memmove(s_backfill_mgdl, s_backfill_mgdl + 1, (s_backfill_n - 1) * sizeof(s_backfill_mgdl[0]));
-    s_backfill_n--;
+  if (ev.kind == MinimedHistEventRef) return;
+  if (ev.kind == MinimedHistEventSg) {
+    if (ev.mgdl < 0) return;
+    if (s_backfill_n == MINIMED_BACKFILL_MAX_POINTS) {
+      memmove(s_backfill_secs, s_backfill_secs + 1, (s_backfill_n - 1) * sizeof(s_backfill_secs[0]));
+      memmove(s_backfill_mgdl, s_backfill_mgdl + 1, (s_backfill_n - 1) * sizeof(s_backfill_mgdl[0]));
+      s_backfill_n--;
+    }
+    s_backfill_secs[s_backfill_n] = ev.secs;
+    s_backfill_mgdl[s_backfill_n] = ev.mgdl;
+    s_backfill_n++;
+    return;
   }
-  s_backfill_secs[s_backfill_n] = minimed_history_sg_secs(&s_backfill_ref, &sg);
-  s_backfill_mgdl[s_backfill_n] = mgdl;
-  s_backfill_n++;
+  if (s_backfill_ne == BACKFILL_MAX_EVENTS) {
+    memmove(s_backfill_esecs, s_backfill_esecs + 1, (s_backfill_ne - 1) * sizeof(s_backfill_esecs[0]));
+    memmove(s_backfill_evalue, s_backfill_evalue + 1, (s_backfill_ne - 1) * sizeof(s_backfill_evalue[0]));
+    memmove(s_backfill_ekind, s_backfill_ekind + 1, (s_backfill_ne - 1) * sizeof(s_backfill_ekind[0]));
+    s_backfill_ne--;
+  }
+  s_backfill_esecs[s_backfill_ne] = ev.secs;
+  s_backfill_evalue[s_backfill_ne] = ev.value;
+  s_backfill_ekind[s_backfill_ne] = (uint8_t)ev.kind;
+  s_backfill_ne++;
 }
 
-// A live history record that may be a meal: forward its carbohydrate amount. Stamped on arrival --
-// a Meal record carries no offset the watch can turn into wall-clock time -- so a meal read late
-// (after a reconnect) is shown at the time we learned of it.
-static void prv_meal_record(uint8_t rec_len) {
+// Local-time offset of the watch, seconds east of UTC.
+static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now); }
+
+// Predict 30 minutes ahead from the newest reading and hand the result to the watchface. A reading
+// that cannot be predicted (stale, or the predictor not primed) clears the last prediction.
+static void prv_predict_and_send(void) {
+  MinimedPrediction p;
+  const uint32_t now = (uint32_t)rtc_get_time();
+  if (s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p)) {
+    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (from %ld), low p=%d/1000 alarm=%d",
+                 (long)(p.mgdl + 0.5f), (long)s_reading_mgdl, (int)(p.low_prob * 1000.0f),
+                 (int)p.low_alarm);
+    minimed_sake_sender_send_prediction(true, (int32_t)(p.mgdl + 0.5f));
+  } else {
+    minimed_sake_sender_send_prediction(false, 0);
+  }
+}
+
+// A live reading (not a backfilled one): feed the predictor and refresh the prediction.
+static void prv_predict_reading(int32_t mgdl) {
+  minimed_predict_add_bg(&s_pred, s_reading_ts, mgdl);
+  prv_predict_and_send();
+}
+
+// A live insulin, meal or basal record: stamped on arrival, like the meal shown on the watchface.
+static void prv_predict_live_event(const MinimedHistEvent *ev) {
+  const uint32_t now = (uint32_t)rtc_get_time();
+  if (ev->kind == MinimedHistEventInsulin) {
+    minimed_predict_add_insulin(&s_pred, now, ev->value);
+  } else if (ev->kind == MinimedHistEventCarbs) {
+    minimed_predict_add_carbs(&s_pred, now, ev->value);
+  } else if (ev->kind == MinimedHistEventBasal) {
+    minimed_predict_set_basal(&s_pred, now, ev->value);
+  }
+}
+
+// A live history record that may carry insulin, carbs or a basal rate: the predictor's inputs, and
+// for a meal what the watchface shows. Records here have no usable reference time (the read starts
+// after the last one), so each is timed by when we learn of it -- seconds after it happened.
+static void prv_live_record(uint8_t rec_len) {
   MinimedHistMeal meal;
-  if (!minimed_history_parse_meal(s_hist, rec_len, &meal)) return;
-  if (meal.grams == 0) return;  // the pump logs a Meal record for a bolus without carbs too
-  PBL_LOG_INFO("minimed: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
-  minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
+  MinimedHistInsulin ins;
+  MinimedHistEvent ev = {0};
+  if (minimed_history_parse_meal(s_hist, rec_len, &meal)) {
+    if (meal.grams == 0) return;  // the pump logs a Meal record for a bolus without carbs too
+    PBL_LOG_INFO("minimed: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
+    minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
+    ev.kind = MinimedHistEventCarbs;
+    ev.value = (float)meal.grams;
+    prv_predict_live_event(&ev);
+  } else if (minimed_history_parse_insulin(s_hist, rec_len, &ins)) {
+    if (ins.kind == MinimedHistInsulinBasalRate) {
+      ev.kind = MinimedHistEventBasal;
+      ev.value = ins.by_algorithm ? 0.0f : ins.amount;
+    } else {
+      ev.kind = MinimedHistEventInsulin;
+      ev.value = ins.amount;
+    }
+    prv_predict_live_event(&ev);
+  }
 }
 
-// The backfill exchange ended: place what it collected relative to the newest sample and hand
-// the ones inside the window to the graph.
+// The backfill exchange ended: place what it collected relative to the newest sample, hand the
+// samples to the graph, and prime the predictor with the whole window.
 static void prv_backfill_finish(void) {
   s_backfill_run = false;
-  s_backfill_have_ref = false;
+  s_backfill_clock.have_ref = false;
   uint32_t newest = 0;
   for (uint8_t i = 0; i < s_backfill_n; i++) {
     if (s_backfill_secs[i] > newest) newest = s_backfill_secs[i];
   }
+  // Watch-clock time of a pump-clock time: the newest sample is the reading already shown.
+  #define BF_TS(secs) (s_reading_ts + (uint32_t)((int32_t)((secs) - newest)))
+  const uint32_t window_secs = BACKFILL_WINDOW_MIN * 60u;
+
   uint32_t ts[MINIMED_BACKFILL_MAX_POINTS];
   int32_t mgdl[MINIMED_BACKFILL_MAX_POINTS];
   uint8_t kept = 0;
   for (uint8_t i = 0; i < s_backfill_n; i++) {
     const uint32_t age = newest - s_backfill_secs[i];
-    if (age > BACKFILL_WINDOW_MIN * 60u || age > s_reading_ts) continue;
-    ts[kept] = s_reading_ts - age;
+    if (age > window_secs || age > s_reading_ts) continue;
+    ts[kept] = BF_TS(s_backfill_secs[i]);
     mgdl[kept] = s_backfill_mgdl[i];
     kept++;
   }
@@ -561,13 +642,44 @@ static void prv_backfill_finish(void) {
   for (uint8_t i = 0; i < s_backfill_n; i++) {
     if (s_backfill_secs[i] == newest) newest_mgdl = s_backfill_mgdl[i];
   }
-  PBL_LOG_INFO("minimed: backfill %u of %u samples, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
-               (unsigned)kept, (unsigned)s_backfill_n, (long)newest_mgdl, (long)s_reading_mgdl,
-               newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH", (unsigned long)s_annunc_seq);
+  PBL_LOG_INFO("minimed: backfill %u of %u samples, %u events, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
+               (unsigned)kept, (unsigned)s_backfill_n, (unsigned)s_backfill_ne, (long)newest_mgdl,
+               (long)s_reading_mgdl, newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH",
+               (unsigned long)s_annunc_seq);
   if (kept > 0) {
     minimed_sake_sender_backfill_graph(ts, mgdl, kept);
   }
+
+  // The predictor starts over from the log, so nothing is counted twice, then takes back the
+  // reading the watch already had.
+  minimed_predict_reset(&s_pred);
+  for (uint8_t i = 0; i < kept; i++) minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
+  int meals = 0;
+  uint32_t last_meal_ts = 0;
+  float last_meal_g = 0.0f;
+  for (uint8_t i = 0; i < s_backfill_ne; i++) {
+    const uint32_t age = newest > s_backfill_esecs[i] ? newest - s_backfill_esecs[i] : 0;
+    if (age > window_secs) continue;
+    const uint32_t ets = BF_TS(s_backfill_esecs[i]);
+    switch ((MinimedHistEventKind)s_backfill_ekind[i]) {
+      case MinimedHistEventInsulin: minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]); break;
+      case MinimedHistEventBasal: minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]); break;
+      case MinimedHistEventCarbs:
+        minimed_predict_add_carbs(&s_pred, ets, s_backfill_evalue[i]);
+        last_meal_ts = ets;
+        last_meal_g = s_backfill_evalue[i];
+        meals++;
+        break;
+      default: break;
+    }
+  }
+  #undef BF_TS
+  if (s_have_offset) minimed_predict_add_bg(&s_pred, s_reading_ts, s_reading_mgdl);
+  s_pred_ready = kept > 0;
+  if (meals > 0) minimed_sake_sender_send_meal((uint16_t)(last_meal_g + 0.5f), last_meal_ts);
+  prv_predict_and_send();
   s_backfill_n = 0;
+  s_backfill_ne = 0;
 }
 
 // Queue the backfill read once both of its inputs exist: the log cursor (baseline) and a CGM
@@ -599,7 +711,7 @@ static void prv_annunc_record_done(void) {
     if (s_backfill_run) {
       prv_backfill_record(rec_len);
     } else if (!s_annunc_baseline) {
-      prv_meal_record(rec_len);
+      prv_live_record(rec_len);
     }
     return;
   }
@@ -1031,7 +1143,8 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
     s_backfill_run = s_backfill_wanted;
     s_backfill_wanted = false;
     s_backfill_n = 0;
-    s_backfill_have_ref = false;
+    s_backfill_ne = 0;
+    s_backfill_clock.have_ref = false;
     // Backfill reads history the pump already showed: suppress notifications like the baseline.
     s_annunc_baseline = !s_annunc_have || s_backfill_run;
     s_annunc_seen = false;
@@ -1660,8 +1773,10 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_backfill_done = false;
   s_backfill_wanted = false;
   s_backfill_run = false;
-  s_backfill_have_ref = false;
+  s_backfill_clock.have_ref = false;
   s_backfill_n = 0;
+  s_backfill_ne = 0;
+  s_pred_ready = false;  // primed again by this connection's backfill
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
