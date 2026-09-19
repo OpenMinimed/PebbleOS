@@ -18,7 +18,7 @@ from datetime import datetime
 
 def find_gdb_executable():
     """Find an available arm-none-eabi-gdb with Python support."""
-    candidates = ["arm-none-eabi-gdb-py", "arm-none-eabi-gdb-py3"]
+    candidates = ["arm-none-eabi-gdb-py", "arm-none-eabi-gdb-py3", "gdb-multiarch"]
     for candidate in candidates:
         if shutil.which(candidate):
             return candidate
@@ -34,11 +34,29 @@ class CoredumpAnalyzer:
             or f"coredump_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         )
         self.gdb_executable = find_gdb_executable()
+        self.coredump_file = self._ensure_elf_core(self.coredump_file)
         if not self.gdb_executable:
             raise RuntimeError(
                 "Could not find arm-none-eabi-gdb-py or arm-none-eabi-gdb-py3. "
                 "Please ensure one of these is installed and in PATH."
             )
+
+    @staticmethod
+    def _ensure_elf_core(path):
+        """Convert a raw watch coredump (as saved by fetch_coredump.py) to an ELF core."""
+        with open(path, "rb") as f:
+            if f.read(4) == b"\x7fELF":
+                return path
+        out = path + ".elf"
+        readcore = os.path.join(os.path.dirname(os.path.abspath(__file__)), "readcore.py")
+        # readcore needs `construct`, which lives in the pebble-tool venv rather than system python.
+        for py in (sys.executable, os.path.expanduser("~/.local/share/uv/tools/pebble-tool/bin/python")):
+            if os.path.exists(py) and subprocess.run(
+                [py, readcore, path, out], capture_output=True
+            ).returncode == 0:
+                print(f"Converted raw coredump to ELF core: {out}")
+                return out
+        raise RuntimeError(f"Could not convert {path} to an ELF core (readcore.py needs `construct`).")
 
     def create_gdb_script(self):
         """Create a GDB script with commands to extract relevant information."""
