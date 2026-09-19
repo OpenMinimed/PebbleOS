@@ -56,6 +56,10 @@ bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMea
 #define MINIMED_HIST_SG_ABOVE 0x0308
 #define MINIMED_HIST_SG_BELOW 0x030d
 
+//! Off-scale side of a raw SG value: 1 for the below-range code, 2 for above-range, 0 for anything
+//! else (a normal value, or a code that says nothing about range such as "updating").
+int minimed_history_sg_edge(uint16_t sg);
+
 //! Convert a raw SG value to mg/dL. Off-scale codes map to `floor_mgdl` / `ceiling_mgdl` (where
 //! the caller graphs "at or beyond" readings). Returns -1 for "no usable sample" (starting,
 //! updating, or any other code in the special range).

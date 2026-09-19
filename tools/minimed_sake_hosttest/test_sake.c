@@ -485,6 +485,12 @@ static void section_backfill(void) {
         !minimed_history_parse_ref_time(ref_bad, sizeof(ref_bad), &prev));
   check("an SG record is not a reference time",
         !minimed_history_parse_ref_time(sg_a, sizeof(sg_a), &prev));
+  check("off-scale side of an SG code",
+        minimed_history_sg_edge(MINIMED_HIST_SG_BELOW) == 1 &&
+            minimed_history_sg_edge(MINIMED_HIST_SG_ABOVE) == 2 &&
+            minimed_history_sg_edge(MINIMED_HIST_SG_UPDATING) == 0 &&
+            minimed_history_sg_edge(MINIMED_HIST_SG_STARTING) == 0 && minimed_history_sg_edge(141) == 0);
+  check("the real below-range record reports the below side", minimed_history_sg_edge(bl.sg) == 1);
   check("real below-range sample maps to the floor",
         minimed_history_sg_to_mgdl(bl.sg, 50, 400) == 50);
 
