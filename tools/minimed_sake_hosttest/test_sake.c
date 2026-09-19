@@ -463,6 +463,25 @@ static void section_backfill(void) {
         minimed_history_sg_to_mgdl(MINIMED_HIST_SG_STARTING, 50, 400) == -1 &&
             minimed_history_sg_to_mgdl(MINIMED_HIST_SG_UPDATING, 50, 400) == -1 &&
             minimed_history_sg_to_mgdl(0, 50, 400) == -1);
+
+  // Meal records (0xf005): food amount as a MedFloat16.
+  const uint8_t meal[] = {0x05, 0xf0, 0x10, 0x00, 0x00, 0x00, 0x05, 0x00, 0x2d, 0x00};  // 45 g
+  MinimedHistMeal m;
+  check("meal record parses", minimed_history_parse_meal(meal, sizeof(meal), &m) && m.seq == 16 &&
+                                  m.grams == 45);
+  const uint8_t meal_dec[] = {0x05, 0xf0, 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x7d, 0xf0};  // 12.5
+  check("fractional grams round half up",
+        minimed_history_parse_meal(meal_dec, sizeof(meal_dec), &m) && m.grams == 13);
+  const uint8_t meal_nan[] = {0x05, 0xf0, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x07};
+  check("NaN food amount is rejected", !minimed_history_parse_meal(meal_nan, sizeof(meal_nan), &m));
+  const uint8_t meal_neg[] = {0x05, 0xf0, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0xfb, 0x0f};
+  check("negative food amount is rejected", !minimed_history_parse_meal(meal_neg, sizeof(meal_neg), &m));
+  check("meal record too short is rejected", !minimed_history_parse_meal(meal, 9, &m));
+  check("an SG record is not a meal", !minimed_history_parse_meal(rec, sizeof(rec), &m));
+  const uint8_t meal_zero[] = {0x05, 0xf0, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  check("zero grams parses as zero", minimed_history_parse_meal(meal_zero, sizeof(meal_zero), &m) &&
+                                        m.grams == 0);
+  check("history-event flag is bit 7", MINIMED_IDD_FLAG_HISTORY_EVENT == 0x80);
 }
 
 static void section_idd_flags(void) {
@@ -869,7 +888,7 @@ static void section_announce(void) {
 
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
-  dict_put_uint(KEY_CAPABILITIES, 0x80, 4);  // bit 7 is not a defined capability
+  dict_put_uint(KEY_CAPABILITIES, 0x100, 4);  // bit 8 is not a defined capability
   check("undefined capability bit rejected",
         !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
 

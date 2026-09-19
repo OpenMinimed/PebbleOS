@@ -23,7 +23,9 @@
 #define KEY_STATUS_START 17
 #define KEY_STATUS_END 18
 #define KEY_PUMP_CONNECTED 19  // uint8, 0=offline 1=connected; offline is the default
-// Keys 20-29 reserved
+#define KEY_MEAL_CARBS 20      // uint16, grams of carbohydrate of the latest meal; omitted if none
+#define KEY_MEAL_TIMESTAMP 21  // uint32, unix time the meal was recorded
+// Keys 22-29 reserved
 
 // Message keys: Sender -> watchface (raw graph)
 #define KEY_GRAPH_DATA 30
@@ -41,6 +43,7 @@
 #define CAP_STATUS 0x10
 #define CAP_SENDER_BATTERY 0x20
 #define CAP_PUMP_CONNECTED 0x40
+#define CAP_MEAL 0x80
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0

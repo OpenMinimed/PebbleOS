@@ -59,7 +59,7 @@ static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 // strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
 // blob). Sized with room to spare -- an undersized buffer is a silent "wf dict fail", not a
 // crash, but it would also mean no data reaches the watchface at all.
-#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 128)
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 192)
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
@@ -76,6 +76,9 @@ static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the b
 static uint32_t s_status_start;
 static uint32_t s_status_end;
 static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
+static bool s_meal_valid;
+static uint16_t s_meal_grams;
+static uint32_t s_meal_timestamp;
 static bool s_trend_valid;     // false = no trend field in the last reading; omit the key
 static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
 
@@ -308,7 +311,7 @@ static void prv_push_bg_cb(void *unused) {
     }
     target = *fg;
     // Everything we can currently supply.
-    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW;
+    caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -373,6 +376,11 @@ static void prv_push_bg_cb(void *unused) {
     // minimed_sake_sender_send_trend_arrow.
     res |= dict_write_uint8(&iter, KEY_TREND_ARROW, s_trend_arrow);
     n++;
+  }
+  if (s_meal_valid && (caps & CAP_MEAL)) {
+    res |= dict_write_uint16(&iter, KEY_MEAL_CARBS, s_meal_grams);
+    res |= dict_write_uint32(&iter, KEY_MEAL_TIMESTAMP, s_meal_timestamp);
+    n += 2;
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
@@ -544,6 +552,14 @@ void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
+  // Same lock-free discipline as the other setters.
+  s_meal_grams = grams;
+  s_meal_timestamp = timestamp;
+  s_meal_valid = true;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 

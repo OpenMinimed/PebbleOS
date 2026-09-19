@@ -21,6 +21,16 @@ typedef struct {
 //! Decode an SG Measurement record. False if it is another event type or is truncated.
 bool minimed_history_parse_sg(const uint8_t *rec, uint16_t len, MinimedHistSg *out);
 
+//! Meal (0xf005): carbohydrates entered for a meal bolus.
+typedef struct {
+  uint32_t seq;
+  uint16_t grams;  //!< food amount, rounded to whole grams
+} MinimedHistMeal;
+
+//! Decode a Meal record. False if it is another event type, truncated, or carries no usable amount
+//! (a MedFloat16 NaN/reserved value or a negative amount).
+bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMeal *out);
+
 //! Special SG Value codes (Documentation/idd-service.md): no sample, or clamped at the sensor's
 //! range edge.
 #define MINIMED_HIST_SG_STARTING 0x0301

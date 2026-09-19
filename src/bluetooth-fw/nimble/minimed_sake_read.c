@@ -505,6 +505,16 @@ static void prv_backfill_record(uint8_t rec_len) {
   s_backfill_n++;
 }
 
+// A live history record that may be a meal: forward its carbohydrate amount. Stamped on arrival --
+// a Meal record carries no offset the watch can turn into wall-clock time -- so a meal read late
+// (after a reconnect) is shown at the time we learned of it.
+static void prv_meal_record(uint8_t rec_len) {
+  MinimedHistMeal meal;
+  if (!minimed_history_parse_meal(s_hist, rec_len, &meal)) return;
+  PBL_LOG_INFO("SAKE: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
+  minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
+}
+
 // The backfill exchange ended: hand what it collected to the graph.
 static void prv_backfill_finish(void) {
   s_backfill_run = false;
@@ -542,7 +552,11 @@ static void prv_annunc_record_done(void) {
   s_annunc_seen = true;
   if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
   if (r != MinimedAnnuncRecordYes) {
-    if (s_backfill_run) prv_backfill_record(rec_len);
+    if (s_backfill_run) {
+      prv_backfill_record(rec_len);
+    } else if (!s_annunc_baseline) {
+      prv_meal_record(rec_len);
+    }
     return;
   }
 
@@ -637,9 +651,11 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
     }
     if (s_h_idd_racp != 0 && s_h_hist != 0 &&
-        ((flags & MINIMED_IDD_FLAG_ANNUNCIATION) || !s_annunc_have)) {
-      // An alarm was raised or cleared: read the history records behind it. Until the baseline
-      // read has succeeded, any push doubles as a retry of it.
+        ((flags & (MINIMED_IDD_FLAG_ANNUNCIATION | MINIMED_IDD_FLAG_HISTORY_EVENT)) != 0 ||
+         !s_annunc_have)) {
+      // An alarm was raised or cleared, or any event was logged (a meal entry among them): read
+      // the history records behind it. Until the baseline read has succeeded, any push doubles as
+      // a retry of it.
       req |= PEND_ANNUNC;
     }
     if (s_h_srcp != 0) {

@@ -38,6 +38,12 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
 void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
                                         uint8_t count);
 
+//! The latest meal's carbohydrate amount, from the pump's history. `timestamp` is when the watch
+//! learned of it (the record carries no absolute time the watch can anchor on). Stored until
+//! replaced and pushed as KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP; the watchface decides how long it
+//! stays relevant. Safe to call from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
+
 //! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
 //! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
