@@ -352,7 +352,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
   uint16_t len = 0;
   int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len);
   if (rc != 0) {
-    PBL_LOG_ERR("SAKE: write copy failed 0x%04x", (uint16_t)rc);
+    PBL_LOG_ERR("minimed: write copy failed 0x%04x", (uint16_t)rc);
     return BLE_ATT_ERR_UNLIKELY;
   }
 
@@ -364,7 +364,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
       break;
     }
   }
-  PBL_LOG_INFO("SAKE: pump WRITE conn=%d len=%u%s [%02x %02x %02x %02x]", conn_handle, len,
+  PBL_LOG_INFO("minimed: pump WRITE conn=%d len=%u%s [%02x %02x %02x %02x]", conn_handle, len,
                all_zero ? " (all-zero)" : "", buf[0], buf[1], buf[2], buf[3]);
   char line[32];
   if (all_zero) {
@@ -658,20 +658,20 @@ int minimed_sake_service_init(void) {
   if (s_keydb_ok) {
     sake_server_init(&s_server, &s_keydb, SAKE_DEV_MOBILE_APPLICATION, prv_rng, NULL);
   } else {
-    PBL_LOG_ERR("SAKE: key DB parse failed (CRC/length) -- handshake disabled");
+    PBL_LOG_ERR("minimed: key DB parse failed (CRC/length) -- handshake disabled");
   }
 
   int rc = ble_gatts_count_cfg(s_sake_svcs);
   if (rc != 0) {
-    PBL_LOG_ERR("SAKE: count_cfg failed 0x%04x", (uint16_t)rc);
+    PBL_LOG_ERR("minimed: count_cfg failed 0x%04x", (uint16_t)rc);
     return rc;
   }
   rc = ble_gatts_add_svcs(s_sake_svcs);
   if (rc != 0) {
-    PBL_LOG_ERR("SAKE: add_svcs failed 0x%04x", (uint16_t)rc);
+    PBL_LOG_ERR("minimed: add_svcs failed 0x%04x", (uint16_t)rc);
     return rc;
   }
-  PBL_LOG_INFO("SAKE: service registered (MiniMed)");
+  PBL_LOG_INFO("minimed: service registered (MiniMed)");
   minimed_sake_report(MinimedSakeStageAdvertising);
   return 0;
 }

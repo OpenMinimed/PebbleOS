@@ -16,9 +16,9 @@
 #include <string.h>
 #include <time.h>
 
-#define SAKE_LOG_LINES 14
-#define SAKE_LOG_WIDTH 40
-#define SAKE_LOG_TS_LEN 9  // "HH:MM:SS "
+#define SAKE_LOG_LINES  14
+#define SAKE_LOG_WIDTH  40
+#define SAKE_LOG_TS_LEN 9 // "HH:MM:SS "
 
 // Log state is mutated only on KernelMain (via prv_append_cb); the app task only reads s_joined,
 // where a torn read is at worst a few garbage chars in a debug line -- acceptable, so no lock.
@@ -63,14 +63,22 @@ static void prv_append_cb(void *data) {
 
 static const char *prv_stage_text(MinimedSakeStage stage) {
   switch (stage) {
-    case MinimedSakeStageAdvertising:  return "advertising";
-    case MinimedSakeStageConnected:    return "connected";
-    case MinimedSakeStageEncrypted:    return "paired/encrypted";
-    case MinimedSakeStageSubscribed:   return "subscribed";
-    case MinimedSakeStageWrote:        return "PUMP WROTE!";
-    case MinimedSakeStageHandshakeComplete: return "HANDSHAKE OK!";
-    case MinimedSakeStageDisconnected: return "disconnected";
-    default:                           return "?";
+    case MinimedSakeStageAdvertising:
+      return "advertising";
+    case MinimedSakeStageConnected:
+      return "connected";
+    case MinimedSakeStageEncrypted:
+      return "paired/encrypted";
+    case MinimedSakeStageSubscribed:
+      return "subscribed";
+    case MinimedSakeStageWrote:
+      return "PUMP WROTE!";
+    case MinimedSakeStageHandshakeComplete:
+      return "HANDSHAKE OK!";
+    case MinimedSakeStageDisconnected:
+      return "disconnected";
+    default:
+      return "?";
   }
 }
 
@@ -81,7 +89,7 @@ static const char *prv_stage_text(MinimedSakeStage stage) {
 // that. Deliberately NOT used for the per-poll read path, which has its own PBL_LOGs, nor for
 // anything on the advert rotation path, which fires about once a second while two jobs exist.
 void minimed_sake_log_evt(const char *msg) {
-  PBL_LOG_INFO("SAKE: %s", msg);
+  PBL_LOG_INFO("minimed: %s", msg);
   minimed_sake_log(msg);
 }
 
@@ -99,11 +107,17 @@ void minimed_sake_log(const char *msg) {
 // the handshake milestones) back when reaching them at all was the news. Now the pump re-handshakes
 // on every reconnect, so a night of dropouts is a night of buzzing -- and these are raw vibes_*
 // calls that ignore Quiet Time. The on-watch log is the debugging channel.
-void minimed_sake_report(MinimedSakeStage stage) { minimed_sake_log(prv_stage_text(stage)); }
+void minimed_sake_report(MinimedSakeStage stage) {
+  minimed_sake_log(prv_stage_text(stage));
+}
 
-MinimedSakeMode minimed_sake_get_mode(void) { return s_mode; }
+MinimedSakeMode minimed_sake_get_mode(void) {
+  return s_mode;
+}
 
-const char *minimed_sake_get_log(void) { return s_joined; }
+const char *minimed_sake_get_log(void) {
+  return s_joined;
+}
 
 // Watchdog recovery: the pump link went silent. Keep the mode DUAL and run the NORMAL kill-switch
 // restart -- it frees the phantom connection slot, drops the silent link, and re-arms advertising.
@@ -114,8 +128,8 @@ void minimed_sake_watchdog_retoggle(void) {
   if (minimed_sake_get_mode() != MinimedSakeModeDual) {
     return;
   }
-  minimed_sake_log_evt("WD: re-toggle");  // flash + ring: a watchdog restart must be diagnosable
-  minimed_sake_clear_link_state();  // a stale pump handle must not alias (and swallow) a phone link
+  minimed_sake_log_evt("WD: re-toggle"); // flash + ring: a watchdog restart must be diagnosable
+  minimed_sake_clear_link_state(); // a stale pump handle must not alias (and swallow) a phone link
   minimed_sake_pump_advert_stop();
   minimed_sake_sender_set_mode(false);
   gap_le_advert_set_allow_advert_while_connected(false);
@@ -141,13 +155,13 @@ void minimed_sake_toggle_mode(void) {
   s_mode = (s_mode == MinimedSakeModeNormal) ? MinimedSakeModeDual : MinimedSakeModeNormal;
   if (s_mode == MinimedSakeModeDual) {
     minimed_sake_log_evt("mode -> DUAL");
-    minimed_sake_clear_link_state();  // no pump link exists entering DUAL; drop any stale handle so
-                                      // it cannot alias (and swallow) a future phone connection
-    minimed_sake_cache_gateway_addr();     // so a reconnecting phone isn't mistaken for the pump
+    minimed_sake_clear_link_state(); // no pump link exists entering DUAL; drop any stale handle so
+                                     // it cannot alias (and swallow) a future phone connection
+    minimed_sake_cache_gateway_addr(); // so a reconnecting phone isn't mistaken for the pump
     minimed_sake_apply_sm_config(minimed_sake_pump_pairing_window());
-    minimed_sake_sender_set_mode(true);       // open the loopback watchface session
-    gap_le_advert_set_allow_advert_while_connected(true);  // keep advertising for the pump
-    minimed_sake_pump_advert_start();         // the pump's own fast advert job
+    minimed_sake_sender_set_mode(true);                   // open the loopback watchface session
+    gap_le_advert_set_allow_advert_while_connected(true); // keep advertising for the pump
+    minimed_sake_pump_advert_start();                     // the pump's own fast advert job
   } else {
     // NORMAL is the complete kill switch: tear the Bluetooth stack fully down and bring it back
     // up in a clean, phone-only state, so the pump link cannot interfere with firmware sideload.
@@ -166,25 +180,47 @@ void minimed_sake_toggle_mode(void) {
 
 #else
 
-MinimedSakeMode minimed_sake_get_mode(void) { return MinimedSakeModeNormal; }
-void minimed_sake_toggle_mode(void) {}
-void minimed_sake_bt_started(void) {}
-void minimed_sake_report(MinimedSakeStage stage) { (void)stage; }
-void minimed_sake_log(const char *msg) { (void)msg; }
-void minimed_sake_log_evt(const char *msg) { (void)msg; }
-const char *minimed_sake_get_log(void) { return ""; }
-bool minimed_sake_pump_pairing_window(void) { return false; }
-void minimed_sake_cache_gateway_addr(void) {}
+MinimedSakeMode minimed_sake_get_mode(void) {
+  return MinimedSakeModeNormal;
+}
+void minimed_sake_toggle_mode(void) {
+}
+void minimed_sake_bt_started(void) {
+}
+void minimed_sake_report(MinimedSakeStage stage) {
+  (void)stage;
+}
+void minimed_sake_log(const char *msg) {
+  (void)msg;
+}
+void minimed_sake_log_evt(const char *msg) {
+  (void)msg;
+}
+const char *minimed_sake_get_log(void) {
+  return "";
+}
+bool minimed_sake_pump_pairing_window(void) {
+  return false;
+}
+void minimed_sake_cache_gateway_addr(void) {
+}
 bool minimed_sake_addr_is_gateway(const uint8_t addr[6], uint8_t addr_type) {
   (void)addr;
   (void)addr_type;
   return false;
 }
-void minimed_sake_clear_link_state(void) {}
-bool minimed_sake_pump_connected(void) { return false; }
-void minimed_sake_watchdog_retoggle(void) {}
-void minimed_sake_pump_advert_start(void) {}
-void minimed_sake_pump_advert_stop(void) {}
-void minimed_sake_pump_advert_update(void) {}
+void minimed_sake_clear_link_state(void) {
+}
+bool minimed_sake_pump_connected(void) {
+  return false;
+}
+void minimed_sake_watchdog_retoggle(void) {
+}
+void minimed_sake_pump_advert_start(void) {
+}
+void minimed_sake_pump_advert_stop(void) {
+}
+void minimed_sake_pump_advert_update(void) {
+}
 
 #endif
