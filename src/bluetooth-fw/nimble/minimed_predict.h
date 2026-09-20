@@ -58,6 +58,12 @@ typedef struct {
   float mgdl;      //!< predicted glucose 30 minutes after `now`, mg/dL
   float low_prob;  //!< probability of below 70 mg/dL 30 minutes ahead
   bool low_alarm;  //!< low_prob is at or above the alarm threshold
+  // What the model saw, for the log. Set by minimed_predict_run only.
+  uint8_t bg_cells;  //!< window cells holding a real reading (of 48)
+  int16_t ins_cu;    //!< insulin over the window, hundredths of a unit, newest cell excluded
+  int16_t carb_g;    //!< carbohydrates over the window, grams, newest cell excluded
+  int16_t slope_x10; //!< change over the last 15 minutes, tenths of mg/dL per minute
+  uint8_t hour;      //!< local hour the model was given
 } MinimedPrediction;
 
 //! Predict from the newest reading. `now` is the wall clock; `gmt_offset_secs` turns it into local
@@ -68,3 +74,30 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
 
 //! Predict from an assembled window.
 void minimed_predict_window(const MinimedPredictWindow *in, MinimedPrediction *out);
+
+//! Running accuracy of the 30-minute forecast since start: each forecast waits for the reading
+//! that arrives 30 minutes later. The baseline carries the reading at forecast time forward.
+#define MINIMED_SCORE_PENDING 8
+#define MINIMED_SCORE_HORIZON_SECS (30 * 60)
+#define MINIMED_SCORE_TOLERANCE_SECS 150
+
+typedef struct {
+  uint32_t due[MINIMED_SCORE_PENDING];  //!< when the forecast comes true
+  int32_t pred[MINIMED_SCORE_PENDING];
+  int32_t base[MINIMED_SCORE_PENDING];
+  uint8_t pending;
+  uint32_t count;
+  uint64_t sse;       //!< sum of squared forecast errors, mg/dL^2
+  uint64_t sse_base;  //!< same for the carry-forward baseline
+} MinimedPredictScore;
+
+void minimed_predict_score_reset(MinimedPredictScore *sc);
+//! Remember a forecast made at `ts` from reading `base_mgdl`.
+void minimed_predict_score_note(MinimedPredictScore *sc, uint32_t ts, int32_t pred_mgdl,
+                                int32_t base_mgdl);
+//! A live reading arrived. Scores the forecast due at `ts` (within the tolerance), drops older
+//! ones. True and `*err` (forecast minus actual) when one was scored.
+bool minimed_predict_score_actual(MinimedPredictScore *sc, uint32_t ts, int32_t mgdl,
+                                  int32_t *err);
+//! RMSE in tenths of mg/dL; 0 when nothing is scored yet.
+uint32_t minimed_predict_score_rmse_x10(const MinimedPredictScore *sc, bool baseline);

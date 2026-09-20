@@ -76,3 +76,4 @@ tools/minimed_sake_hosttest/history.hex
 tools/minimed_sake_hosttest/testvec.bin
 tools/minimed_sake_hosttest/replay
 tools/minimed_sake_hosttest/test_sake
+logs_pull/

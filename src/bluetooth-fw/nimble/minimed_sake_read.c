@@ -276,6 +276,7 @@ static uint8_t s_backfill_ekind[BACKFILL_MAX_EVENTS];  // MinimedHistEventKind
 // a reconnect cannot count an event twice) and then live; it predicts only once the backfill has
 // given it the insulin and meals of the window, or it would see a body with no history.
 static MinimedPredictState s_pred;
+static MinimedPredictScore s_pred_score;
 static bool s_pred_ready;
 
 // Latest BG as shown on the watchface ("4.2" mmol/L, "LO"/"HI"; "" while the pump has no valid
@@ -568,17 +569,33 @@ static void prv_predict_and_send(void) {
   MinimedPrediction p;
   const uint32_t now = (uint32_t)rtc_get_time();
   if (s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p)) {
-    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (from %ld), low p=%d/1000 alarm=%d",
-                 (long)(p.mgdl + 0.5f), (long)s_reading_mgdl, (int)(p.low_prob * 1000.0f),
-                 (int)p.low_alarm);
-    minimed_sake_sender_send_prediction(true, (int32_t)(p.mgdl + 0.5f));
+    const int32_t pred = (int32_t)(p.mgdl + 0.5f);
+    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), low p=%d/1000 alarm=%d",
+                 (long)pred, (long)s_reading_mgdl, (long)(pred - s_reading_mgdl),
+                 (int)(p.low_prob * 1000.0f), (int)p.low_alarm);
+    PBL_LOG_INFO("minimed: predict inputs bg=%u/48 cells, slope15=%+d.%d mg/dL/min, ins4h=%d.%02dU, "
+                 "carb4h=%dg, hour=%u",
+                 p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
+                 p.ins_cu / 100, p.ins_cu % 100, p.carb_g, p.hour);
+    minimed_predict_score_note(&s_pred_score, now, pred, s_reading_mgdl);
+    minimed_sake_sender_send_prediction(true, pred);
   } else {
     minimed_sake_sender_send_prediction(false, 0);
   }
 }
 
-// A live reading (not a backfilled one): feed the predictor and refresh the prediction.
+// A live reading (not a backfilled one): score the forecast that came due, feed the predictor
+// and refresh the prediction.
 static void prv_predict_reading(int32_t mgdl) {
+  int32_t err = 0;
+  if (minimed_predict_score_actual(&s_pred_score, s_reading_ts, mgdl, &err)) {
+    const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
+    const uint32_t b = minimed_predict_score_rmse_x10(&s_pred_score, true);
+    PBL_LOG_INFO("minimed: predict score n=%lu err=%+ld rmse=%lu.%lu carry-forward=%lu.%lu mg/dL "
+                 "since start",
+                 (unsigned long)s_pred_score.count, (long)err, (unsigned long)(r / 10),
+                 (unsigned long)(r % 10), (unsigned long)(b / 10), (unsigned long)(b % 10));
+  }
   minimed_predict_add_bg(&s_pred, s_reading_ts, mgdl);
   prv_predict_and_send();
 }
