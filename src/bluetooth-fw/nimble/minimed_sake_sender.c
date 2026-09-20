@@ -72,6 +72,7 @@ static uint8_t s_txn;
 static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
+static char s_iob_total_str[IOB_STR_MAX];
 static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
@@ -314,7 +315,7 @@ static void prv_push_bg_cb(void *unused) {
     target = *fg;
     // Everything we can currently supply.
     caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
-           CAP_PREDICTION;
+           CAP_PREDICTION | CAP_IOB_TOTAL;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -378,6 +379,10 @@ static void prv_push_bg_cb(void *unused) {
     // Omitted (not sent as TREND_UNKNOWN) when the pump didn't supply one -- see
     // minimed_sake_sender_send_trend_arrow.
     res |= dict_write_uint8(&iter, KEY_TREND_ARROW, s_trend_arrow);
+    n++;
+  }
+  if (have_bg && s_iob_total_str[0] != '\0' && (caps & CAP_IOB_TOTAL)) {
+    res |= dict_write_cstring(&iter, KEY_IOB_TOTAL_STRING, s_iob_total_str);
     n++;
   }
   if (have_bg && s_pred_valid && (caps & CAP_PREDICTION)) {
@@ -559,6 +564,13 @@ void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_total_iob(const char *iob_str) {
+  // Same lock-free discipline as send_iob.
+  strncpy(s_iob_total_str, iob_str, sizeof(s_iob_total_str) - 1);
+  s_iob_total_str[sizeof(s_iob_total_str) - 1] = '\0';
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 

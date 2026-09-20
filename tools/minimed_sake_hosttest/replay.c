@@ -27,6 +27,8 @@ static Pred g_pred[MAX_PRED];
 static int g_npred;
 
 int main(int argc, char **argv) {
+  double biob_sum = 0;
+  int32_t biob_max = 0;
   FILE *f = fopen(argc > 1 ? argv[1] : "history.hex", "r");
   if (!f) { perror("history.hex"); return 2; }
   static MinimedPredictState st;
@@ -47,6 +49,11 @@ int main(int argc, char **argv) {
     if (!minimed_history_decode(&clk, rec, (uint16_t)n, FLOOR_MGDL, CEILING_MGDL, &ev)) continue;
     switch (ev.kind) {
       case MinimedHistEventRef: break;
+      case MinimedHistEventMicro:
+        minimed_predict_add_micro(&st, ev.secs, ev.value);
+        insulin_total += ev.value;
+        ins++;
+        break;
       case MinimedHistEventInsulin:
         minimed_predict_add_insulin(&st, ev.secs, ev.value);
         insulin_total += ev.value;
@@ -64,6 +71,9 @@ int main(int argc, char **argv) {
         if (ev.mgdl < 0) break;
         sgs++;
         minimed_predict_add_bg(&st, ev.secs, ev.mgdl);
+        const int32_t biob = minimed_predict_basal_iob_mu(&st, ev.secs);
+        biob_sum += biob;
+        if (biob > biob_max) biob_max = biob;
         MinimedPrediction p;
         if (g_npred < MAX_PRED && minimed_predict_run(&st, ev.secs, 0, &p)) {
           g_pred[g_npred++] = (Pred){ev.secs, 0.0f, (float)ev.mgdl, p.mgdl};
@@ -92,6 +102,8 @@ int main(int argc, char **argv) {
   }
   printf("%ld records: %ld samples, %ld insulin events (%.1f U), %ld meals, %ld rate changes\n", recs,
          sgs, ins, insulin_total, carbs, rates);
+  printf("basal IOB at each sample: mean %.2f U, max %.2f U\n",
+         sgs ? biob_sum / (double)sgs / 1000.0 : 0.0, biob_max / 1000.0);
   printf("%ld scored predictions: model RMSE %.2f MAE %.2f, persistence RMSE %.2f mg/dL\n", n,
          sqrt(se / n), ae / n, sqrt(sp / n));
   return 0;

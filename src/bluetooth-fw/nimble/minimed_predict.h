@@ -26,6 +26,7 @@ typedef struct {
   bool bg_set[MINIMED_PREDICT_CELLS];
   float ins[MINIMED_PREDICT_CELLS];  //!< U delivered in the cell (boluses, microboluses)
   float carb[MINIMED_PREDICT_CELLS]; //!< g entered in the cell
+  float micro[MINIMED_PREDICT_CELLS]; //!< U of that insulin that were Auto Basal microboluses
   float basal_u_per_h;               //!< manual-mode basal carried forward, 0 in auto mode
   int32_t basal_from;                //!< first cell the carried rate applies to
 } MinimedPredictState;
@@ -36,10 +37,21 @@ void minimed_predict_reset(MinimedPredictState *st);
 void minimed_predict_add_bg(MinimedPredictState *st, uint32_t ts, int32_t mgdl);
 //! Insulin delivered at `ts` (a bolus, or one auto-basal microbolus), units.
 void minimed_predict_add_insulin(MinimedPredictState *st, uint32_t ts, float units);
+//! An Auto Basal microbolus at `ts`, units: counts as delivered insulin like add_insulin, and is
+//! kept apart as basal for minimed_predict_basal_iob_mu.
+void minimed_predict_add_micro(MinimedPredictState *st, uint32_t ts, float units);
 //! Carbohydrates entered at `ts`, grams.
 void minimed_predict_add_carbs(MinimedPredictState *st, uint32_t ts, float grams);
 //! Manual-mode basal rate from `ts` on (U/h); 0 when the pump's algorithm delivers basal instead.
 void minimed_predict_set_basal(MinimedPredictState *st, uint32_t ts, float u_per_h);
+
+//! Insulin on board from basal delivery at `now`, milliunits: the Auto Basal microboluses, and in
+//! manual mode the programmed basal rate. Each delivered unit counts in full when given and
+//! falls linearly to nothing over MINIMED_IOB_AIT_SECS. The pump's own IOB leaves this out, so the
+//! total is the pump's number plus this one. Only meaningful once the last MINIMED_IOB_AIT_SECS
+//! of history have been loaded.
+#define MINIMED_IOB_AIT_SECS (2 * 3600)
+int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now);
 
 //! The model's input as the training set defined it, oldest cell first, cell 47 the reading at t.
 //! bg carries gaps forward. ins/carb cell 47 covers [t, t+5) and is ignored. `dow_*` counts days
