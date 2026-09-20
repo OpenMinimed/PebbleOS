@@ -25,8 +25,7 @@
 #define KEY_PUMP_CONNECTED 19  // uint8, 0=offline 1=connected; offline is the default
 #define KEY_MEAL_CARBS 20      // uint16, grams of carbohydrate of the latest meal; omitted if none
 #define KEY_MEAL_TIMESTAMP 21  // uint32, unix time the meal was recorded
-#define KEY_PREDICTED_BG 22    // uint16, mg/dL predicted 30 minutes after the BG reading; omitted if none
-// Keys 23-29 reserved
+// Keys 22-29 reserved
 
 // Message keys: Sender -> watchface (raw graph)
 #define KEY_GRAPH_DATA 30
@@ -35,6 +34,9 @@
 // Keys 33-39 reserved
 
 // Keys 40-49 reserved for bitmap graph
+
+// Experimental keys, deliberately far outside the reserved ranges until they have soaked
+#define KEY_PREDICTED_BG 1000  // uint16, mg/dL predicted 30 minutes after the BG reading; omitted if none
 
 // Capability bits
 #define CAP_BG 0x01
@@ -45,7 +47,7 @@
 #define CAP_SENDER_BATTERY 0x20
 #define CAP_PUMP_CONNECTED 0x40
 #define CAP_MEAL 0x80
-#define CAP_PREDICTION 0x100
+#define CAP_PREDICTION 0x10000 // experimental, like the keys above
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0
