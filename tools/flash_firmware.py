@@ -21,6 +21,7 @@ dropped link during the transfer leaves the running firmware untouched.
 """
 
 import argparse
+import glob
 import os
 import re
 import subprocess
@@ -31,20 +32,29 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def run_slot_from_logs(phone):
-    """The slot the watch booted from, per the current boot's log; None if the log has no line."""
+    """The slot the watch booted from, per the current boot's log; None if the log has no line.
+
+    Log lines are stored hashed, so the boot line only reads back with the running build's
+    dictionary. Try the newest dictionaries in build/ until one decodes it.
+    """
+    dicts = sorted(glob.glob(os.path.join(HERE, "..", "build", "*.loghash.json")),
+                   key=os.path.getmtime, reverse=True)[:8]
     with tempfile.TemporaryDirectory() as tmp:
         out = os.path.join(tmp, "log.txt")
-        res = subprocess.run(
-            [sys.executable, os.path.join(HERE, "dump_flash_logs.py"), "-g", "0", "--phone", phone,
-             "-o", out],
-            check=False, capture_output=True, text=True)
-        try:
-            text = open(out, errors="replace").read()
-        except OSError:
-            print((res.stdout + res.stderr).strip())
-            return None
-    m = re.findall(r"Boot slot: (\d)", text)
-    return int(m[-1]) if m else None
+        for dict_path in dicts:
+            res = subprocess.run(
+                [sys.executable, os.path.join(HERE, "dump_flash_logs.py"), "-g", "0", "--phone",
+                 phone, "--dict", dict_path, "-o", out],
+                check=False, capture_output=True, text=True)
+            try:
+                text = open(out, errors="replace").read()
+            except OSError:
+                print((res.stdout + res.stderr).strip())
+                return None
+            m = re.findall(r"Boot slot: (\d)", text)
+            if m:
+                return int(m[-1])
+    return None
 
 
 def main():
