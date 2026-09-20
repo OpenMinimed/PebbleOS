@@ -89,7 +89,8 @@ int32_t minimed_history_sg_to_mgdl(uint16_t sg, int32_t floor_mgdl, int32_t ceil
 typedef enum {
   MinimedHistEventRef,      //!< a Reference Time: updates the clock, carries no data
   MinimedHistEventSg,       //!< a CGM sample: `mgdl` (-1 if no usable value), `sg` raw code
-  MinimedHistEventInsulin,  //!< a bolus or microbolus delivered: `value` U
+  MinimedHistEventInsulin,  //!< a bolus delivered: `value` U
+  MinimedHistEventMicro,    //!< an Auto Basal microbolus, the algorithm's basal: `value` U
   MinimedHistEventBasal,    //!< a basal rate from now on: `value` U/h, 0 when the algorithm sets it
   MinimedHistEventCarbs,    //!< a meal: `value` grams (never 0)
 } MinimedHistEventKind;

@@ -167,6 +167,7 @@ static void prv_clear_slot(MinimedPredictState *st, int32_t cell) {
   st->bg_set[s] = false;
   st->ins[s] = 0.0f;
   st->carb[s] = 0.0f;
+  st->micro[s] = 0.0f;
 }
 
 // Cell index of a timestamp, snapped to the nearest 5-minute mark like the training grid.
@@ -201,6 +202,33 @@ void minimed_predict_add_insulin(MinimedPredictState *st, uint32_t ts, float uni
   if (units <= 0.0f) return;
   const int s = prv_touch(st, prv_cell_of(ts));
   if (s >= 0) st->ins[s] += units;
+}
+
+void minimed_predict_add_micro(MinimedPredictState *st, uint32_t ts, float units) {
+  if (units <= 0.0f) return;
+  const int s = prv_touch(st, prv_cell_of(ts));
+  if (s < 0) return;
+  st->ins[s] += units;
+  st->micro[s] += units;
+}
+
+int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now) {
+  if (!st->have) return 0;
+  float iob = 0.0f;
+  for (int32_t c = st->head; c > st->head - CELLS; c--) {
+    const int64_t age = (int64_t)now - (int64_t)c * MINIMED_PREDICT_CELL_SECS;
+    if (age >= MINIMED_IOB_AIT_SECS) break;  // older cells are all spent
+    float delivered = st->micro[prv_slot(c)];
+    if (st->basal_u_per_h > 0.0f && c >= st->basal_from) {
+      // The cell spans age +-150 s; the part after `now` has not been delivered yet.
+      int64_t elapsed = age + MINIMED_PREDICT_CELL_SECS / 2;
+      if (elapsed > MINIMED_PREDICT_CELL_SECS) elapsed = MINIMED_PREDICT_CELL_SECS;
+      if (elapsed > 0) delivered += st->basal_u_per_h * (float)elapsed / 3600.0f;
+    }
+    const float left = 1.0f - (float)(age > 0 ? age : 0) / (float)MINIMED_IOB_AIT_SECS;
+    iob += delivered * left;
+  }
+  return (int32_t)(iob * 1000.0f + 0.5f);
 }
 
 void minimed_predict_add_carbs(MinimedPredictState *st, uint32_t ts, float grams) {

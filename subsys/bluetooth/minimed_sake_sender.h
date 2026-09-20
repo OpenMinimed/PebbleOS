@@ -54,6 +54,10 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
 void minimed_sake_sender_send_iob(const char *iob_str);
 
+//! Total IOB (pump IOB plus basal insulin still active) as "N.N"; an empty string withdraws it.
+//! Sent only to a watchface that announced CAP_IOB_TOTAL. Same locking rules as send_iob.
+void minimed_sake_sender_send_total_iob(const char *iob_str);
+
 //! Update the pump-status line (status string and start/end times).
 //! Pushes the full cached frame like send_iob; does not touch the BG timestamp.
 void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uint32_t end);

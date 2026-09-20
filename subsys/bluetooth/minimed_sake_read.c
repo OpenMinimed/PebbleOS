@@ -505,13 +505,29 @@ static void prv_parse_iob(void) {
 
   // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
   int32_t tenths = (iob_mu + 50) / 100;
-  char line[32];
+  char line[64];
   snprintf(line, sizeof(line), "*** IOB %ld.%ld U ***", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_log(line);
 
   char iob_str[12];  // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
   snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_sender_send_iob(iob_str);  // forward to the watchface (no-op if it isn't running)
+
+  // Total IOB: the pump's number counts boluses only, so add the basal insulin still active. Only
+  // once the backfill has loaded the last hours of delivery, or the basal part would be missing.
+  if (s_pred_ready) {
+    const int32_t basal_mu = minimed_predict_basal_iob_mu(&s_pred, (uint32_t)rtc_get_time());
+    const int32_t total_tenths = (iob_mu + basal_mu + 50) / 100;
+    PBL_LOG_INFO("minimed: total IOB %ld mu = pump %ld + basal %ld", (long)(iob_mu + basal_mu),
+                 (long)iob_mu, (long)basal_mu);
+    snprintf(line, sizeof(line), "tot %ld.%ld=%ld.%ld+%ld.%ld", (long)(total_tenths / 10),
+             (long)(total_tenths % 10), (long)(tenths / 10), (long)(tenths % 10),
+             (long)((basal_mu + 50) / 1000), (long)(((basal_mu + 50) / 100) % 10));
+    minimed_sake_log(line);
+    snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(total_tenths / 10),
+             (long)(total_tenths % 10));
+    minimed_sake_sender_send_total_iob(iob_str);
+  }
 }
 
 #if MINIMED_ALERT_POPUPS
@@ -630,6 +646,8 @@ static void prv_predict_live_event(const MinimedHistEvent *ev) {
   const uint32_t now = (uint32_t)rtc_get_time();
   if (ev->kind == MinimedHistEventInsulin) {
     minimed_predict_add_insulin(&s_pred, now, ev->value);
+  } else if (ev->kind == MinimedHistEventMicro) {
+    minimed_predict_add_micro(&s_pred, now, ev->value);
   } else if (ev->kind == MinimedHistEventCarbs) {
     minimed_predict_add_carbs(&s_pred, now, ev->value);
   } else if (ev->kind == MinimedHistEventBasal) {
@@ -656,7 +674,8 @@ static void prv_live_record(uint8_t rec_len) {
       ev.kind = MinimedHistEventBasal;
       ev.value = ins.by_algorithm ? 0.0f : ins.amount;
     } else {
-      ev.kind = MinimedHistEventInsulin;
+      ev.kind = ins.kind == MinimedHistInsulinMicro ? MinimedHistEventMicro
+                                                    : MinimedHistEventInsulin;
       ev.value = ins.amount;
     }
     prv_predict_live_event(&ev);
@@ -736,6 +755,7 @@ static void prv_backfill_finish(void) {
     const uint32_t ets = BF_TS(s_backfill_esecs[i]);
     switch ((MinimedHistEventKind)s_backfill_ekind[i]) {
       case MinimedHistEventInsulin: minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]); break;
+      case MinimedHistEventMicro: minimed_predict_add_micro(&s_pred, ets, s_backfill_evalue[i]); break;
       case MinimedHistEventBasal: minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]); break;
       case MinimedHistEventCarbs:
         minimed_predict_add_carbs(&s_pred, ets, s_backfill_evalue[i]);

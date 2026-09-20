@@ -198,7 +198,8 @@ bool minimed_history_decode(MinimedHistClock *clk, const uint8_t *rec, uint16_t 
       out->kind = MinimedHistEventBasal;
       out->value = ins.by_algorithm ? 0.0f : ins.amount;
     } else {
-      out->kind = MinimedHistEventInsulin;
+      out->kind = ins.kind == MinimedHistInsulinMicro ? MinimedHistEventMicro
+                                                      : MinimedHistEventInsulin;
       out->value = ins.amount;
     }
     return true;

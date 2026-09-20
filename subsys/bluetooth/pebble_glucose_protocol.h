@@ -37,6 +37,7 @@
 
 // Experimental keys, deliberately far outside the reserved ranges until they have soaked
 #define KEY_PREDICTED_BG 1000  // uint16, mg/dL predicted 30 minutes after the BG reading; omitted if none
+#define KEY_IOB_TOTAL_STRING 1001 // string "N.N" units: pump IOB plus the basal insulin still active; omitted if unknown
 
 // Capability bits
 #define CAP_BG 0x01
@@ -48,6 +49,7 @@
 #define CAP_PUMP_CONNECTED 0x40
 #define CAP_MEAL 0x80
 #define CAP_PREDICTION 0x10000 // experimental, like the keys above
+#define CAP_IOB_TOTAL 0x20000
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0

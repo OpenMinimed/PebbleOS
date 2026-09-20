@@ -1126,6 +1126,54 @@ static void section_predict(void) {
             q1.mgdl == q2.mgdl);
 }
 
+static void section_basal_iob(void) {
+  printf("-- Basal IOB --\n");
+  const uint32_t now = 1800000000u;
+  MinimedPredictState st;
+  minimed_predict_reset(&st);
+  check("empty state: 0", minimed_predict_basal_iob_mu(&st, now) == 0);
+
+  minimed_predict_add_bg(&st, now, 120);
+  minimed_predict_add_micro(&st, now, 0.5f);
+  check("a microbolus just given counts in full", minimed_predict_basal_iob_mu(&st, now) == 500);
+  check("half of it is left after half of the active time",
+        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS / 2) == 250);
+  check("none is left after the active time",
+        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS) == 0);
+
+  minimed_predict_add_insulin(&st, now, 2.0f);  // a bolus is not basal
+  check("a bolus adds nothing to the basal part", minimed_predict_basal_iob_mu(&st, now) == 500);
+
+  MinimedPredictState m;
+  minimed_predict_reset(&m);
+  minimed_predict_add_bg(&m, now, 120);
+  minimed_predict_set_basal(&m, now - 3600, 1.2f);
+  const int32_t manual = minimed_predict_basal_iob_mu(&m, now);
+  check("manual 1.2 U/h for an hour leaves 0.8 to 0.95 U", manual > 800 && manual < 950);
+  minimed_predict_set_basal(&m, now - 3600, 0.0f);
+  check("a suspended pump (rate 0) adds none", minimed_predict_basal_iob_mu(&m, now) == 0);
+
+  MinimedPredictState old;
+  minimed_predict_reset(&old);
+  minimed_predict_add_micro(&old, now - 3 * 3600, 1.0f);
+  minimed_predict_add_bg(&old, now, 120);
+  check("delivery from 3 h ago is spent", minimed_predict_basal_iob_mu(&old, now) == 0);
+
+  MinimedPredictState micro, bolus;
+  minimed_predict_reset(&micro);
+  minimed_predict_reset(&bolus);
+  minimed_predict_add_bg(&micro, now - 600, 120);
+  minimed_predict_add_bg(&bolus, now - 600, 120);
+  minimed_predict_add_micro(&micro, now - 600, 0.3f);
+  minimed_predict_add_insulin(&bolus, now - 600, 0.3f);
+  minimed_predict_add_bg(&micro, now, 121);
+  minimed_predict_add_bg(&bolus, now, 121);
+  MinimedPrediction a, b;
+  check("a microbolus feeds the model like any other insulin",
+        minimed_predict_run(&micro, now, 0, &a) && minimed_predict_run(&bolus, now, 0, &b) &&
+            a.mgdl == b.mgdl && a.ins_cu == b.ins_cu && a.ins_cu == 30);
+}
+
 static void section_predict_score(void) {
   printf("-- Forecast score --\n");
   MinimedPredictScore sc;
@@ -1165,6 +1213,7 @@ int main(void) {
   section_announce();
   section_predict();
   section_predict_score();
+  section_basal_iob();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;
