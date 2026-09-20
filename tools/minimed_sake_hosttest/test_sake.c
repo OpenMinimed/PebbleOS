@@ -1126,6 +1126,31 @@ static void section_predict(void) {
             q1.mgdl == q2.mgdl);
 }
 
+static void section_predict_score(void) {
+  printf("-- Forecast score --\n");
+  MinimedPredictScore sc;
+  minimed_predict_score_reset(&sc);
+  int32_t err = 0;
+  check("nothing scored yet", minimed_predict_score_rmse_x10(&sc, false) == 0);
+
+  minimed_predict_score_note(&sc, 1000, 150, 140);  // due 2800
+  minimed_predict_score_note(&sc, 1300, 120, 130);  // due 3100
+  check("too early: not scored", !minimed_predict_score_actual(&sc, 2500, 100, &err));
+  check("in tolerance: scored", minimed_predict_score_actual(&sc, 2900, 140, &err) && err == 10);
+  check("count is 1", sc.count == 1);
+  check("rmse 10.0, baseline 0.0",
+        minimed_predict_score_rmse_x10(&sc, false) == 100 &&
+            minimed_predict_score_rmse_x10(&sc, true) == 0);
+  check("the second forecast is still pending", sc.pending == 1);
+  check("a forecast whose reading was missed is dropped",
+        !minimed_predict_score_actual(&sc, 3300, 100, &err) && sc.pending == 0);
+  minimed_predict_score_note(&sc, 4000, 100, 100);
+  minimed_predict_score_actual(&sc, 5800, 90, &err);
+  check("two scored: rmse sqrt((100+100)/2) = 10.0", minimed_predict_score_rmse_x10(&sc, false) == 100);
+  for (int i = 0; i < 20; i++) minimed_predict_score_note(&sc, 10000 + i, 100, 100);
+  check("pending stays bounded", sc.pending == MINIMED_SCORE_PENDING);
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -1139,6 +1164,7 @@ int main(void) {
   section_annunciation();
   section_announce();
   section_predict();
+  section_predict_score();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

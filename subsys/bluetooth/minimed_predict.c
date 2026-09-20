@@ -289,5 +289,70 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
   inp->hour = (int)(sec_of_day / 3600);
 
   minimed_predict_window(inp, out);
+
+  int cells = 0;
+  float ins = 0.0f, carb = 0.0f;
+  for (int k = 0; k < WINDOW; k++) {
+    bool s;
+    prv_cell_bg(st, first + k, &s);
+    if (s) cells++;
+    if (k < WINDOW - 1) {  // the newest cell is ignored by the model
+      ins += inp->ins[k];
+      carb += inp->carb[k];
+    }
+  }
+  out->bg_cells = (uint8_t)cells;
+  out->ins_cu = (int16_t)(ins * 100.0f + 0.5f);
+  out->carb_g = (int16_t)(carb + 0.5f);
+  out->slope_x10 = (int16_t)((inp->bg[WINDOW - 1] - inp->bg[WINDOW - 4]) * 10.0f / 15.0f);
+  out->hour = (uint8_t)inp->hour;
   return true;
+}
+
+void minimed_predict_score_reset(MinimedPredictScore *sc) { memset(sc, 0, sizeof(*sc)); }
+
+void minimed_predict_score_note(MinimedPredictScore *sc, uint32_t ts, int32_t pred_mgdl,
+                                int32_t base_mgdl) {
+  if (sc->pending == MINIMED_SCORE_PENDING) {  // drop the oldest
+    memmove(&sc->due[0], &sc->due[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->due[0]));
+    memmove(&sc->pred[0], &sc->pred[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->pred[0]));
+    memmove(&sc->base[0], &sc->base[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->base[0]));
+    sc->pending--;
+  }
+  sc->due[sc->pending] = ts + MINIMED_SCORE_HORIZON_SECS;
+  sc->pred[sc->pending] = pred_mgdl;
+  sc->base[sc->pending] = base_mgdl;
+  sc->pending++;
+}
+
+bool minimed_predict_score_actual(MinimedPredictScore *sc, uint32_t ts, int32_t mgdl,
+                                  int32_t *err) {
+  bool scored = false;
+  uint8_t keep = 0;
+  for (uint8_t i = 0; i < sc->pending; i++) {
+    const int64_t d = (int64_t)ts - (int64_t)sc->due[i];
+    if (d > MINIMED_SCORE_TOLERANCE_SECS) continue;  // missed its reading: forget it
+    if (d >= -MINIMED_SCORE_TOLERANCE_SECS && !scored) {
+      const int32_t e = sc->pred[i] - mgdl;
+      const int32_t eb = sc->base[i] - mgdl;
+      sc->sse += (uint64_t)((int64_t)e * e);
+      sc->sse_base += (uint64_t)((int64_t)eb * eb);
+      sc->count++;
+      if (err) *err = e;
+      scored = true;
+      continue;
+    }
+    sc->due[keep] = sc->due[i];
+    sc->pred[keep] = sc->pred[i];
+    sc->base[keep] = sc->base[i];
+    keep++;
+  }
+  sc->pending = keep;
+  return scored;
+}
+
+uint32_t minimed_predict_score_rmse_x10(const MinimedPredictScore *sc, bool baseline) {
+  if (sc->count == 0) return 0;
+  const float mse = (float)(baseline ? sc->sse_base : sc->sse) / (float)sc->count;
+  return (uint32_t)(sqrtf(mse) * 10.0f + 0.5f);
 }
