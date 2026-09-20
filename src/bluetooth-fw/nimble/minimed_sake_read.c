@@ -577,6 +577,16 @@ static void prv_predict_and_send(void) {
                  "carb4h=%dg, hour=%u",
                  p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
                  p.ins_cu / 100, p.ins_cu % 100, p.carb_g, p.hour);
+    // The watch's log view keeps 31 characters after the time; the rest is cut there.
+    char line[64];
+    snprintf(line, sizeof(line), "pred %ld %+ld low%d.%d%%", (long)pred,
+             (long)(pred - s_reading_mgdl), (int)(p.low_prob * 100.0f),
+             (int)(p.low_prob * 1000.0f) % 10);
+    minimed_sake_log(line);
+    snprintf(line, sizeof(line), "in bg%u s%+d.%d i%d.%dU c%dg h%u", p.bg_cells, p.slope_x10 / 10,
+             (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10, p.ins_cu / 100,
+             (p.ins_cu % 100) / 10, p.carb_g, p.hour);
+    minimed_sake_log(line);
     minimed_predict_score_note(&s_pred_score, now, pred, s_reading_mgdl);
     minimed_sake_sender_send_prediction(true, pred);
   } else {
@@ -588,14 +598,29 @@ static void prv_predict_and_send(void) {
 // and refresh the prediction.
 static void prv_predict_reading(int32_t mgdl) {
   int32_t err = 0;
-  if (minimed_predict_score_actual(&s_pred_score, s_reading_ts, mgdl, &err)) {
-    const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
-    const uint32_t b = minimed_predict_score_rmse_x10(&s_pred_score, true);
+  const bool scored = minimed_predict_score_actual(&s_pred_score, s_reading_ts, mgdl, &err);
+  const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
+  const uint32_t b = minimed_predict_score_rmse_x10(&s_pred_score, true);
+  if (scored) {
     PBL_LOG_INFO("minimed: predict score n=%lu err=%+ld rmse=%lu.%lu carry-forward=%lu.%lu mg/dL "
                  "since start",
                  (unsigned long)s_pred_score.count, (long)err, (unsigned long)(r / 10),
                  (unsigned long)(r % 10), (unsigned long)(b / 10), (unsigned long)(b % 10));
   }
+  // Always show the score in the watch's log view, also before the first forecast is due.
+  char line[64];
+  if (s_pred_score.count == 0) {
+    const uint32_t first_due = s_pred_score.pending ? s_pred_score.due[0] : 0;
+    const uint32_t wait_min =
+        first_due > s_reading_ts ? (first_due - s_reading_ts + 59) / 60 : 0;
+    snprintf(line, sizeof(line), "rmse n0, first in %lum", (unsigned long)wait_min);
+  } else {
+    snprintf(line, sizeof(line), "rmse%lu.%lu cf%lu.%lu n%lu err%+ld", (unsigned long)(r / 10),
+             (unsigned long)(r % 10), (unsigned long)(b / 10), (unsigned long)(b % 10),
+             (unsigned long)s_pred_score.count, scored ? (long)err : 0L);
+  }
+  minimed_sake_log(line);
+  PBL_LOG_INFO("minimed: predict %s", line);
   minimed_predict_add_bg(&s_pred, s_reading_ts, mgdl);
   prv_predict_and_send();
 }
