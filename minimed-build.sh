@@ -155,9 +155,21 @@ print(f'{(prio>>56)&0xff:02x} {(prio>>48)&0xff} {(prio>>40)&0xff} {(prio>>32)&0x
   fi
 }
 
+# Archive the linked ELF right after each slot's build. The firmware ELF is overwritten by the next
+# build (and the two slots link at different addresses), so a later coredump cannot be resolved
+# against it. Keep a per-build, per-slot copy with full debug info for readcore.py/addr2line.
+archive_elf() {
+  local slot=${1:-}
+  local elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
+  mkdir -p build/elfs
+  cp build/pebbleos.elf "$elf"
+  echo ">> archived: $elf"
+}
+
 outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
+  archive_elf
   fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
   out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
@@ -167,6 +179,7 @@ if [ ${#SLOTS[@]} -eq 0 ]; then
 else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
+    archive_elf "$slot"
     fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
     out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
@@ -174,16 +187,6 @@ else
     outs+=("$out")
   done
 fi
-
-# Archive the linked ELF for each build. The firmware ELF is overwritten by the next build, so a
-# later coredump cannot be resolved against it (the v13 crash debug dead-ended exactly here).
-# Keep a per-build copy with full debug info for later readcore.py/addr2line analysis.
-mkdir -p build/elfs
-for slot in "${SLOTS[@]:-''}"; do
-  elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
-  cp build/pebbleos.elf "$elf"
-  echo ">> archived: $elf"
-done
 
 # Keep this build's loghash dictionary next to the .pbz. PBL_LOG lines are stored hashed and the
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
