@@ -78,3 +78,5 @@ Others:
 
 - If fixing Linear or GitHub issues, include in the commit body a line with
   `Fixes XXX`, where XXX is the issue number.
+- Always start AI-written posts (PRs, issues, etc) with a disclaimer like:
+  `🤖 Written by an AI at <Name>'s request`.
