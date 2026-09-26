@@ -38,6 +38,10 @@
 // Experimental keys, deliberately far outside the reserved ranges until they have soaked
 #define KEY_PREDICTED_BG 1000  // uint16, mg/dL predicted 30 minutes after the BG reading; omitted if none
 #define KEY_IOB_TOTAL_STRING 1001 // string "N.N" units: pump IOB plus the basal insulin still active; omitted if unknown
+#define KEY_HYPO_TREAT_PCT 1002  // uint8, 0-100: treat-or-wait score for a falling low (see
+                                 // sugar_predictor/INTEGRATION.md); omitted outside that regime
+#define KEY_MEAL_LIST 1003      // blob: every meal still inside the graph window, not just the
+                                 // latest. [count u8][(timestamp u32 LE)(grams u16 LE)] x count
 
 // Capability bits
 #define CAP_BG 0x01
@@ -50,6 +54,8 @@
 #define CAP_MEAL 0x80
 #define CAP_PREDICTION 0x10000 // experimental, like the keys above
 #define CAP_IOB_TOTAL 0x20000
+#define CAP_HYPO 0x40000       // watchface understands KEY_HYPO_TREAT_PCT
+#define CAP_MEAL_LIST 0x80000  // watchface understands KEY_MEAL_LIST (else only the latest meal)
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0

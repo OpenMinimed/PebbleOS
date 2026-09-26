@@ -43,11 +43,20 @@ void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_
 //! Safe to call from the BT host task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl);
 
-//! The latest meal's carbohydrate amount, from the pump's history. `timestamp` is when the watch
-//! learned of it (the record carries no absolute time the watch can anchor on). Stored until
-//! replaced and pushed as KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP; the watchface decides how long it
-//! stays relevant. Safe to call from the BT host task; the actual send runs on KernelMain.
+//! A meal's carbohydrate amount, from the pump's history. `timestamp` is when the record was
+//! logged. Kept in a small ring (MINIMED_MEAL_LIST_MAX, sorted oldest-first, oldest evicted once
+//! full) and pushed as KEY_MEAL_LIST for a watchface that announced CAP_MEAL_LIST, and as the
+//! newest entry's KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP for one that only announced CAP_MEAL. Call
+//! once per meal (live or backfilled; a duplicate timestamp updates that entry rather than adding
+//! one). Safe to call from the BT host task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
+
+//! The hypo (treat-or-wait) model's recommendation for the current falling low, 0-100 (see
+//! sugar_predictor/INTEGRATION.md's treat_pct). `valid` false clears it -- the key is then omitted,
+//! for when the reading is no longer in the regime the model was fit for. Sent only to a
+//! watchface that announced CAP_HYPO. Safe to call from the BT host task; the actual send runs on
+//! KernelMain.
+void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct);
 
 //! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
 //! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG

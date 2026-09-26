@@ -17,6 +17,7 @@
 #include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
 #include "minimed_history.h"
+#include "minimed_hypo.h"
 #include "minimed_idd_flags.h"
 #include "minimed_predict.h"
 #include "minimed_iob.h"
@@ -180,7 +181,9 @@ static struct ble_npl_callout s_heap_co;  // fixed-interval kernel heap watch
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
 static void prv_backfill_maybe_request(void);
+static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts);
 static void prv_predict_reading(int32_t mgdl);
+static void prv_hypo_check(const MinimedPredictWindow *win);
 static void prv_status_publish_if_done(uint8_t completed_op);
 static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                              struct ble_gatt_attr *attr, void *arg);
@@ -257,6 +260,15 @@ static bool s_backfill_done;    // this connection's backfill has been issued
 static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
 static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
 static MinimedHistClock s_backfill_clock;
+
+// A short live gap (a couple of missed 5-min CGM cycles) while already connected: re-issue the same
+// RACP history read the connect-time backfill above uses, so the pump's own log fills the hole
+// instead of leaving a permanent break in the graph and the predictor's window. Cooldown bounds how
+// often this can fire so a run of gaps (a bad radio patch) doesn't turn into a RACP read on every
+// poll; REFILL_GAP_MIN is set above one missed cycle (5 min) with margin for poll jitter.
+#define REFILL_GAP_MIN 12
+#define REFILL_COOLDOWN_SECS (20 * 60)
+static uint32_t s_last_refill_ts;  // rtc seconds of the last live refill trigger; 0 = never
 // Off-scale side of the newest SG sample in the pump's event log: 0 none, 1 below, 2 above. The IDD
 // status only names the side sometimes, and in one capture never did over 15 minutes of 0 mg/dL
 // records, while the log held the below-range code for every one of them.
@@ -426,6 +438,7 @@ static void prv_parse_and_show(void) {
     // Off-scale: show LO/HI like the pump, graph at the scale edge that was crossed ("at or
     // beyond"), timestamped fresh -- the sensor is reporting, just out of range.
     if (is_new) {
+      const uint32_t prev_ts = s_reading_ts;
       s_last_offset = offset;
       s_have_offset = true;
       s_reading_ts = (uint32_t)rtc_get_time();
@@ -434,6 +447,7 @@ static void prv_parse_and_show(void) {
       prv_predict_reading(s_reading_mgdl);
       prv_forward_trend(flags);
       prv_backfill_maybe_request();
+      prv_refill_if_gap(prev_ts, s_reading_ts);
     }
     minimed_sake_log(below ? "*** BG LO ***" : "*** BG HI ***");
     strcpy(s_last_bg_str, below ? "LO" : "HI");
@@ -448,6 +462,7 @@ static void prv_parse_and_show(void) {
   int32_t tenths = (mgdl * 100000 + 90091) / 180182;
 
   if (is_new) {
+    const uint32_t prev_ts = s_reading_ts;
     s_hist_edge = 0;  // a real number: the sensor is back in range
     s_last_offset = offset;
     s_have_offset = true;
@@ -457,6 +472,7 @@ static void prv_parse_and_show(void) {
     prv_predict_reading(mgdl);
     prv_forward_trend(flags);
     prv_backfill_maybe_request();
+    prv_refill_if_gap(prev_ts, s_reading_ts);
     snprintf(line, sizeof(line), "*** BG %ld.%ld mmol/L ***", (long)(tenths / 10),
              (long)(tenths % 10));
     // Flash mirror (the ring lines don't reach flash): when readings resume after a sensor
@@ -579,6 +595,33 @@ static void prv_backfill_record(uint8_t rec_len) {
 // Local-time offset of the watch, seconds east of UTC.
 static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now); }
 
+// A falling low: score whether to treat, with the sugar_predictor/firmware/hypo.c model ported to
+// minimed_hypo.c. Fires only at a decision point (minimed_hypo_should_evaluate), not every cell --
+// about 16 times a day on the wearer this was fitted on.
+static void prv_hypo_check(const MinimedPredictWindow *win) {
+  if (!win || !minimed_hypo_should_evaluate(win)) {
+    minimed_sake_sender_send_hypo(false, 0);  // out of the falling-low regime: clear any banner
+    return;
+  }
+  MinimedHypoPrediction h;
+  minimed_hypo_eval(win, 0.3f, &h);
+  PBL_LOG_INFO("minimed: hypo treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
+               "%ld/%ld",
+               (int)(h.treat_pct + 0.5f), (long)(h.nadir_untreated + 0.5f),
+               (long)(h.nadir_treated + 0.5f), (long)(h.mins_untreated + 0.5f),
+               (long)(h.mins_treated + 0.5f));
+  PBL_LOG_INFO("minimed: hypo p_low=%d pct p_severe=%d pct p_over=%d pct",
+               (int)(h.p_low * 100.0f + 0.5f), (int)(h.p_severe * 100.0f + 0.5f),
+               (int)(h.p_over * 100.0f + 0.5f));
+  char line[64];
+  snprintf(line, sizeof(line), "hypo t%d n%ld/%ld m%ld/%ld", (int)(h.treat_pct + 0.5f),
+           (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
+           (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f));
+  minimed_sake_log(line);
+  const int32_t pct = (int32_t)(h.treat_pct + 0.5f);
+  minimed_sake_sender_send_hypo(true, (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct)));
+}
+
 // Predict 30 minutes ahead from the newest reading and hand the result to the watchface. A reading
 // that cannot be predicted (stale, or the predictor not primed) clears the last prediction.
 static void prv_predict_and_send(void) {
@@ -605,6 +648,7 @@ static void prv_predict_and_send(void) {
     minimed_sake_log(line);
     minimed_predict_score_note(&s_pred_score, now, pred, s_reading_mgdl);
     minimed_sake_sender_send_prediction(true, pred);
+    prv_hypo_check(minimed_predict_last_window());
   } else {
     minimed_sake_sender_send_prediction(false, 0);
   }
@@ -746,9 +790,6 @@ static void prv_backfill_finish(void) {
   // reading the watch already had.
   minimed_predict_reset(&s_pred);
   for (uint8_t i = 0; i < kept; i++) minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
-  int meals = 0;
-  uint32_t last_meal_ts = 0;
-  float last_meal_g = 0.0f;
   for (uint8_t i = 0; i < s_backfill_ne; i++) {
     const uint32_t age = newest > s_backfill_esecs[i] ? newest - s_backfill_esecs[i] : 0;
     if (age > window_secs) continue;
@@ -759,9 +800,9 @@ static void prv_backfill_finish(void) {
       case MinimedHistEventBasal: minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]); break;
       case MinimedHistEventCarbs:
         minimed_predict_add_carbs(&s_pred, ets, s_backfill_evalue[i]);
-        last_meal_ts = ets;
-        last_meal_g = s_backfill_evalue[i];
-        meals++;
+        // Every meal in the window, not just the newest -- the sender keeps all of them for the
+        // watchface's meal list (KEY_MEAL_LIST) and the newest as the legacy single-meal fields.
+        minimed_sake_sender_send_meal((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
         break;
       default: break;
     }
@@ -769,10 +810,28 @@ static void prv_backfill_finish(void) {
   #undef BF_TS
   if (s_have_offset) minimed_predict_add_bg(&s_pred, s_reading_ts, s_reading_mgdl);
   s_pred_ready = kept > 0;
-  if (meals > 0) minimed_sake_sender_send_meal((uint16_t)(last_meal_g + 0.5f), last_meal_ts);
   prv_predict_and_send();
   s_backfill_n = 0;
   s_backfill_ne = 0;
+}
+
+// A new reading landed REFILL_GAP_MIN or more after the previous one: at least one CGM cycle was
+// missed (a brief radio dropout, not a real outage -- STALE_MINUTES/annunciations cover the bigger
+// case). Re-run the same backfill read used at connect time so the pump's own history fills the
+// hole in the graph and the predictor's window, instead of the gap sitting there for good.
+static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts) {
+  if (!s_annunc_have || !s_have_offset || s_h_idd_racp == 0 || s_h_hist == 0) return;
+  if (prev_ts == 0 || new_ts <= prev_ts) return;  // no prior reading yet, or a clock step back
+  const uint32_t gap_min = (new_ts - prev_ts) / 60;
+  if (gap_min < REFILL_GAP_MIN) return;
+  if (s_last_refill_ts != 0 && new_ts - s_last_refill_ts < REFILL_COOLDOWN_SECS) return;
+  s_last_refill_ts = new_ts;
+  s_backfill_wanted = true;
+  char line[32];
+  snprintf(line, sizeof(line), "refill: gap %lu min", (unsigned long)gap_min);
+  minimed_sake_log(line);
+  PBL_LOG_INFO("minimed: %s, re-reading history", line);
+  prv_request(PEND_ANNUNC);
 }
 
 // Queue the backfill read once both of its inputs exist: the log cursor (baseline) and a CGM
@@ -1134,8 +1193,10 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
     char line[32];
     snprintf(line, sizeof(line), "st: %s", label[0] != '\0' ? label : "(normal)");
     minimed_sake_log(line);
-    PBL_LOG_INFO("minimed: status label '%s' bg_invalid=%d", label,
-                 (int)minimed_status_bg_invalid());
+    // minimed_status_compose returns true on every status poll once primed (including the common
+    // "(normal)" case), so this would otherwise log at INFO on every poll cycle forever.
+    PBL_LOG_DBG("minimed: status label '%s' bg_invalid=%d", label,
+                (int)minimed_status_bg_invalid());
     if (minimed_status_bg_invalid()) {
       // The pump has no valid glucose right now (warm-up, signal lost, ...): blank the BG
       // immediately, stamped now so the watchface shows a current "---" like the pump does,
@@ -1867,6 +1928,7 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_backfill_done = false;
   s_backfill_wanted = false;
   s_backfill_run = false;
+  s_last_refill_ts = 0;
   s_backfill_clock.have_ref = false;
   s_backfill_n = 0;
   s_backfill_ne = 0;

@@ -84,6 +84,17 @@ static uint16_t s_meal_grams;
 static uint32_t s_meal_timestamp;
 static bool s_trend_valid;     // false = no trend field in the last reading; omit the key
 static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
+static bool s_hypo_valid;      // false = not in the falling-low regime the hypo model was fit for
+static uint8_t s_hypo_pct;     // treat-or-wait score, 0-100; only meaningful if s_hypo_valid
+
+// Every meal still inside the graph window, not just the newest -- KEY_MEAL_LIST. Kept sorted
+// oldest-first by timestamp so eviction (dropping the globally oldest once full) and picking the
+// legacy single-meal fields (the newest entry) don't depend on call order between a live meal and
+// a backfill replaying the same window in whatever order the pump's event log gave it.
+#define MINIMED_MEAL_LIST_MAX 8
+static uint32_t s_meal_list_ts[MINIMED_MEAL_LIST_MAX];
+static uint16_t s_meal_list_g[MINIMED_MEAL_LIST_MAX];
+static uint8_t s_meal_list_count;
 
 static MinimedGraph s_graph;
 
@@ -275,13 +286,13 @@ static void prv_push_bg_cb(void *unused) {
   // watchface's app-inbox when the watchface is busy or not foreground.
   const uint32_t now = (uint32_t)rtc_get_ticks();
   if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
-    PBL_LOG_INFO("wf push: dropped, within coalesce window");
+    PBL_LOG_DBG("wf push: dropped, within coalesce window");
     return;
   }
   s_last_push_ticks = now;
 
   if (!s_session) {
-    PBL_LOG_INFO("wf push: dropped, no session");
+    PBL_LOG_DBG("wf push: dropped, no session");
     return;
   }
 
@@ -315,7 +326,7 @@ static void prv_push_bg_cb(void *unused) {
     target = *fg;
     // Everything we can currently supply.
     caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
-           CAP_PREDICTION | CAP_IOB_TOTAL;
+           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -389,10 +400,33 @@ static void prv_push_bg_cb(void *unused) {
     res |= dict_write_uint16(&iter, KEY_PREDICTED_BG, s_pred_mgdl);
     n++;
   }
+  if (have_bg && s_hypo_valid && (caps & CAP_HYPO)) {
+    res |= dict_write_uint8(&iter, KEY_HYPO_TREAT_PCT, s_hypo_pct);
+    n++;
+  }
   if (s_meal_valid && (caps & CAP_MEAL)) {
+    // Legacy single-meal fields: the newest entry in the list, for a watchface that predates
+    // CAP_MEAL_LIST.
     res |= dict_write_uint16(&iter, KEY_MEAL_CARBS, s_meal_grams);
     res |= dict_write_uint32(&iter, KEY_MEAL_TIMESTAMP, s_meal_timestamp);
     n += 2;
+  }
+  if (s_meal_list_count > 0 && (caps & CAP_MEAL_LIST)) {
+    uint8_t meal_blob[1 + MINIMED_MEAL_LIST_MAX * 6];
+    meal_blob[0] = s_meal_list_count;
+    for (uint8_t i = 0; i < s_meal_list_count; i++) {
+      const uint32_t ts = s_meal_list_ts[i];
+      const uint16_t g = s_meal_list_g[i];
+      uint8_t *p = meal_blob + 1 + i * 6;
+      p[0] = (uint8_t)ts;
+      p[1] = (uint8_t)(ts >> 8);
+      p[2] = (uint8_t)(ts >> 16);
+      p[3] = (uint8_t)(ts >> 24);
+      p[4] = (uint8_t)g;
+      p[5] = (uint8_t)(g >> 8);
+    }
+    res |= dict_write_data(&iter, KEY_MEAL_LIST, meal_blob, 1 + s_meal_list_count * 6);
+    n++;
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
   // tell the watchface that "count=0" is a real, parseable graph.
@@ -411,8 +445,8 @@ static void prv_push_bg_cb(void *unused) {
   // Injection cannot report a drop (no inbox, wrong foreground app), so log whether the
   // target is in the foreground to tell a delivered push from a discarded one.
   const PebbleProcessMd *fg = app_manager_get_current_app_md();
-  PBL_LOG_INFO("wf push: sent n=%u bg=%u fg_match=%d", (unsigned)n, (unsigned)have_bg,
-               (int)(fg && uuid_equal(&fg->uuid, &target)));
+  PBL_LOG_DBG("wf push: sent n=%u bg=%u fg_match=%d", (unsigned)n, (unsigned)have_bg,
+              (int)(fg && uuid_equal(&fg->uuid, &target)));
   prv_inject(offsetof(AppMessagePush, dictionary) + dict_write_end(&iter));
 }
 
@@ -583,9 +617,55 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl) {
 
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   // Same lock-free discipline as the other setters.
-  s_meal_grams = grams;
-  s_meal_timestamp = timestamp;
+  //
+  // Insert into the ring, kept sorted oldest-first: a duplicate timestamp (a backfill replaying a
+  // meal the watch already has) updates that entry in place instead of growing the ring, and once
+  // full the globally oldest entry is dropped for the new one -- the caller has already filtered
+  // to the graph window, so anything that falls off here is the least relevant meal, not
+  // necessarily the last one added.
+  uint8_t at = s_meal_list_count;
+  for (uint8_t i = 0; i < s_meal_list_count; i++) {
+    if (s_meal_list_ts[i] == timestamp) {
+      s_meal_list_g[i] = grams;
+      at = MINIMED_MEAL_LIST_MAX;  // updated in place, nothing to insert
+      break;
+    }
+    if (s_meal_list_ts[i] > timestamp) {
+      at = i;
+      break;
+    }
+  }
+  if (at < MINIMED_MEAL_LIST_MAX) {
+    uint8_t count = s_meal_list_count;
+    if (count == MINIMED_MEAL_LIST_MAX) {
+      if (at == 0) {
+        // Older than everything already kept: drop it, the ring is unchanged.
+        launcher_task_add_callback(prv_push_bg_cb, NULL);
+        return;
+      }
+      memmove(&s_meal_list_ts[0], &s_meal_list_ts[1], (at - 1) * sizeof(s_meal_list_ts[0]));
+      memmove(&s_meal_list_g[0], &s_meal_list_g[1], (at - 1) * sizeof(s_meal_list_g[0]));
+      at--;
+    } else {
+      memmove(&s_meal_list_ts[at + 1], &s_meal_list_ts[at], (count - at) * sizeof(s_meal_list_ts[0]));
+      memmove(&s_meal_list_g[at + 1], &s_meal_list_g[at], (count - at) * sizeof(s_meal_list_g[0]));
+      s_meal_list_count++;
+    }
+    s_meal_list_ts[at] = timestamp;
+    s_meal_list_g[at] = grams;
+  }
+
+  // Legacy single-meal fields: the newest entry, i.e. the tail of the sorted ring.
+  s_meal_grams = s_meal_list_g[s_meal_list_count - 1];
+  s_meal_timestamp = s_meal_list_ts[s_meal_list_count - 1];
   s_meal_valid = true;
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
+void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct) {
+  // Same lock-free discipline as the other setters.
+  s_hypo_valid = valid;
+  s_hypo_pct = valid ? treat_pct : 0;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
