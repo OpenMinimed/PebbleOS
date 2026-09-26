@@ -37,8 +37,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
 // themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
 // are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19),
-// 0x31a and 0x33f (2026-08-30). 0x064 and 0x366 are not in the Python enum at all; wording is from
-// a reporter's on-pump reproduction, not our own HW confirmation.
+// 0x31a and 0x33f (2026-08-30), 0x30d and 0x31b (2026-09-25). 0x064 and 0x366 are not in the
+// Python enum at all; wording is from a reporter's on-pump reproduction, not our own HW confirmation.
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -65,8 +65,15 @@ static const AnnuncName s_names[] = {
     {0x309, "Change sensor"},
     {0x30a, "Change sensor"},
     {0x30c, "Lost sensor signal"},
+    {0x30d, "Possible signal interference"},  // HW-confirmed 2026-09-25: "Move away from
+                                               // electronic devices. May take 15 minutes to find
+                                               // signal."
     {0x315, "Change sensor"},
     {0x31a, "Sensor expired"},  // HW-confirmed 2026-08-30
+    {0x31b, "Check transmitter/sensor"},  // HW-confirmed 2026-09-25: pump screen title "Check
+                                           // connection" says "Ensure transmitter and sensor
+                                           // connection is secure, then select OK." -- named for
+                                           // what to check, not the pump's generic screen title.
     {0x31e, "Sensor connected"},
     {0x321, "Sensor error"},
     {0x322, "Low SG"},
