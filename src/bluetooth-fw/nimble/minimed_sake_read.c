@@ -596,30 +596,37 @@ static void prv_backfill_record(uint8_t rec_len) {
 static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now); }
 
 // A falling low: score whether to treat, with the sugar_predictor/firmware/hypo.c model ported to
-// minimed_hypo.c. Fires only at a decision point (minimed_hypo_should_evaluate), not every cell --
-// about 16 times a day on the wearer this was fitted on.
+// minimed_hypo.c. Fires at a decision point (minimed_hypo_should_evaluate, about 16 times a day on
+// the wearer this was fitted on), or earlier still when minimed_hypo_falling_fast says the reading
+// is about to plunge into that regime faster than it can wait for -- see its own comment for the
+// physiological rate this is anchored on.
 static void prv_hypo_check(const MinimedPredictWindow *win) {
-  if (!win || !minimed_hypo_should_evaluate(win)) {
-    minimed_sake_sender_send_hypo(false, 0);  // out of the falling-low regime: clear any banner
+  const bool normal = win && minimed_hypo_should_evaluate(win);
+  const bool early = win && !normal && minimed_hypo_falling_fast(win);
+  if (!normal && !early) {
+    minimed_sake_sender_send_hypo(false, 0, 0);  // out of the falling-low regime: clear any banner
     return;
   }
   MinimedHypoPrediction h;
   minimed_hypo_eval(win, 0.3f, &h);
-  PBL_LOG_INFO("minimed: hypo treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
+  PBL_LOG_INFO("minimed: hypo%s treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
                "%ld/%ld",
-               (int)(h.treat_pct + 0.5f), (long)(h.nadir_untreated + 0.5f),
-               (long)(h.nadir_treated + 0.5f), (long)(h.mins_untreated + 0.5f),
-               (long)(h.mins_treated + 0.5f));
+               early ? " (early fast-fall)" : "", (int)(h.treat_pct + 0.5f),
+               (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
+               (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f));
   PBL_LOG_INFO("minimed: hypo p_low=%d pct p_severe=%d pct p_over=%d pct",
                (int)(h.p_low * 100.0f + 0.5f), (int)(h.p_severe * 100.0f + 0.5f),
                (int)(h.p_over * 100.0f + 0.5f));
   char line[64];
-  snprintf(line, sizeof(line), "hypo t%d n%ld/%ld m%ld/%ld", (int)(h.treat_pct + 0.5f),
-           (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
-           (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f));
+  snprintf(line, sizeof(line), "hypo%s t%d n%ld/%ld m%ld/%ld", early ? "!" : "",
+           (int)(h.treat_pct + 0.5f), (long)(h.nadir_untreated + 0.5f),
+           (long)(h.nadir_treated + 0.5f), (long)(h.mins_untreated + 0.5f),
+           (long)(h.mins_treated + 0.5f));
   minimed_sake_log(line);
   const int32_t pct = (int32_t)(h.treat_pct + 0.5f);
-  minimed_sake_sender_send_hypo(true, (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct)));
+  const int32_t p_low_pct = (int32_t)(h.p_low * 100.0f + 0.5f);
+  minimed_sake_sender_send_hypo(true, (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct)),
+                                (uint8_t)(p_low_pct < 0 ? 0 : (p_low_pct > 100 ? 100 : p_low_pct)));
 }
 
 // Predict 30 minutes ahead from the newest reading and hand the result to the watchface. A reading

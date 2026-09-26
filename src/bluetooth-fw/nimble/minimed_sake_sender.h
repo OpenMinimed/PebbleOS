@@ -52,11 +52,13 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl);
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
 
 //! The hypo (treat-or-wait) model's recommendation for the current falling low, 0-100 (see
-//! sugar_predictor/INTEGRATION.md's treat_pct). `valid` false clears it -- the key is then omitted,
-//! for when the reading is no longer in the regime the model was fit for. Sent only to a
-//! watchface that announced CAP_HYPO. Safe to call from the BT host task; the actual send runs on
-//! KernelMain.
-void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct);
+//! sugar_predictor/INTEGRATION.md's treat_pct), plus p_low_pct (P(nadir < 70), 0-100) as the
+//! confidence number the watchface displays next to its TREAT/WATCH decision -- treat_pct alone
+//! also factors in overtreatment risk, which reads as an ambiguous "how likely" number on its own.
+//! `valid` false clears both -- the keys are then omitted, for when the reading is no longer in
+//! the regime the model was fit for. Sent only to a watchface that announced CAP_HYPO. Safe to
+//! call from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_pct);
 
 //! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
 //! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG

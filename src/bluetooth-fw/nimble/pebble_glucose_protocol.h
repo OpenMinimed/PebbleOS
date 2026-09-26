@@ -40,6 +40,10 @@
 #define KEY_IOB_TOTAL_STRING 1001 // string "N.N" units: pump IOB plus the basal insulin still active; omitted if unknown
 #define KEY_HYPO_TREAT_PCT 1002  // uint8, 0-100: treat-or-wait score for a falling low (see
                                  // sugar_predictor/INTEGRATION.md); omitted outside that regime
+#define KEY_HYPO_P_LOW_PCT 1004 // uint8, 0-100: P(nadir < 70 in the next hour, untreated). Sent
+                                 // alongside KEY_HYPO_TREAT_PCT as the confidence number for the
+                                 // watchface's TREAT/WATCH decision -- treat_pct alone (which also
+                                 // factors in overtreatment risk) reads as ambiguous on its own.
 #define KEY_MEAL_LIST 1003      // blob: every meal still inside the graph window, not just the
                                  // latest. [count u8][(timestamp u32 LE)(grams u16 LE)] x count
 

@@ -1266,6 +1266,43 @@ static void section_hypo(void) {
         out.nadir_treated >= out.nadir_untreated - 1e-3f);
   check("carbs cannot lengthen the treated low beyond the untreated one",
         out.mins_treated <= out.mins_untreated + 1e-3f);
+
+  // falling_fast: the early gate for a reading still above the trigger but dropping at the
+  // physiological worst-case rate (>=3 mg/dL/min) and projected to cross the low line within 30 min.
+  check("already at/below the trigger is should_evaluate's job, not this gate",
+        !minimed_hypo_falling_fast(&falling));  // falling.bg[47] is well under 90
+
+  MinimedPredictWindow flat_high;
+  memset(&flat_high, 0, sizeof(flat_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) flat_high.bg[i] = 120.0f;
+  flat_high.tod_cos = 1.0f;
+  check("flat above the trigger is not a fast fall", !minimed_hypo_falling_fast(&flat_high));
+
+  MinimedPredictWindow slow_fall;
+  memset(&slow_fall, 0, sizeof(slow_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) slow_fall.bg[i] = 150.0f;
+  slow_fall.bg[45] = 140.0f;
+  slow_fall.bg[46] = 130.0f;
+  slow_fall.bg[47] = 120.0f;  // -30 over 15 min = -2 mg/dL/min: an ordinary decline
+  slow_fall.tod_cos = 1.0f;
+  check("an ordinary (sub-3 mg/dL/min) decline does not trigger the early gate",
+        !minimed_hypo_falling_fast(&slow_fall));
+
+  MinimedPredictWindow fast_fall;
+  memset(&fast_fall, 0, sizeof(fast_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall.bg[i] = 150.0f;
+  fast_fall.bg[45] = 130.0f;
+  fast_fall.bg[46] = 110.0f;
+  fast_fall.bg[47] = 100.0f;  // -50 over 15 min = -3.33 mg/dL/min, still above 90
+  fast_fall.tod_cos = 1.0f;
+  check("a >=3 mg/dL/min fall projected under 70 within 30 min triggers the early gate",
+        minimed_hypo_falling_fast(&fast_fall));
+
+  MinimedPredictWindow fast_fall_high;
+  memcpy(&fast_fall_high, &fast_fall, sizeof(fast_fall_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall_high.bg[i] += 40.0f;  // now 140: past the ceiling
+  check("the same fast fall does not fire once the reading is too far above the trigger",
+        !minimed_hypo_falling_fast(&fast_fall_high));
 }
 
 int main(void) {

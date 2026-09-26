@@ -30,6 +30,14 @@ typedef struct {
 //! outside of it.
 bool minimed_hypo_should_evaluate(const MinimedPredictWindow *in);
 
+//! True when the reading is still above 90 mg/dL, but its last-15-minute slope is at or past
+//! HYPO_FAST_FALL_MGDL_PER_MIN (see minimed_hypo.c) and, extrapolated linearly, would cross the low
+//! line within HYPO_EARLY_LOOKAHEAD_MIN minutes: a genuinely fast drop about to enter the model's
+//! regime, not merely trending down. Bounded to a modest ceiling above 90 mg/dL so the model is
+//! never evaluated far outside where it was fitted. minimed_hypo_should_evaluate and this are meant
+//! to be OR'd: either one justifies a call to minimed_hypo_eval.
+bool minimed_hypo_falling_fast(const MinimedPredictWindow *in);
+
 //! Score a falling low. `over_treat_weight` is the single policy knob (0.3 in the benchmark).
 void minimed_hypo_eval(const MinimedPredictWindow *in, float over_treat_weight,
                        MinimedHypoPrediction *out);

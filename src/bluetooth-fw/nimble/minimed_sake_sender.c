@@ -86,6 +86,7 @@ static bool s_trend_valid;     // false = no trend field in the last reading; om
 static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
 static bool s_hypo_valid;      // false = not in the falling-low regime the hypo model was fit for
 static uint8_t s_hypo_pct;     // treat-or-wait score, 0-100; only meaningful if s_hypo_valid
+static uint8_t s_hypo_p_low;   // P(nadir < 70), 0-100; the watchface's displayed confidence number
 
 // Every meal still inside the graph window, not just the newest -- KEY_MEAL_LIST. Kept sorted
 // oldest-first by timestamp so eviction (dropping the globally oldest once full) and picking the
@@ -402,7 +403,8 @@ static void prv_push_bg_cb(void *unused) {
   }
   if (have_bg && s_hypo_valid && (caps & CAP_HYPO)) {
     res |= dict_write_uint8(&iter, KEY_HYPO_TREAT_PCT, s_hypo_pct);
-    n++;
+    res |= dict_write_uint8(&iter, KEY_HYPO_P_LOW_PCT, s_hypo_p_low);
+    n += 2;
   }
   if (s_meal_valid && (caps & CAP_MEAL)) {
     // Legacy single-meal fields: the newest entry in the list, for a watchface that predates
@@ -662,10 +664,11 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
-void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct) {
+void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_pct) {
   // Same lock-free discipline as the other setters.
   s_hypo_valid = valid;
   s_hypo_pct = valid ? treat_pct : 0;
+  s_hypo_p_low = valid ? p_low_pct : 0;
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 

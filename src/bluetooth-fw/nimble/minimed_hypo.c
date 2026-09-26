@@ -50,6 +50,37 @@ bool minimed_hypo_should_evaluate(const MinimedPredictWindow *in) {
   return in->bg[NEW] <= HYPO_TRIGGER && in->bg[NEW] < prv_lag(in->bg, 4);
 }
 
+// The physiological ceiling this is anchored on: CGM systems' own steepest trend-arrow bucket
+// (Dexcom "double down", Medtronic Guardian's fastest arrow) is >=3 mg/dL/min -- the top category
+// these devices report at all, because interstitial sensor lag makes anything faster hard to
+// resolve reliably (Klonoff & Kerr 2017, PMC5951054; FreeStyle Libre and Medtronic Guardian
+// trend-arrow documentation agree on the same ~3 mg/dL/min top bucket). A 30-minute run at that
+// rate is also still slower than clinical guidance for how fast a blood glucose is ever
+// deliberately driven down (DKA correction: 90-120 mg/dL/h = 1.5-2 mg/dL/min is the RECOMMENDED
+// max, i.e. even that sanctioned rate is gentler than this). 3 mg/dL/min is therefore a defensible
+// ceiling for "as fast as glucose realistically falls", not a guess.
+#define HYPO_FAST_FALL_MGDL_PER_MIN 3.0f
+#define HYPO_EARLY_LOOKAHEAD_MIN 30.0f
+// Never evaluate the model more than this far above its own fitted trigger: bounds how far the
+// early gate below extrapolates the input away from where the model was fit, regardless of how
+// steep the observed slope claims to be (a single noisy or stale cell must not imply an
+// arbitrarily large jump).
+#define HYPO_EARLY_CEILING_MGDL 130.0f
+
+bool minimed_hypo_falling_fast(const MinimedPredictWindow *in) {
+  const float now = in->bg[NEW];
+  if (now <= HYPO_TRIGGER || now > HYPO_EARLY_CEILING_MGDL) {
+    return false;  // already handled by should_evaluate, or too far above the model's regime
+  }
+  const float l4 = prv_lag(in->bg, 4);  // 15 minutes back
+  const float slope_per_min = (now - l4) / 15.0f;  // negative while falling
+  if (slope_per_min > -HYPO_FAST_FALL_MGDL_PER_MIN) {
+    return false;  // not falling at the physiological worst-case rate: an ordinary decline
+  }
+  const float projected = now + slope_per_min * HYPO_EARLY_LOOKAHEAD_MIN;
+  return projected <= HYPO_LOW;
+}
+
 static void prv_features(const MinimedPredictWindow *in, float out[HYPO_N_IN]) {
   const float *bg = in->bg;
   const float now = bg[NEW];
