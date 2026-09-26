@@ -43,6 +43,11 @@ how to build and test, the code map, and what is left. Topic detail lives in its
   correct push was then swallowed by the coalesce window. Setters are now state-only and
   `minimed_sake_sender_commit()` emits exactly one frame per completed read op (`prv_op_complete`).
   Details: VERSIONS.md entry; the model is in the code map below.
+- **2026-09-26, HW-VERIFIED (build `3d27714fc`): the two-hour graph backfill works.** It had never
+  run since it landed: the history dispatch returned early for non-annunciation records, so the
+  backfill and meal parsers only ever saw malformed ones. On connect the watch now logs
+  `backfill 25 of 32 samples ... anchor=match` and the watchface's `graph=` count fills to the
+  window. Details: VERSIONS.md entry.
 - **v66 BUILT 2026-09-06, awaiting HW: watch fetches BG as soon as the sensor recovers.** It used
   to wait for the pump's "new CGM" push bit or the 6-minute fallback, so a pump that resumed on an
   existing record left the watch blank for minutes. Details: VERSIONS.md v66 entry.

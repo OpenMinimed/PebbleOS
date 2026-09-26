@@ -28,6 +28,16 @@ or its commit hash, whichever you have on hand (e.g. "build dc906629f").
   adding a `now=` field to the watchface's `Received BG` log line: `ts` was always the previous
   reading while `now` matched the current push.
 
+- 2026-09-26, **HW-VERIFIED**; build `3d27714fc` (`backfill-fix`): **the graph backfill actually
+  runs.** `prv_handle_idd_history` returned early for `MinimedAnnuncRecordOther` before the
+  backfill/meal branch, but SG measurements, NGP reference times and meals are all "Other", so
+  `prv_backfill_record` and `prv_meal_record` only ever saw `Bad` records (which had already
+  returned above). Every connect since the feature landed logged `backfill 0 of 0 samples`, and
+  meal carbs never reached the watchface. Feed the parsers before the research logging, and skip
+  that logging during a backfill so it does not drown the SG records the backfill reads. HW:
+  `backfill 25 of 32 samples ... anchor=match`, and the watchface's `graph=` count jumped to 26 on
+  connect (25 backfilled + the live reading).
+
 - 2026-09-13, **HW-VERIFIED**;
   `build/minimed-asterix-v4.36.2-138-g6c6260855-graph-hours.pbz`: **respect the watchface's
   requested `GRAPH_HOURS`**. PebbleOS now retains up to 24 hours plus a 30-minute margin and
