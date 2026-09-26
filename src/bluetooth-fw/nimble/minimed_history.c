@@ -88,6 +88,12 @@ bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMea
   return true;
 }
 
+int minimed_history_sg_edge(uint16_t sg) {
+  if (sg == MINIMED_HIST_SG_BELOW) return 1;
+  if (sg == MINIMED_HIST_SG_ABOVE) return 2;
+  return 0;
+}
+
 int32_t minimed_history_sg_to_mgdl(uint16_t sg, int32_t floor_mgdl, int32_t ceiling_mgdl) {
   if (sg == MINIMED_HIST_SG_BELOW) return floor_mgdl;
   if (sg == MINIMED_HIST_SG_ABOVE) return ceiling_mgdl;

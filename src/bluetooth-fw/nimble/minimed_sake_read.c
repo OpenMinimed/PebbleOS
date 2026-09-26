@@ -290,6 +290,11 @@ static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
 static bool s_backfill_done;    // this connection's backfill has been issued
 static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
 static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
+// Off-scale side of the newest SG sample in the pump's event log: 0 none, 1 below, 2 above. The IDD
+// status only names the side sometimes, and in one capture never did over 15 minutes of 0 mg/dL
+// records, while the log held the below-range code for every one of them.
+static uint8_t s_hist_edge;
+static uint16_t s_backfill_raw[MINIMED_BACKFILL_MAX_POINTS];
 static bool s_backfill_have_ref;  // a Reference Time has been seen in this read
 static MinimedHistRef s_backfill_ref;
 static uint8_t s_backfill_n;  // the newest MINIMED_BACKFILL_MAX_POINTS samples, oldest first
@@ -425,13 +430,14 @@ static void prv_parse_and_show(void) {
     PBL_LOG_INFO("minimed: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d",
                  s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5],
                  minimed_status_sg_below() ? 1 : (minimed_status_sg_above() ? 2 : 0));
+    PBL_LOG_INFO("minimed: SG history edge=%d", (int)s_hist_edge);
   }
   if (mgdl == 0) {
     // 0 mg/dL is a marker, not a reading: the pump sends it (with advancing time offsets) while
     // the SG is off-scale or the sensor has no glucose ("sensor updating", ...). Never show it
     // as a number and never graph it as 0.
-    const bool below = minimed_status_sg_below();
-    const bool above = minimed_status_sg_above();
+    const bool below = minimed_status_sg_below() || s_hist_edge == 1;
+    const bool above = minimed_status_sg_above() || s_hist_edge == 2;
     if (!below && !above) {
       // No glucose to show: leave the last BG aging, the status band explains why. The offset is
       // deliberately NOT consumed, so if this is really an off-scale onset raced ahead of the
@@ -463,6 +469,7 @@ static void prv_parse_and_show(void) {
   int32_t tenths = (mgdl * 100000 + 90091) / 180182;
 
   if (is_new) {
+    s_hist_edge = 0;  // a real number: the sensor is back in range
     s_last_offset = offset;
     s_have_offset = true;
     s_reading_ts = (uint32_t)rtc_get_time();
@@ -554,10 +561,12 @@ static void prv_backfill_record(uint8_t rec_len) {
   if (s_backfill_n == MINIMED_BACKFILL_MAX_POINTS) {
     memmove(s_backfill_secs, s_backfill_secs + 1, (s_backfill_n - 1) * sizeof(s_backfill_secs[0]));
     memmove(s_backfill_mgdl, s_backfill_mgdl + 1, (s_backfill_n - 1) * sizeof(s_backfill_mgdl[0]));
+    memmove(s_backfill_raw, s_backfill_raw + 1, (s_backfill_n - 1) * sizeof(s_backfill_raw[0]));
     s_backfill_n--;
   }
   s_backfill_secs[s_backfill_n] = minimed_history_sg_secs(&s_backfill_ref, &sg);
   s_backfill_mgdl[s_backfill_n] = mgdl;
+  s_backfill_raw[s_backfill_n] = sg.sg;
   s_backfill_n++;
 }
 
@@ -570,6 +579,23 @@ static void prv_meal_record(uint8_t rec_len) {
   if (meal.grams == 0) return;  // the pump logs a Meal record for a bolus without carbs too
   PBL_LOG_INFO("minimed: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
   minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
+}
+
+// Note the off-scale side of the newest SG sample in the log. When it turns off-scale, the CGM
+// record that just arrived as a "0 mg/dL" marker may have been skipped for want of a side: read it
+// again so it is judged with the side known.
+static void prv_set_hist_edge(int edge) {
+  if (edge == s_hist_edge) return;
+  s_hist_edge = (uint8_t)edge;
+  PBL_LOG_INFO("minimed: SG history edge -> %d", edge);
+  if (edge != 0) prv_request(PEND_CGM);
+}
+
+// A live history record that may be an SG sample.
+static void prv_hist_sg_record(uint8_t rec_len) {
+  MinimedHistSg sg;
+  if (!minimed_history_parse_sg(s_hist, rec_len, &sg)) return;
+  prv_set_hist_edge(minimed_history_sg_edge(sg.sg));
 }
 
 // The backfill exchange ended: place what it collected relative to the newest sample and hand
@@ -595,9 +621,14 @@ static void prv_backfill_finish(void) {
   // the values differ, a newer sample landed mid-read (or the two are not the same sample) and
   // the backfilled trace may sit one step off.
   int32_t newest_mgdl = -1;
+  int newest_edge = 0;
   for (uint8_t i = 0; i < s_backfill_n; i++) {
-    if (s_backfill_secs[i] == newest) newest_mgdl = s_backfill_mgdl[i];
+    if (s_backfill_secs[i] == newest) {
+      newest_mgdl = s_backfill_mgdl[i];
+      newest_edge = minimed_history_sg_edge(s_backfill_raw[i]);
+    }
   }
+  if (s_backfill_n > 0) prv_set_hist_edge(newest_edge);
   PBL_LOG_INFO("minimed: backfill %u of %u samples, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
                (unsigned)kept, (unsigned)s_backfill_n, (long)newest_mgdl, (long)s_reading_mgdl,
                newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH", (unsigned long)s_annunc_seq);
@@ -640,6 +671,7 @@ static void prv_annunc_record_done(void) {
       prv_backfill_record(rec_len);
     } else if (!s_annunc_baseline) {
       prv_meal_record(rec_len);
+      prv_hist_sg_record(rec_len);
     }
     // Document unparsed event streams (the sensor-change burst) for #16 research. Skipped during a
     // backfill, which reads hundreds of SG records of its own.
@@ -1864,6 +1896,7 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   s_backfill_run = false;
   s_backfill_have_ref = false;
   s_backfill_n = 0;
+  s_hist_edge = 0;
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
