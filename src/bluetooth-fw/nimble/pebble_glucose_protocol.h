@@ -24,7 +24,7 @@
 #define KEY_STATUS_END 18
 #define KEY_PUMP_CONNECTED 19  // uint8, 0=offline 1=connected; offline is the default
 #define KEY_MEAL_CARBS 20      // uint16, grams of carbohydrate of the latest meal; omitted if none
-#define KEY_MEAL_TIMESTAMP 21  // uint32, unix time the meal was recorded
+#define KEY_MEAL_TIMESTAMP 21  // uint32, unix time the sender learned of the meal (the pump's record carries no absolute time)
 // Keys 22-29 reserved
 
 // Message keys: Sender -> watchface (raw graph)

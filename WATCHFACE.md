@@ -8,6 +8,17 @@ unmodified. This file holds the launch-crash saga (currently dormant) and the la
 behind it. Firmware architecture is in `PROGRESS.md`; the wire format is
 `../pebble-glucose-protocol/PROTOCOL.md`.
 
+## The watchface re-announces on window appear, not just on launch (2026-09-26)
+
+A menu round-trip used to leave the graph stale until the next CGM cycle: leaving the face
+deactivates the window, so the sender's pushes during the menu were dropped and nothing told the
+sender to re-push on return. The watchface now re-sends its capability announcement from
+`window_appear` (`.appear`), which the sender answers with an ACK and an immediate push, so the
+face is current by the time it is visible. Verified on hardware: the round-trip logs
+`wf ready ping` at the exact return time. A notification overlay does *not* trigger `.appear`
+(`app_manager_get_current_app_md()` still reports the watchface and the sender keeps pushing with
+`fg_match=1` through it), so it was never the staleness source it looked like.
+
 ## The "failed screen" is usually an app FETCH failure, not a crash (root-caused 2026-08-03)
 
 **Symptom:** launching the watchface shows a progress bar (it normally launches with no visible
