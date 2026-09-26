@@ -38,6 +38,11 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 - **End-to-end PROVEN on real HW (2026-07-21):** advertise as "Mobile PB" → pump connects → SAKE
   handshake → GATT-client CGM read → decrypt → continuous auto-updating BG in mmol/L, matching the
   pump's display exactly. Feasibility fully settled; the rest is productization.
+- **2026-09-26, HW-VERIFIED (build `acb488d07`): the watchface was always one CGM cycle behind.**
+  A push scheduled from the trend setter ran before `send_bg` had updated the BG string, and the
+  correct push was then swallowed by the coalesce window. Setters are now state-only and
+  `minimed_sake_sender_commit()` emits exactly one frame per completed read op (`prv_op_complete`).
+  Details: VERSIONS.md entry; the model is in the code map below.
 - **v66 BUILT 2026-09-06, awaiting HW: watch fetches BG as soon as the sensor recovers.** It used
   to wait for the pump's "new CGM" push bit or the 6-minute fallback, so a pump that resumed on an
   existing record left the watch blank for minutes. Details: VERSIONS.md v66 entry.
@@ -256,7 +261,10 @@ New files (all spike-only via wscript/ifdef):
 - `minimed_sake_sender.c` — the **watchface local-sender**: loopback CommSession (QEMU-transport
   pattern) opened in SPIKE mode only (would compete with the real phone session in NORMAL);
   injects `[PP hdr 0x0030][CMD_PUSH][target UUID][dict: announced keys only]` via
-  `comm_session_receive_router_write` on KernelMain under `bt_lock`. `send_bg` and
+  `comm_session_receive_router_write` on KernelMain under `bt_lock`. Setters only store state and
+  set `s_dirty`; `minimed_sake_sender_commit()` builds one frame per completed read op
+  (`prv_op_complete`) and per pump-link transition (`advert.c`), so a frame is never assembled from
+  half-updated state. `send_bg` and
   `send_iob` are separate setters (BG/IOB arrive from different reads); `send_iob` deliberately
   does NOT advance the BG timestamp. `send_next` drains the watchface's outbox: an announcement
   → ACK + immediate push, anything else → NACK + blacklist; its ACKs of our pushes are swallowed

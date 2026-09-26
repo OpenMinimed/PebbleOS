@@ -16,6 +16,18 @@ string ever looks ambiguous (e.g. collapsed to a bare tag with no hash, if `HEAD
 one). `vNN` entries below are legacy; new entries should refer to a build by its `describe` string
 or its commit hash, whichever you have on hand (e.g. "build dc906629f").
 
+- 2026-09-26, **HW-VERIFIED**; build `acb488d07` (`sender-commit`): **one push per read op,
+  not per setter.** The CGM read path scheduled a push from `send_trend_arrow` before `send_bg`
+  updated `s_bg_str`. The push callback runs on KernelMain and could execute inside that gap (the
+  flash `PBL_LOG` between the two yields the BT host task), so it serialized the previous BG string
+  and timestamp; `send_bg`'s own push then fell inside the 150 ms coalesce window and was dropped,
+  so the new BG only went out on the next unrelated push and the watchface ran one CGM cycle behind
+  (its age never dropped below ~5 min, sitting at 7-10). Setters now only store state and set
+  `s_dirty`; `minimed_sake_sender_commit()` emits one frame per completed op (`prv_op_complete`) and
+  per pump-link transition (`advert.c`). The ready-ping resend bypasses the coalesce. Found by
+  adding a `now=` field to the watchface's `Received BG` log line: `ts` was always the previous
+  reading while `now` matched the current push.
+
 - 2026-09-13, **HW-VERIFIED**;
   `build/minimed-asterix-v4.36.2-138-g6c6260855-graph-hours.pbz`: **respect the watchface's
   requested `GRAPH_HOURS`**. PebbleOS now retains up to 24 hours plus a 30-minute margin and
