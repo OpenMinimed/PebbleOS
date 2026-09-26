@@ -947,6 +947,8 @@ static void prv_op_complete(void) {
   }
   // Any completed exchange proves the pump responded to a request; record it as traffic.
   s_last_pump_traffic = (uint32_t)rtc_get_time();
+  // The op is the unit of pump work: all of its state setters have run, so emit one frame.
+  minimed_sake_sender_commit();
 }
 
 // Watchdog tick: if in DUAL with the pump connected but silent for PUMP_WD_NO_TRAFFIC_SECS,

@@ -14,17 +14,20 @@
 //! The target is discovered, not hardcoded: any watchface speaking the Pebble Glucose Protocol
 //! (pebble_glucose_protocol.h) identifies itself with a capability announcement, and we then send
 //! it exactly the fields it announced. Nothing is sent before that announcement arrives.
+//!
+//! The setters only store state. minimed_sake_sender_commit() builds and injects one frame for
+//! everything set since the last push; the read path calls it once per completed op, so a frame is
+//! never assembled from half-updated state.
 
 //! Latest BG for the watchface, e.g. "5.6" (pre-formatted display string, mmol/L). `timestamp` is
 //! when the *sensor* produced this reading, not when we polled it -- re-polling an unchanged
 //! reading must not make it look fresh, or the watchface's staleness display is meaningless.
-//! Stores it and pushes it to the watchface if it is running; also re-pushed whenever the
-//! watchface announces itself (launch/reconnect "ready" ping).
-//! Safe to call from the BT host task; the actual send runs on KernelMain.
+//! Stores it; the next commit pushes it. Also re-pushed whenever the watchface announces itself
+//! (launch/reconnect "ready" ping). Safe to call from the BT host task.
 void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp);
 
 //! Append one sensor reading to the graph history the watchface plots. Call once per NEW reading
-//! (before send_bg, which is what actually pushes). Points older than the graph window are
+//! (before send_bg, in the same op that commits). Points older than the graph window are
 //! dropped. History lives in RAM only: it survives a pump dropout and a mode toggle, but not a
 //! reboot -- the watchface persists its own copy across relaunch.
 void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
@@ -45,12 +48,12 @@ void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
 
 //! Latest insulin-on-board for the watchface, e.g. "2.5" (pre-formatted display string, IU). The
-//! watchface adds the unit. Stored and pushed like the BG value, but does NOT advance the BG
+//! watchface adds the unit. Stored like the BG value, but does NOT advance the BG
 //! timestamp (IOB and BG arrive from separate pump reads). Safe to call from the BT host task.
 void minimed_sake_sender_send_iob(const char *iob_str);
 
-//! Update the pump-status line (status string and start/end times).
-//! Pushes the full cached frame like send_iob; does not touch the BG timestamp.
+//! Update the pump-status line (status string and start/end times). Stored like send_iob; does not
+//! touch the BG timestamp.
 void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uint32_t end);
 
 //! Open (open=true) / close (open=false) the loopback session. The session must NOT exist in
@@ -71,3 +74,7 @@ void minimed_sake_sender_send_pump_connected(bool connected);
 //! watchface can tell "no trend" from "flat" and hide the glyph. Safe to call from the BT host
 //! task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend);
+
+//! Build and inject one frame for the state set since the last push. Called once per completed read
+//! op (and on a pump-link transition); no-op when nothing changed.
+void minimed_sake_sender_commit(void);
