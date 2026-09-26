@@ -71,14 +71,16 @@ is release band 0x01 with version > stock (4.36.2), and shares both over kdeconn
 
 ## Flash (BT sideload — no dev kit)
 
-1. Watch in **NORMAL mode** (SAKE Spike app → SELECT until `MODE: NORMAL`), connected to the Pebble app.
+1. Watch in **DUAL**, connected to the Pebble app. Pre-toggling NORMAL is not required since v62:
+   the phone session stays up alongside the pump, so the app can sideload mid-DUAL. (Not re-run
+   under DUAL — if the app cannot see the watch, toggle NORMAL first.)
 2. Pebble app → Settings → Show debug options → Devices → the watch → Firmware Update Debug →
    Sideload FW → pick the `.pbz` from Downloads.
-3. Wait for install + reboot (boots NORMAL = ordinary Pebble).
-4. **Still in NORMAL with the phone connected, launch the glucose watchface once.** A flash (and the
-   phone's follow-up AppDB flush) leaves the app's *binary* off the watch, so the first launch has
-   to fetch it from the phone. Do that fetch now: in SPIKE there is no phone, and you get a progress
-   bar then the failure screen, which reads exactly like a crash. See `WATCHFACE.md`.
+3. Wait for install + reboot. It lands in NORMAL, since the mode is RAM-only.
+4. **While still in NORMAL with the phone connected, launch the glucose watchface once.** A flash
+   (and the phone's follow-up AppDB flush) leaves the app's *binary* off the watch, so the first
+   launch has to fetch it from the phone. NORMAL is the known-good path for that fetch; see
+   `WATCHFACE.md`.
 
 Recovery if a build misbehaves: factory reset, or PRF recovery mode (separate slot; bricking very unlikely).
 
