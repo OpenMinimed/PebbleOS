@@ -14,7 +14,6 @@
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
 #include "minimed_settings.h"
-#include "pbl/services/new_timer/new_timer.h"
 #include "pebble_glucose_protocol.h"
 #include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
@@ -108,19 +107,20 @@ static MinimedGraph s_graph;
 // push (which the watchface treats as a fresh-data event and expects a graph with).
 static bool s_graph_dirty;
 
+// True when any pushable state changed since the last frame went out. Setters only store state and
+// mark this; one commit per unit of pump work schedules the push, so a frame is never built from
+// half-updated state (the bug that had the CGM op's trend setter push the previous BG string).
+static bool s_dirty;
+
 // Push throttle: coalesce pushes that arrive within a short window into one. The pump's 0x101
 // bursts can fire several reads per second, each calling send_bg/send_iob/send_status, each
 // scheduling a push. If the watchface is busy (or not foreground) the injected frames sit in its
 // app-inbox, which is a fixed 2048 B buffer in KernelMain -- under a burst it accumulates faster
 // than the watchface drains and was a contributor to the OOM crash (kernel heap to ~2.7 KB,
-// 2026-09-09). Pushes within 150 ms of the previous one are held back, and one trailing push fires
-// when the window ends and carries the latest values. Dropping them outright lost the newest BG: a
-// reading pushes prediction/hypo/trend first and the BG string last, inside the window, so the
-// watchface kept the previous value until some later IOB push happened along.
+// 2026-09-09). Pushes within 150 ms of the previous one are dropped; the next one carries the
+// latest values, so nothing is lost, only coalesced.
 #define PUSH_COALESCE_MS 150
 static uint32_t s_last_push_ticks;
-static TimerID s_trailing_push_timer = TIMER_INVALID_ID;
-static bool s_trailing_push_armed;
 
 // The one outbound frame: [PebbleProtocolHeader][AppMessagePush ... dictionary]. Static rather
 // than two nested stack buffers -- with the graph blob that pair came to ~500 B of KernelMain
@@ -288,40 +288,21 @@ static void prv_inject(uint16_t payload_len) {
 // Every push carries every announced field, not just the one that changed. The protocol allows
 // sending only what is new, but this transport is a memcpy rather than a radio, so re-sending the
 // whole frame costs nothing and keeps the watchface correct after a relaunch.
-static void prv_push_bg_cb(void *unused);
-
-static void prv_trailing_push_timer_cb(void *unused) {
-  s_trailing_push_armed = false;  // lets the push below re-arm if it still lands inside the window
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
-}
-
 static void prv_push_bg_cb(void *unused) {
   // Coalesce bursts (see PUSH_COALESCE_MS). The injected frame would otherwise pile up in the
   // watchface's app-inbox when the watchface is busy or not foreground.
   const uint32_t now = (uint32_t)rtc_get_ticks();
-  const uint32_t elapsed_ms = (uint32_t)(((uint64_t)(now - s_last_push_ticks) * 1000) / RTC_TICKS_HZ);
-  if (s_last_push_ticks != 0 && elapsed_ms < PUSH_COALESCE_MS) {
-    if (!s_trailing_push_armed) {
-      if (s_trailing_push_timer == TIMER_INVALID_ID) {
-        s_trailing_push_timer = new_timer_create();
-      }
-      s_trailing_push_armed = new_timer_start(s_trailing_push_timer,
-                                              PUSH_COALESCE_MS - elapsed_ms + 1,
-                                              prv_trailing_push_timer_cb, NULL, 0);
-    }
-    PBL_LOG_DBG("wf push: deferred, within coalesce window");
+  if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
+    PBL_LOG_INFO("wf push: dropped, within coalesce window");
     return;
   }
   s_last_push_ticks = now;
-  s_trailing_push_armed = false;
-  if (s_trailing_push_timer != TIMER_INVALID_ID) {
-    new_timer_stop(s_trailing_push_timer);  // this push already carries the latest values
-  }
 
   if (!s_session) {
     PBL_LOG_DBG("wf push: dropped, no session");
     return;
   }
+  s_dirty = false;
 
   // BG/IOB/status/graph have nothing to say until the first real reading arrives. Pump-connected
   // is different: false (offline) is itself a real, correct value before that, so it must not
@@ -487,6 +468,7 @@ static void prv_ack_and_resend_cb(void *ctx) {
   };
   prv_inject(sizeof(*ack));
   minimed_sake_log_evt("wf ready ping");
+  s_last_push_ticks = 0;  // a resend request: do not let the coalesce swallow it
   prv_push_bg_cb(NULL);
 }
 
@@ -575,7 +557,7 @@ void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp) {
   strncpy(s_bg_str, bg_str, sizeof(s_bg_str) - 1);
   s_bg_str[sizeof(s_bg_str) - 1] = '\0';
   s_bg_timestamp = timestamp;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
@@ -583,6 +565,7 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
   // BG string -- the worst case is one frame drawn from a half-updated array.
   minimed_graph_add(&s_graph, timestamp, mgdl);
   s_graph_dirty = true;
+  s_dirty = true;
 }
 
 // Staging for a backfill: filled on the BT host task, consumed on KernelMain so the sorted inserts
@@ -598,7 +581,8 @@ static void prv_backfill_cb(void *unused) {
   }
   s_backfill_count = 0;
   s_graph_dirty = true;
-  prv_push_bg_cb(NULL);
+  s_dirty = true;
+  minimed_sake_sender_commit();
 }
 
 void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
@@ -617,7 +601,7 @@ void minimed_sake_sender_send_iob(const char *iob_str) {
   // update must not make a stale BG look fresh (the watchface keys staleness off the BG timestamp).
   strncpy(s_iob_str, iob_str, sizeof(s_iob_str) - 1);
   s_iob_str[sizeof(s_iob_str) - 1] = '\0';
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uint32_t end) {
@@ -626,32 +610,41 @@ void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uin
   s_status_str[sizeof(s_status_str) - 1] = '\0';
   s_status_start = start;
   s_status_end = end;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_set_mode(bool open) {
   launcher_task_add_callback(prv_set_mode_cb, open ? (void *)1 : NULL);
 }
 
+void minimed_sake_sender_commit(void) {
+  // One frame for the state accumulated since the last push. Call once per unit of work -- an op
+  // completion, a pump-link transition -- never from inside a setter.
+  if (!s_dirty) {
+    return;
+  }
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
 void minimed_sake_sender_send_pump_connected(bool connected) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
   s_pump_connected = connected;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_total_iob(const char *iob_str) {
   // Same lock-free discipline as send_iob.
   strncpy(s_iob_total_str, iob_str, sizeof(s_iob_total_str) - 1);
   s_iob_total_str[sizeof(s_iob_total_str) - 1] = '\0';
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl) {
   // Same lock-free discipline as the other setters.
   s_pred_valid = valid && mgdl > 0;
   s_pred_mgdl = (uint16_t)(mgdl > 0 ? (mgdl > 1000 ? 1000 : mgdl) : 0);
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
@@ -678,9 +671,7 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
     uint8_t count = s_meal_list_count;
     if (count == MINIMED_MEAL_LIST_MAX) {
       if (at == 0) {
-        // Older than everything already kept: drop it, the ring is unchanged.
-        launcher_task_add_callback(prv_push_bg_cb, NULL);
-        return;
+        return;  // older than everything already kept: the ring is unchanged
       }
       memmove(&s_meal_list_ts[0], &s_meal_list_ts[1], (at - 1) * sizeof(s_meal_list_ts[0]));
       memmove(&s_meal_list_g[0], &s_meal_list_g[1], (at - 1) * sizeof(s_meal_list_g[0]));
@@ -698,7 +689,7 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   s_meal_grams = s_meal_list_g[s_meal_list_count - 1];
   s_meal_timestamp = s_meal_list_ts[s_meal_list_count - 1];
   s_meal_valid = true;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_pct) {
@@ -706,12 +697,12 @@ void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_
   s_hypo_valid = valid;
   s_hypo_pct = valid ? treat_pct : 0;
   s_hypo_p_low = valid ? p_low_pct : 0;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }
 
 void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend) {
   // Same lock-free discipline as send_bg/send_iob/send_status.
   s_trend_valid = valid;
   s_trend_arrow = trend;
-  launcher_task_add_callback(prv_push_bg_cb, NULL);
+  s_dirty = true;
 }

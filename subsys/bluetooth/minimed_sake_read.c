@@ -1219,6 +1219,8 @@ static void prv_op_complete(void) {
   }
   // Any completed exchange proves the pump responded to a request; record it as traffic.
   s_last_pump_traffic = (uint32_t)rtc_get_time();
+  // The op is the unit of pump work: all of its state setters have run, so emit one frame.
+  minimed_sake_sender_commit();
 }
 
 // Watchdog tick: if in DUAL with the pump connected but silent for PUMP_WD_NO_TRAFFIC_SECS,
@@ -1482,6 +1484,8 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
   if (s_pending != 0) {
     ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
   }
+  // Whatever the dropped op's partial work set (a backfill's meals and forecast) still goes out.
+  minimed_sake_sender_commit();
 }
 
 // Everything a full poll reads, gated on the handles that were actually discovered.
