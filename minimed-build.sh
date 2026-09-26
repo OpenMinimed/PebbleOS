@@ -44,8 +44,14 @@ do_configure=0
 push=1
 allow_dirty=0
 desc=""
+usage() {
+  echo "Build MiniMed Pebble firmware, save the ELF/dict, and push it to the phone."
+  echo
+  echo "usage: $0 <desc> [--pt2] [--configure] [--no-push] [--allow-dirty]"
+}
 for arg in "$@"; do
   case "$arg" in
+    -h|--help)          usage; exit 0 ;;
     --configure)        do_configure=1 ;;
     --no-push)          push=0 ;;
     --pt2|--obelix)     profile=obelix ;;
@@ -55,7 +61,7 @@ for arg in "$@"; do
     *)                  desc="$arg" ;;
   esac
 done
-[ -n "$desc" ] || { echo "usage: $0 <desc> [--pt2] [--configure] [--no-push] [--allow-dirty]" >&2; exit 2; }
+[ -n "$desc" ] || { usage >&2; exit 2; }
 
 # Every build must trace back to a commit: refuse a dirty tree unless explicitly bypassed.
 if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain)" ]; then
@@ -138,7 +144,7 @@ verify_bundle() {
   [ "$VERIFY_BAND" = 1 ] || return 0
   local version_tag band_hex maj min pat
   version_tag=$(unzip -p "$out" manifest.json | python3 -c "import json,sys; print(json.load(sys.stdin)['firmware']['versionTag'])")
-  read band_hex maj min pat <<<"$(python3 -c "
+  read -r band_hex maj min pat <<<"$(python3 -c "
 import zipfile
 fw = zipfile.ZipFile('$out').read('pebbleos.bin')
 prio = int.from_bytes(fw[8:16], 'little')
@@ -158,7 +164,7 @@ print(f'{(prio>>56)&0xff:02x} {(prio>>48)&0xff} {(prio>>40)&0xff} {(prio>>32)&0x
 outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   build_slot
-  fresh=$(ls -t build/normal_${BOARD_NORM}_*.pbz | head -1)
+  fresh=$(ls -t build/normal_"${BOARD_NORM}"_*.pbz | head -1)
   out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
@@ -167,7 +173,7 @@ if [ ${#SLOTS[@]} -eq 0 ]; then
 else
   for slot in "${SLOTS[@]}"; do
     build_slot "$slot"
-    fresh=$(ls -t build/normal_${BOARD_NORM}_*slot${slot}.pbz | head -1)
+    fresh=$(ls -t build/normal_"${BOARD_NORM}"_*slot"${slot}".pbz | head -1)
     out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
@@ -179,11 +185,18 @@ fi
 # later coredump cannot be resolved against it (the v13 crash debug dead-ended exactly here).
 # Keep a per-build copy with full debug info for later readcore.py/addr2line analysis.
 mkdir -p build/elfs
-for slot in "${SLOTS[@]:-''}"; do
-  elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
+archive_elf() {
+  local elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${1:-}.elf"
   cp build/pebbleos.elf "$elf"
   echo ">> archived: $elf"
-done
+}
+if [ ${#SLOTS[@]} -eq 0 ]; then
+  archive_elf
+else
+  for slot in "${SLOTS[@]}"; do
+    archive_elf "_slot${slot}"
+  done
+fi
 
 # Keep this build's loghash dictionary next to the .pbz. PBL_LOG lines are stored hashed and the
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
@@ -205,7 +218,10 @@ if [ "$push" = 1 ]; then
       echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
     fi
   else
-    device=$(kdeconnect-cli -a --id-only 2>/dev/null | head -1)
+    device=""
+    if command -v kdeconnect-cli >/dev/null 2>&1; then
+      device=$(kdeconnect-cli -a --id-only 2>/dev/null | head -1 || true)
+    fi
     if [ -n "$device" ]; then
       for out in "${outs[@]}"; do
         kdeconnect-cli -d "$device" --share "$out" >/dev/null && \
