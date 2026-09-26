@@ -632,19 +632,21 @@ static void prv_annunc_record_done(void) {
   }
   s_annunc_seen = true;
   if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
-  if (r == MinimedAnnuncRecordOther) {
-    // Valid but non-annunciation history record: log type+seq so event streams we do not yet
-    // parse (e.g. the sensor-change burst) document themselves in the field log (#16 research).
-    PBL_LOG_INFO("SAKE: hist type=0x%04x seq=%lu len=%u %02x%02x%02x",
-                 (unsigned)(s_hist[0] | (s_hist[1] << 8)), (unsigned long)a.seq, rec_len,
-                 s_hist[2], s_hist[3], s_hist[4]);
-    return;
-  }
   if (r != MinimedAnnuncRecordYes) {
+    // "Other" is a valid record of another event type, and SG measurements, NGP reference times
+    // and meals are all "Other". Feed the backfill and meal parsers first: logging these and
+    // returning here (2026-09-16) silently disabled both the graph backfill and meal forwarding.
     if (s_backfill_run) {
       prv_backfill_record(rec_len);
     } else if (!s_annunc_baseline) {
       prv_meal_record(rec_len);
+    }
+    // Document unparsed event streams (the sensor-change burst) for #16 research. Skipped during a
+    // backfill, which reads hundreds of SG records of its own.
+    if (!s_backfill_run) {
+      PBL_LOG_INFO("SAKE: hist type=0x%04x seq=%lu len=%u %02x%02x%02x",
+                   (unsigned)(s_hist[0] | (s_hist[1] << 8)), (unsigned long)a.seq, rec_len,
+                   s_hist[2], s_hist[3], s_hist[4]);
     }
     return;
   }
