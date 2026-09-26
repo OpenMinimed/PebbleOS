@@ -87,6 +87,10 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
 //! Predict from an assembled window.
 void minimed_predict_window(const MinimedPredictWindow *in, MinimedPrediction *out);
 
+//! The window minimed_predict_run last assembled, valid only right after a call that returned
+//! true. Lets other models (minimed_hypo.c) reuse the same 4-hour window instead of rebuilding it.
+const MinimedPredictWindow *minimed_predict_last_window(void);
+
 //! Running accuracy of the 30-minute forecast since start: each forecast waits for the reading
 //! that arrives 30 minutes later. The baseline carries the reading at forecast time forward.
 #define MINIMED_SCORE_PENDING 8
