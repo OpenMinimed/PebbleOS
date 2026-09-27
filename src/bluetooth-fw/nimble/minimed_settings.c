@@ -62,6 +62,7 @@ void minimed_settings_set_alerts(uint8_t mask) {
   if (mask == s_alerts_mask) {
     return;  // no change -> no flash write (the watchface re-announces this every couple minutes)
   }
+  PBL_LOG_INFO("minimed: settings alerts 0x%02x -> 0x%02x", s_alerts_mask, mask);
   s_alerts_mask = mask;
   launcher_task_add_callback(prv_store_alerts_cb, (void *)(uintptr_t)mask);
 }
@@ -87,6 +88,7 @@ void minimed_settings_set_features(uint8_t mask) {
   if (mask == s_features_mask) {
     return;
   }
+  PBL_LOG_INFO("minimed: settings features 0x%02x -> 0x%02x", s_features_mask, mask);
   s_features_mask = mask;
   launcher_task_add_callback(prv_store_features_cb, (void *)(uintptr_t)mask);
 }

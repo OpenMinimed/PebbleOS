@@ -494,6 +494,11 @@ static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8
   // Confirmed. Everything we send from here on is addressed and shaped by this announcement.
   s_target_uuid = *uuid;
   s_have_target = true;
+  if (announce.caps != s_caps || announce.graph_hours != s_graph_hours) {
+    PBL_LOG_INFO("minimed: announce caps 0x%lx -> 0x%lx, graph_hours %u -> %u",
+                (unsigned long)s_caps, (unsigned long)announce.caps, (unsigned)s_graph_hours,
+                (unsigned)announce.graph_hours);
+  }
   s_caps = announce.caps;
   s_graph_hours = announce.graph_hours;
   if (announce.have_alerts) {
