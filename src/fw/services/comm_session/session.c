@@ -489,10 +489,25 @@ CommSession *comm_session_get_system_session(void) {
 }
 
 CommSession *comm_session_get_current_app_session(void) {
+  // A claimed App-destination session -- in stock PebbleOS this basically never exists (that
+  // destination is for a native PebbleKit companion connecting directly, not how allow_js apps'
+  // JS talks to the phone); the minimed loopback is the one thing that opens one deliberately, to
+  // intercept the current watchface's own outbound AppMessages (its ready-ping/capability
+  // announce) rather than let them go to the real phone. allow_js unconditionally skipped this and
+  // went straight to the system session, so every announce from a JS-enabled watchface (this one,
+  // since Clay/pkjs was added) silently went to the phone and never reached the loopback --
+  // confirmed by "announce caps" never once appearing in a flash-log dump despite the watchface
+  // announcing on every launch. Preferring the App session when one is actually claimed costs
+  // nothing for every other app (no such session exists for them), and only changes behavior for
+  // the specific case this loopback exists to handle.
+  CommSession *app_session = comm_session_get_by_type(CommSessionTypeApp);
+  if (app_session) {
+    return app_session;
+  }
   if (app_manager_get_current_app_md()->allow_js) {
     return comm_session_get_system_session();
   }
-  return comm_session_get_by_type(CommSessionTypeApp);
+  return NULL;
 }
 
 void comm_session_sanitize_app_session(CommSession **session_in_out) {
