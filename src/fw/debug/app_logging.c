@@ -6,12 +6,18 @@
 #include "applib/app_logging.h"
 
 #include <stdint.h>
+#include <string.h>
 
 #include "logging/logging_private.h"
 #include "kernel/memory_layout.h"
 #include "kernel/util/stack_info.h"
+#include "pbl/mcu/interrupts.h"
 #include "pbl/services/comm_session/session.h"
+#include "process_management/app_manager.h"
 #include "syscall/syscall_internal.h"
+
+#include "FreeRTOS.h"
+#include "task.h"
 
 static const uint16_t APP_LOGGING_ENDPOINT = 2006;
 
@@ -23,6 +29,20 @@ bool app_log_is_bt_enabled(void) {
 
 static const uint32_t MIN_STACK_FOR_SEND_DATA = 400;
 
+// Stamp the source so a flash-log dump (which otherwise mixes app lines in with the firmware's
+// own PBL_LOG lines) makes it obvious at a glance which is which, instead of relying on someone
+// recognising an app's C filename by name. Overwrites the filename field in place -- it is a
+// fixed 16-byte buffer either way, so this just spends a few of those bytes on the tag instead of
+// the tail of the path.
+static void prv_tag_filename(LogBinaryMessage *log_msg, const char *tag) {
+  char tagged[sizeof(log_msg->filename)];
+  const size_t tag_len = strlen(tag) < sizeof(tagged) ? strlen(tag) : sizeof(tagged) - 1;
+  memcpy(tagged, tag, tag_len);
+  strncpy(tagged + tag_len, log_msg->filename, sizeof(tagged) - tag_len);
+  tagged[sizeof(tagged) - 1] = '\0';
+  memcpy(log_msg->filename, tagged, sizeof(tagged));
+}
+
 DEFINE_SYSCALL(void, sys_app_log, size_t length, void *log_buffer) {
   if (PRIVILEGE_WAS_ELEVATED) {
     syscall_assert_userspace_buffer(log_buffer, length);
@@ -30,8 +50,22 @@ DEFINE_SYSCALL(void, sys_app_log, size_t length, void *log_buffer) {
 
   AppLogBinaryMessage *message = log_buffer;
 
+  const PebbleProcessMd *md = app_manager_get_current_app_md();
+  prv_tag_filename(&message->log_msg, (md && md->process_type == ProcessTypeWatchface)
+                                          ? "WF:" : "APP:");
+
   // First log to serial, we always do this.
   kernel_pbl_log_serial(&message->log_msg, false);
+
+  // Also persist to the flash log ring, same as firmware PBL_LOG lines. Previously app logs only
+  // reached serial (needs a wired debug console) or a live BT listener (`pebble logs`), so a
+  // flash-log dump pulled after the fact never showed what the watchapp itself saw or did, only
+  // what the firmware sent it -- exactly backwards when the bug report is "the watchface didn't
+  // update". Same context guard as kernel_pbl_log uses before its own flash write.
+  if (!portIN_CRITICAL() && !mcu_state_is_isr() &&
+      xTaskGetSchedulerState() != taskSCHEDULER_SUSPENDED) {
+    kernel_pbl_log_flash(&message->log_msg, false);
+  }
 
   // Now check to see if app logging is enabled over bluetooth.
   if (s_app_logging_mode == AppLoggingDisabled) {
