@@ -600,12 +600,16 @@ static void prv_hypo_check(const MinimedPredictWindow *win) {
     return;
   }
   MinimedHypoPrediction h;
+  const RtcTicks hypo_start = rtc_get_ticks();
   minimed_hypo_eval(win, 0.3f, &h);
+  const uint32_t hypo_ms =
+      (uint32_t)(((rtc_get_ticks() - hypo_start) * 1000) / RTC_TICKS_HZ);
   PBL_LOG_INFO("minimed: hypo%s treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
-               "%ld/%ld",
+               "%ld/%ld, %lums",
                early ? " (early fast-fall)" : "", (int)(h.treat_pct + 0.5f),
                (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
-               (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f));
+               (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f),
+               (unsigned long)hypo_ms);
   PBL_LOG_INFO("minimed: hypo p_low=%d pct p_severe=%d pct p_over=%d pct",
                (int)(h.p_low * 100.0f + 0.5f), (int)(h.p_severe * 100.0f + 0.5f),
                (int)(h.p_over * 100.0f + 0.5f));
@@ -626,11 +630,16 @@ static void prv_hypo_check(const MinimedPredictWindow *win) {
 static void prv_predict_and_send(void) {
   MinimedPrediction p;
   const uint32_t now = (uint32_t)rtc_get_time();
-  if (s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p)) {
+  const RtcTicks predict_start = rtc_get_ticks();
+  const bool have_pred = s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p);
+  const uint32_t predict_ms =
+      (uint32_t)(((rtc_get_ticks() - predict_start) * 1000) / RTC_TICKS_HZ);
+  if (have_pred) {
     const int32_t pred = (int32_t)(p.mgdl + 0.5f);
-    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), low p=%d/1000 alarm=%d",
+    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), low p=%d/1000 alarm=%d, "
+                 "%lums",
                  (long)pred, (long)s_reading_mgdl, (long)(pred - s_reading_mgdl),
-                 (int)(p.low_prob * 1000.0f), (int)p.low_alarm);
+                 (int)(p.low_prob * 1000.0f), (int)p.low_alarm, (unsigned long)predict_ms);
     PBL_LOG_INFO("minimed: predict inputs bg=%u/48 cells, slope15=%+d.%d mg/dL/min, ins4h=%d.%02dU, "
                  "carb4h=%dg, hour=%u",
                  p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
