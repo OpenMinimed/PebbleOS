@@ -36,13 +36,23 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   single-slot bundles, release build, release-band check. The rest of this section is that recipe.
 - Switching boards re-runs `waf configure` automatically (the c4che board no longer matches).
 
-### Local compile-time overrides
+### User-facing settings
 
-Some behaviour is gated behind a plain `#define` rather than Kconfig (e.g.
-`MINIMED_ALERT_POPUPS` in `minimed_sake_read.c`). To flip one of those on a personal build
-without it ever showing up in `git diff`: create
-`src/bluetooth-fw/nimble/minimed_local_overrides.h` (gitignored) and `#define` it there — the
-source file `#include`s it if present and only falls back to its own default otherwise.
+Anything a user (not just a developer) should be able to change lives in
+`minimed_settings.{c,h}`, persisted to flash and set from the watchface's Settings page in the
+Pebble mobile app (Clay; see `pebble-glucose-watchface/src/pkjs`) rather than a compile flag.
+Which pump alert categories pop up on the watch (issue #15) is the first example. Adding a new
+one: add a bit to `pebble_glucose_protocol.h`'s `KEY_SETTINGS_ALERTS`-style key (or a new key, if
+it's not a bitmask), read it in `minimed_glucose_announce.c`, cache/persist it in
+`minimed_settings.c`, and add a Clay item to `config.js` on the watchface side.
+
+Some behaviour is still gated behind a plain `#define` rather than Kconfig, for things that are
+genuinely a developer/debug knob rather than a user preference. To flip one of those on a personal
+build without it ever showing up in `git diff`: create
+`src/bluetooth-fw/nimble/minimed_local_overrides.h` (gitignored) and `#define` it there — a source
+file `#include`s it if present (guarded by `__has_include`) and only falls back to its own default
+otherwise. There is no example left as of this writing (`MINIMED_ALERT_POPUPS` moved to the
+Settings page above); the mechanism remains for the next one.
 
 ### The PT2 build recipe — read before deviating
 

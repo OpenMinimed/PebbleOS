@@ -883,6 +883,18 @@ static void section_annunciation(void) {
   check("0x323 (already-low suspend) does not show BG", !minimed_annunciation_shows_bg(0x323));
   check("0x068 (low battery, unrelated to BG) does not show BG",
         !minimed_annunciation_shows_bg(0x068));
+
+  // Low-BG family (SETTINGS_ALERT_LOW): broader than shows_bg -- includes the two already-a-low
+  // alerts shows_bg deliberately excludes.
+  check("0x322 (Low SG/PLGM) is low", minimed_annunciation_is_low(0x322));
+  check("0x323 (Low SG suspend) is low", minimed_annunciation_is_low(0x323));
+  check("0x325 (alert before low) is low", minimed_annunciation_is_low(0x325));
+  check("0x329 (threshold suspend) is low", minimed_annunciation_is_low(0x329));
+  check("0x32a (suspend before low, quiet) is low", minimed_annunciation_is_low(0x32a));
+  check("0x32b (suspend before low) is low", minimed_annunciation_is_low(0x32b));
+  check("0x33b (severe low SG) is low", minimed_annunciation_is_low(0x33b));
+  check("0x068 (low battery) is not low", !minimed_annunciation_is_low(0x068));
+  check("0x330 (high SG) is not low", !minimed_annunciation_is_low(0x330));
   printf("\n");
 }
 
@@ -934,6 +946,46 @@ static void section_announce(void) {
   check("caps decoded", a.caps == (CAP_BG | CAP_IOB | CAP_STATUS));
   check("graph hours decoded", a.graph_hours == 24);
   check("version decoded", a.version == PROTOCOL_VERSION);
+  check("no settings key -> have_alerts false", !a.have_alerts);
+
+  // KEY_SETTINGS_ALERTS: optional, like GRAPH_HOURS -- absence means "no opinion", not failure.
+  dict_begin(4);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_GRAPH_HOURS, 24, 1);
+  dict_put_uint(KEY_SETTINGS_ALERTS, SETTINGS_ALERT_LOW | SETTINGS_ALERT_OTHER, 1);
+  check("settings key decoded", minimed_glucose_parse_announce(g_dict, g_dict_len, &a) &&
+        a.have_alerts && a.alerts == (SETTINGS_ALERT_LOW | SETTINGS_ALERT_OTHER));
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_ALERTS, 0, 1);  // every alert popup turned off
+  check("settings key of zero is still \"have\"",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_alerts && a.alerts == 0);
+
+  // KEY_SETTINGS_FEATURES: same optional, ignore-if-unknown treatment as KEY_SETTINGS_ALERTS.
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("no features key -> have_features false",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && !a.have_features);
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_FEATURES, SETTINGS_FEATURE_HYPO, 1);
+  check("features key decoded",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_features &&
+            a.features == SETTINGS_FEATURE_HYPO);
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_FEATURES, 0, 1);  // hypo model disabled entirely
+  check("features key of zero is still \"have\"",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_features &&
+            a.features == 0);
 
   // GRAPH_HOURS is optional; its absence means no graph rather than a parse failure.
   dict_begin(2);
