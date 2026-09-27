@@ -46,8 +46,8 @@ bool minimed_glucose_parse_announce(const uint8_t *dict, uint16_t len,
     return false;
   }
 
-  bool have_version = false, have_caps = false;
-  uint32_t caps = 0, graph_hours = 0, version = 0;
+  bool have_version = false, have_caps = false, have_alerts = false, have_features = false;
+  uint32_t caps = 0, graph_hours = 0, version = 0, alerts = 0, features = 0;
 
   const uint8_t count = dict[0];
   uint16_t off = 1;
@@ -80,6 +80,16 @@ bool minimed_glucose_parse_announce(const uint8_t *dict, uint16_t len,
         if (!prv_uint_value(type, length, val, &v)) return false;
         graph_hours = v;
         break;
+      case KEY_SETTINGS_ALERTS:
+        if (!prv_uint_value(type, length, val, &v)) return false;
+        alerts = v;
+        have_alerts = true;
+        break;
+      case KEY_SETTINGS_FEATURES:
+        if (!prv_uint_value(type, length, val, &v)) return false;
+        features = v;
+        have_features = true;
+        break;
       default:
         break;  // unknown keys are ignored, so the protocol can grow
     }
@@ -97,5 +107,9 @@ bool minimed_glucose_parse_announce(const uint8_t *dict, uint16_t len,
   out->version = (uint8_t)version;
   out->caps = caps;
   out->graph_hours = graph_hours > 255 ? 255 : (uint8_t)graph_hours;
+  out->have_alerts = have_alerts;
+  out->alerts = (uint8_t)alerts;
+  out->have_features = have_features;
+  out->features = (uint8_t)features;
   return true;
 }

@@ -21,6 +21,7 @@
 #include "minimed_idd_flags.h"
 #include "minimed_predict.h"
 #include "minimed_iob.h"
+#include "minimed_settings.h"
 #include "popups/minimed_alert_popup.h"
 #include "minimed_sake_sender.h"
 #include "minimed_status.h"
@@ -35,14 +36,6 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 // MedtronicProtocol.kt). The pump exposes these as a GATT server over the post-handshake link.
 #define CGM_SERVICE_UUID 0x181F
 #define CGM_MEASUREMENT_UUID 0x2AA7  // notify, SAKE-encrypted records
-// Local, gitignored, untracked by git: lets a personal build flip switches like
-// MINIMED_ALERT_POPUPS below without ever showing up in `git diff`. See TESTING.md.
-#if __has_include("minimed_local_overrides.h")
-#include "minimed_local_overrides.h"
-#endif
-#ifndef MINIMED_ALERT_POPUPS
-#define MINIMED_ALERT_POPUPS 0  // set 1 to re-enable watch popups for pump alarms (annunciations)
-#endif
 #define CGM_FEATURE_UUID 0x2AA8      // read, plaintext (E2E-CRC flag)
 #define RACP_UUID 0x2A52             // write/indicate, plaintext control point
 
@@ -299,10 +292,8 @@ static char s_last_bg_str[12];
 // Recently notified annunciation instance ids: the same annunciation can be re-logged with an
 // updated status (semantics not fully characterised), and a raise must buzz exactly once.
 // 0xFFFF = empty slot. Deliberately survives reconnects.
-#if MINIMED_ALERT_POPUPS
 static uint16_t s_annunc_ids[8] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
 static uint8_t s_annunc_ids_next;
-#endif
 
 // Distinguishes a genuinely new sensor reading from a re-poll of the same one. The CGM record's
 // Time Offset (bytes 4-5, minutes since session start) is the only new-reading signal available --
@@ -546,7 +537,6 @@ static void prv_parse_iob(void) {
   }
 }
 
-#if MINIMED_ALERT_POPUPS
 static bool prv_annunc_already_notified(uint16_t id) {
   const size_t n = sizeof(s_annunc_ids) / sizeof(s_annunc_ids[0]);
   for (size_t i = 0; i < n; i++) {
@@ -555,7 +545,6 @@ static bool prv_annunc_already_notified(uint16_t id) {
   s_annunc_ids[s_annunc_ids_next++ % n] = id;
   return false;
 }
-#endif
 
 // A history record read during the backfill: keep its event, timed on the pump's clock. The read
 // starts hours back, so the oldest are shifted out to keep the newest.
@@ -601,6 +590,9 @@ static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local
 // is about to plunge into that regime faster than it can wait for -- see its own comment for the
 // physiological rate this is anchored on.
 static void prv_hypo_check(const MinimedPredictWindow *win) {
+  if (!minimed_settings_hypo_enabled()) {
+    return;  // phone-disabled: skip the computation entirely, not just the send/display
+  }
   const bool normal = win && minimed_hypo_should_evaluate(win);
   const bool early = win && !normal && minimed_hypo_falling_fast(win);
   if (!normal && !early) {
@@ -883,7 +875,9 @@ static void prv_annunc_record_done(void) {
                (unsigned long)a.seq, (int)s_annunc_baseline);
   if (s_annunc_baseline) return;
   if (a.silenced) return;  // the pump raised it quietly (alert settings); mirror that choice
-#if MINIMED_ALERT_POPUPS
+  // Phone-configured (Settings page -> KEY_SETTINGS_ALERTS -> minimed_settings), not a compile
+  // flag: see minimed_settings.h.
+  if (!minimed_settings_alert_enabled(minimed_annunciation_is_low(a.type))) return;
   if (prv_annunc_already_notified(a.id)) return;
 
   char name[28];
@@ -905,9 +899,6 @@ static void prv_annunc_record_done(void) {
     snprintf(body, sizeof(body), "%s", name);
   }
   minimed_alert_popup_push("MiniMed", body);
-#else
-  (void)a;
-#endif
 }
 
 // Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
@@ -1897,6 +1888,7 @@ static void prv_read_kickoff(struct ble_npl_event *ev) {
 }
 
 void minimed_sake_read_init(void) {
+  minimed_settings_init();
   ble_npl_callout_init(&s_read_co, nimble_port_get_dflt_eventq(), prv_read_kickoff, NULL);
   ble_npl_callout_init(&s_poll_co, nimble_port_get_dflt_eventq(), prv_poll_timer_cb, NULL);
   ble_npl_callout_init(&s_wd_co, nimble_port_get_dflt_eventq(), prv_wd_cb, NULL);

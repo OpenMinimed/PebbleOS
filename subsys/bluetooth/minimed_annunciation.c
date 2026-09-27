@@ -128,3 +128,22 @@ bool minimed_annunciation_shows_bg(uint16_t type) {
       return false;
   }
 }
+
+// The low-BG family: everything shows_bg() covers (all predicted-low), plus the two alerts about
+// an already-arrived low (0x323, 0x33b) that function deliberately excludes -- those don't want
+// "predicted" framing in their body text, but they are still exactly the "low BG soon"-or-worse
+// alerts a user keeping only low alerts on would want to see.
+bool minimed_annunciation_is_low(uint16_t type) {
+  switch (type) {
+    case 0x322:  // Low SG (PLGM)
+    case 0x323:  // Low SG suspend
+    case 0x325:  // Alert before low
+    case 0x329:  // Threshold suspend
+    case 0x32a:  // Suspend before low (quiet)
+    case 0x32b:  // Suspend before low
+    case 0x33b:  // Severe low SG
+      return true;
+    default:
+      return false;
+  }
+}

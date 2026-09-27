@@ -13,6 +13,7 @@
 #include "kernel/event_loop.h"
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
+#include "minimed_settings.h"
 #include "pebble_glucose_protocol.h"
 #include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
@@ -493,8 +494,19 @@ static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8
   // Confirmed. Everything we send from here on is addressed and shaped by this announcement.
   s_target_uuid = *uuid;
   s_have_target = true;
+  if (announce.caps != s_caps || announce.graph_hours != s_graph_hours) {
+    PBL_LOG_INFO("minimed: announce caps 0x%lx -> 0x%lx, graph_hours %u -> %u",
+                (unsigned long)s_caps, (unsigned long)announce.caps, (unsigned)s_graph_hours,
+                (unsigned)announce.graph_hours);
+  }
   s_caps = announce.caps;
   s_graph_hours = announce.graph_hours;
+  if (announce.have_alerts) {
+    minimed_settings_set_alerts(announce.alerts);
+  }
+  if (announce.have_features) {
+    minimed_settings_set_features(announce.features);
+  }
   // Only clear the cache for THIS watchface. Clearing it unconditionally would re-probe (and
   // re-NACK) a known non-match every time you switched back from the glucose watchface, since
   // returning to a watchface relaunches it and re-announces.

@@ -36,3 +36,10 @@ const char *minimed_annunciation_name(uint16_t type);
 //! it is contextually useful. False for everything else (including alerts already about BG,
 //! e.g. an already-triggered low or a high SG, which don't need "predicted" framing).
 bool minimed_annunciation_shows_bg(uint16_t type);
+
+//! True for the low-BG family of alerts (predicted low, low, severe low, and the suspend-before/
+//! threshold-suspend alarms that ride along with them) -- the SETTINGS_ALERT_LOW category a user
+//! can choose to keep even with every other pump alert popup turned off (issue #15). Broader than
+//! minimed_annunciation_shows_bg: that one is about whether to caption the notification with the
+//! BG value, this one is about whether to show the notification at all.
+bool minimed_annunciation_is_low(uint16_t type);

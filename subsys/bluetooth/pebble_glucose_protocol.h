@@ -46,6 +46,27 @@
                                  // factors in overtreatment risk) reads as ambiguous on its own.
 #define KEY_MEAL_LIST 1003      // blob: every meal still inside the graph window, not just the
                                  // latest. [count u8][(timestamp u32 LE)(grams u16 LE)] x count
+#define KEY_SETTINGS_ALERTS 1005 // uint8, SETTINGS_ALERT_* bitmask (watchface -> sender): which
+                                 // pump alert categories should pop up on the watch. Sent as part
+                                 // of the capability announcement, so an old sender that doesn't
+                                 // recognise the key just ignores it (ignores everything, in fact)
+                                 // and keeps its own last-known/default value.
+#define KEY_SETTINGS_FEATURES 1006 // uint8, SETTINGS_FEATURE_* bitmask (watchface -> sender): which
+                                   // expensive-to-compute features to run at all, not just whether
+                                   // to send/show the result -- CAP_* alone only silences the send.
+                                   // Sent alongside KEY_SETTINGS_ALERTS; same ignore-if-unknown and
+                                   // keep-last-value rules.
+
+// Alert visibility bitmask for KEY_SETTINGS_ALERTS, watchface -> sender. Configured on the phone
+// (the watchapp's Settings page); the sender falls back to SETTINGS_ALERT_LOW alone until the
+// first announcement carries a value.
+#define SETTINGS_ALERT_LOW 0x01   // predicted-low, low, and severe-low pump alerts
+#define SETTINGS_ALERT_OTHER 0x02 // every other pump alert (reservoir, battery, sensor, SmartGuard, ...)
+
+// Feature-enable bitmask for KEY_SETTINGS_FEATURES, watchface -> sender. Defaults to
+// SETTINGS_FEATURE_HYPO on (the model's own decision, unchanged from before this key existed)
+// until the first announcement says otherwise.
+#define SETTINGS_FEATURE_HYPO 0x01 // run the hypo (treat-or-wait) model at all
 
 // Capability bits
 #define CAP_BG 0x01
