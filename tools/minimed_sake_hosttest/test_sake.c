@@ -5,6 +5,7 @@
 //              server state machine with the capture's RNG values injected,
 //              and assert msg0/msg2/msg4 are byte-identical and the handshake
 //              completes against the pump's real recorded msg1/msg3/msg5.
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +16,7 @@
 #include "pebble_glucose_protocol.h"
 #include "minimed_graph.h"
 #include "minimed_history.h"
+#include "minimed_hypo.h"
 #include "minimed_predict.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
@@ -1199,6 +1201,119 @@ static void section_predict_score(void) {
   check("pending stays bounded", sc.pending == MINIMED_SCORE_PENDING);
 }
 
+// --- Section 12: hypo (treat-or-wait) model ------------------------------------------------------
+// The C port against the numpy model on recorded test-split vectors (hypo_testvec.bin, written by
+// sugar_predictor/export_hypo_c.py). Reuses the predictor's own MinimedPredictWindow.
+static void section_hypo(void) {
+  printf("  Section 12: hypo treat-or-wait model\n");
+  // hypo_testvec.bin is recorded from one wearer's data and not committed; without it the vector
+  // check is skipped (regenerate with sugar_predictor/export_hypo_c.py and copy it here).
+  FILE *f = fopen("hypo_testvec.bin", "rb");
+  if (!f) printf("    [skip] hypo_testvec.bin not present: numpy vector check not run\n");
+  if (f) {
+    uint32_t n = 0, hist = 0;
+    int got = fread(&n, 4, 1, f) == 1 && fread(&hist, 4, 1, f) == 1;
+    int bad = 0;
+    double worst_nadir = 0.0, worst_plow = 0.0, worst_treat = 0.0;
+    for (uint32_t r = 0; got && r < n; r++) {
+      MinimedPredictWindow in;
+      float ref[7];
+      if (fread(in.bg, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.ins, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.carb, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(ref, 4, 7, f) != 7) {
+        got = 0;
+        break;
+      }
+      in.tod_sin = sinf(ref[1]);
+      in.tod_cos = cosf(ref[1]);
+      MinimedHypoPrediction out;
+      minimed_hypo_eval(&in, 0.3f, &out);
+      const double d_nadir = fabs((double)out.nadir_untreated - ref[2]);
+      const double d_plow = fabs((double)out.p_low - ref[5]);
+      const double d_treat = fabs((double)out.treat_pct - ref[6]);
+      if (d_nadir > worst_nadir) worst_nadir = d_nadir;
+      if (d_plow > worst_plow) worst_plow = d_plow;
+      if (d_treat > worst_treat) worst_treat = d_treat;
+      if (d_nadir > 1e-2 || d_plow > 1e-3 || d_treat > 1e-1) bad++;
+    }
+    fclose(f);
+    check("hypo vectors read", got && n > 0);
+    check("C nadir_untreated matches numpy (worst < 0.01 mg/dL)", bad == 0 && worst_nadir < 1e-2);
+    check("C p_low matches numpy (worst < 0.001)", worst_plow < 1e-3);
+    check("C treat_pct matches numpy (worst < 0.1)", worst_treat < 1e-1);
+  }
+
+  // should_evaluate gate: hand-made timelines.
+  MinimedPredictWindow flat;
+  memset(&flat, 0, sizeof(flat));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) flat.bg[i] = 120.0f;
+  flat.tod_cos = 1.0f;
+  check("a flat trace above the trigger is not evaluated", !minimed_hypo_should_evaluate(&flat));
+
+  MinimedPredictWindow falling;
+  memset(&falling, 0, sizeof(falling));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) falling.bg[i] = 200.0f - (float)i * 3.0f;
+  falling.tod_cos = 1.0f;
+  check("a steep fall through the trigger is evaluated", minimed_hypo_should_evaluate(&falling));
+
+  MinimedPredictWindow early;
+  memset(&early, 0, sizeof(early));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) early.bg[i] = 120.0f;
+  early.bg[47] = 105.0f;  // 5.8 mmol/L and falling: inside the 6.0 early band
+  early.tod_cos = 1.0f;
+  check("a fall under 6.0 mmol/L is evaluated", minimed_hypo_should_evaluate(&early));
+  early.bg[47] = 110.0f;
+  check("a fall still above 6.0 mmol/L is not", !minimed_hypo_should_evaluate(&early));
+
+  MinimedHypoPrediction out;
+  minimed_hypo_eval(&falling, 0.3f, &out);
+  check("treat_pct is a percentage", out.treat_pct >= 0.0f && out.treat_pct <= 100.0f);
+  check("p_low is a probability", out.p_low >= 0.0f && out.p_low <= 1.0f);
+  check("mins_saved = untreated - treated", fabsf(out.mins_saved - (out.mins_untreated - out.mins_treated)) < 1e-3f);
+  check("carbs cannot lower the treated nadir below the untreated one",
+        out.nadir_treated >= out.nadir_untreated - 1e-3f);
+  check("carbs cannot lengthen the treated low beyond the untreated one",
+        out.mins_treated <= out.mins_untreated + 1e-3f);
+
+  // falling_fast: the early gate for a reading still above the trigger but dropping at the
+  // physiological worst-case rate (>=3 mg/dL/min) and projected to cross the low line within 30 min.
+  check("already at/below the trigger is should_evaluate's job, not this gate",
+        !minimed_hypo_falling_fast(&falling));  // falling.bg[47] is well under 90
+
+  MinimedPredictWindow flat_high;
+  memset(&flat_high, 0, sizeof(flat_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) flat_high.bg[i] = 120.0f;
+  flat_high.tod_cos = 1.0f;
+  check("flat above the trigger is not a fast fall", !minimed_hypo_falling_fast(&flat_high));
+
+  MinimedPredictWindow slow_fall;
+  memset(&slow_fall, 0, sizeof(slow_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) slow_fall.bg[i] = 150.0f;
+  slow_fall.bg[45] = 140.0f;
+  slow_fall.bg[46] = 130.0f;
+  slow_fall.bg[47] = 120.0f;  // -30 over 15 min = -2 mg/dL/min: an ordinary decline
+  slow_fall.tod_cos = 1.0f;
+  check("an ordinary (sub-3 mg/dL/min) decline does not trigger the early gate",
+        !minimed_hypo_falling_fast(&slow_fall));
+
+  MinimedPredictWindow fast_fall;
+  memset(&fast_fall, 0, sizeof(fast_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall.bg[i] = 170.0f;
+  fast_fall.bg[45] = 150.0f;
+  fast_fall.bg[46] = 130.0f;
+  fast_fall.bg[47] = 115.0f;  // -55 over 15 min = -3.67 mg/dL/min, still above 108
+  fast_fall.tod_cos = 1.0f;
+  check("a >=3 mg/dL/min fall projected under 70 within 30 min triggers the early gate",
+        minimed_hypo_falling_fast(&fast_fall));
+
+  MinimedPredictWindow fast_fall_high;
+  memcpy(&fast_fall_high, &fast_fall, sizeof(fast_fall_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall_high.bg[i] += 40.0f;  // now 155: past the ceiling
+  check("the same fast fall does not fire once the reading is too far above the trigger",
+        !minimed_hypo_falling_fast(&fast_fall_high));
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -1214,6 +1329,7 @@ int main(void) {
   section_predict();
   section_predict_score();
   section_basal_iob();
+  section_hypo();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

@@ -152,6 +152,8 @@ void minimed_predict_window(const MinimedPredictWindow *in, MinimedPrediction *o
   out->low_alarm = out->low_prob >= bgp_thr_low;
 }
 
+const MinimedPredictWindow *minimed_predict_last_window(void) { return &s_window; }
+
 // -- State ----------------------------------------------------------------------------------------
 
 void minimed_predict_reset(MinimedPredictState *st) { memset(st, 0, sizeof(*st)); }
