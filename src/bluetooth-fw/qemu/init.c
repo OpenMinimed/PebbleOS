@@ -12,6 +12,10 @@
 
 #include <stdlib.h>
 
+#ifdef CONFIG_MINIMED_SAKE
+#include "minimed_fake_pump.h"
+#endif
+
 // ----------------------------------------------------------------------------------------
 void bt_driver_init(void) {
   // We need the QEMU serial driver
@@ -30,6 +34,9 @@ bool bt_driver_start(BTDriverConfig *config) {
   if (qemu_setting_get(QemuSetting_DefaultConnected)) {
     qemu_transport_set_connected(true);
   }
+#ifdef CONFIG_MINIMED_SAKE
+  minimed_fake_pump_start();
+#endif
   return true;
 }
 

@@ -1,13 +1,17 @@
 from resources.types.resource_definition import ResourceDefinition
 from resources.types.resource_object import ResourceObject
 
-sources = bld.path.ant_glob('**/*.c')
+excludes = [] if bld.env.CONFIG_MINIMED_SAKE else ['minimed_fake_pump.c']
+sources = bld.path.ant_glob('**/*.c', excl=excludes)
+use = [
+    'fw_includes',
+    'freertos',
+    'pbl_includes',
+]
+if bld.env.CONFIG_MINIMED_SAKE:
+    use.append('minimed_includes')  # src/fw/services/minimed
 bld.stlib(source=sources,
           target='bt_driver',
-          use=[
-            'fw_includes',
-            'freertos',
-            'pbl_includes',
-          ])
+          use=use)
 
 # vim:filetype=python
