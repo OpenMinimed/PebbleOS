@@ -44,6 +44,7 @@ enum {
   TimerHeap,        // fixed-interval kernel heap watch
   TimerDevinfo,
   TimerSensorInfo,
+  TimerAnnuncProbe,  // start of the Snooze/Confirm probe, then its per-command timeout
   TimerCount
 };
 _Static_assert(TimerCount <= MINIMED_TIMER_COUNT, "raise MINIMED_TIMER_COUNT");
@@ -66,6 +67,11 @@ enum {
   TagSensorInfoRead,
   TagSensorExpSub,
   TagSessionStartRead,
+  TagProbeSubData,
+  TagProbeSubCp,
+  TagProbeStatusRead,
+  TagProbeWrite,
+  TagPumpClockRead,
 };
 
 // RACP "Report Stored Records: Last Record" and its success response (Bluetooth SIG RACP).
@@ -171,6 +177,7 @@ static void prv_hypo_check(const MinimedPredictWindow *win);
 static void prv_status_publish_if_done(uint8_t completed_op);
 static void prv_sensorinfo_read(uint8_t step);
 static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n);
+static void prv_annunc_probe_notify(const uint8_t *data, uint16_t len);
 
 // True between LinkUp and LinkDown: events for a link that is gone are dropped.
 static bool s_link_up;
@@ -182,7 +189,7 @@ static bool s_have[MinimedChrCount];
 
 // ---- Sensor-info probe (spike for issue #16) ----
 // One chained sweep per connection, ~30 s after polling starts: Session Run Time (0x2AAB),
-// Time Of Sensor Expiration (0x0202), IDD Features (0x0103), Session Start Time (0x2AAA).
+// Time Of Sensor Expiration (0x0202), IDD Features (0x0104), Session Start Time (0x2AAA).
 // Every value is logged raw AND after a decrypt attempt, so the probe itself settles whether
 // each characteristic is plaintext or SAKE-encrypted, and its real field width.
 #define SENSORINFO_READ_DELAY_SECS 30
@@ -257,6 +264,14 @@ static bool s_backfill_done;    // this connection's backfill has been issued
 static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
 static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
 static MinimedHistClock s_backfill_clock;
+
+// The backfill places the log's samples on the watch clock through one offset, pump clock minus
+// watch clock. Normally it comes from the newest sample being the reading the watch just received.
+// With no live reading (a sensor warming up right after a change) it comes from the pump's
+// Current Time instead, read at that moment, so the hours before the change still reach the graph.
+static bool s_pump_clock_known;
+static bool s_pump_clock_requested;
+static int32_t s_pump_clock_offset;  // pump secs - watch secs, when s_pump_clock_known
 
 // A short live gap (a couple of missed 5-min CGM cycles) while already connected: re-issue the same
 // RACP history read the connect-time backfill above uses, so the pump's own log fills the hole
@@ -764,16 +779,22 @@ static void prv_backfill_finish(void) {
   for (uint8_t i = 0; i < s_backfill_n; i++) {
     if (s_backfill_secs[i] > newest) newest = s_backfill_secs[i];
   }
-  // Watch-clock time of a pump-clock time: the newest sample is the reading already shown.
-  #define BF_TS(secs) (s_reading_ts + (uint32_t)((int32_t)((secs) - newest)))
+  // Pump clock minus watch clock. With a live reading, the newest sample is the reading already
+  // shown; without one, the pump clock read for this backfill (see s_pump_clock_offset).
+  const bool by_reading = s_have_offset;
+  const int32_t offset =
+      by_reading ? (int32_t)(newest - s_reading_ts) : (s_pump_clock_known ? s_pump_clock_offset : 0);
+  const bool anchored = by_reading || s_pump_clock_known;
+  // The window ends at the anchor: the reading, or the pump's "now".
+  const uint32_t window_end = by_reading ? newest : (uint32_t)((int32_t)rtc_get_time() + offset);
+  #define BF_TS(secs) ((uint32_t)((int32_t)(secs) - offset))
   const uint32_t window_secs = BACKFILL_WINDOW_MIN * 60u;
 
   uint32_t ts[MINIMED_BACKFILL_MAX_POINTS];
   int32_t mgdl[MINIMED_BACKFILL_MAX_POINTS];
   uint8_t kept = 0;
-  for (uint8_t i = 0; i < s_backfill_n; i++) {
-    const uint32_t age = newest - s_backfill_secs[i];
-    if (age > window_secs || age > s_reading_ts) continue;
+  for (uint8_t i = 0; i < s_backfill_n && anchored; i++) {
+    if (s_backfill_secs[i] > window_end || window_end - s_backfill_secs[i] > window_secs) continue;
     ts[kept] = BF_TS(s_backfill_secs[i]);
     mgdl[kept] = s_backfill_mgdl[i];
     kept++;
@@ -792,7 +813,9 @@ static void prv_backfill_finish(void) {
   if (s_backfill_n > 0) prv_set_hist_edge(newest_edge);
   PBL_LOG_INFO("minimed: backfill %u of %u samples, %u events, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
                (unsigned)kept, (unsigned)s_backfill_n, (unsigned)s_backfill_ne, (long)newest_mgdl,
-               (long)s_reading_mgdl, newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH",
+               (long)s_reading_mgdl,
+               !by_reading ? (anchored ? "pump-clock" : "NONE")
+                           : (newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH"),
                (unsigned long)s_annunc_seq);
   if (kept > 0) {
     minimed_sake_sender_backfill_graph(ts, mgdl, kept);
@@ -802,9 +825,10 @@ static void prv_backfill_finish(void) {
   // reading the watch already had.
   minimed_predict_reset(&s_pred);
   for (uint8_t i = 0; i < kept; i++) minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
-  for (uint8_t i = 0; i < s_backfill_ne; i++) {
-    const uint32_t age = newest > s_backfill_esecs[i] ? newest - s_backfill_esecs[i] : 0;
-    if (age > window_secs) continue;
+  for (uint8_t i = 0; i < s_backfill_ne && anchored; i++) {
+    if (s_backfill_esecs[i] > window_end || window_end - s_backfill_esecs[i] > window_secs) {
+      continue;
+    }
     const uint32_t ets = BF_TS(s_backfill_esecs[i]);
     switch ((MinimedHistEventKind)s_backfill_ekind[i]) {
       case MinimedHistEventInsulin: minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]); break;
@@ -848,16 +872,40 @@ static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts) {
   prv_request(PEND_ANNUNC);
 }
 
-// Queue the backfill read once both of its inputs exist: the log cursor (baseline) and a CGM
-// reading to anchor sample times on.
+// Queue the backfill read once both of its inputs exist: the log cursor (baseline) and something
+// to anchor sample times on -- a CGM reading, or failing that the pump's clock, read first.
 static void prv_backfill_maybe_request(void) {
-  if (s_backfill_done || !s_annunc_have || !s_have_offset || !HAVE(MinimedChrIddRacp) ||
+  if (s_backfill_done || !s_annunc_have || !HAVE(MinimedChrIddRacp) ||
       !HAVE(MinimedChrIddHistory)) {
     return;
+  }
+  if (!s_have_offset && !s_pump_clock_known) {
+    if (!s_pump_clock_requested && HAVE(MinimedChrCurrentTime)) {
+      s_pump_clock_requested = true;
+      MinimedGattStatus status;
+      if (!minimed_transport_read(MinimedChrCurrentTime, TagPumpClockRead, &status)) {
+        PBL_LOG_INFO("minimed: pump clock read rc=0x%04x", status.code);
+      }
+    }
+    return;  // the read's result calls back in here; a later reading also will
   }
   s_backfill_done = true;
   s_backfill_wanted = true;
   prv_request(PEND_ANNUNC);
+}
+
+static void prv_pump_clock_read_done(const MinimedEvent *e) {
+  uint32_t pump_secs = 0;
+  if (!e->status.ok || !minimed_history_parse_current_time(e->data, e->len, &pump_secs)) {
+    PBL_LOG_INFO("minimed: pump clock read failed err=0x%04x len=%u", e->status.code,
+                 (unsigned)e->len);
+    return;  // the backfill waits for a live reading instead
+  }
+  s_pump_clock_offset = (int32_t)(pump_secs - (uint32_t)rtc_get_time());
+  s_pump_clock_known = true;
+  PBL_LOG_INFO("minimed: pump clock %lu, offset %ld s: backfill anchored on it",
+               (unsigned long)pump_secs, (long)s_pump_clock_offset);
+  prv_backfill_maybe_request();
 }
 
 // One reassembled history record is complete: advance the cursor, and post a notification for a
@@ -939,6 +987,10 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
   if (chr == MinimedChrSensorExpiration) {
     // Sensor-info probe: the pump pushes Time Of Sensor Expiration here (indicate-only char).
     prv_sensorinfo_log_value("sensor exp", data, len);
+    return;
+  }
+  if (chr == MinimedChrIddCommandCp || chr == MinimedChrIddCommandData) {
+    prv_annunc_probe_notify(data, len);
     return;
   }
   if (chr == MinimedChrCgmMeasurement) {
@@ -1644,6 +1696,184 @@ static void prv_poll_timer(void) {
   minimed_task_timer_start(TimerPoll, secs * 1000);
 }
 
+// ---- Snooze/Confirm Annunciation probe ----
+// Does the pump implement the standard IDS Snooze Annunciation (0x0f69) and Confirm Annunciation
+// (0x0f99) commands on the IDD Command Control Point? MiniMed Mobile never sends them, so nobody
+// knows. Once per boot, send each with an instance ID no annunciation has (0xFFFF) and log the
+// answer: "Procedure not applicable" (0x74) means the opcode is implemented and just found no such
+// annunciation; "Opcode not supported" (0x70) means it is not. The bogus ID is what keeps this a
+// pure probe: no real alarm is ever snoozed or dismissed. The current annunciation is read and
+// logged first, for the instance ID a later real Confirm would use.
+#define ANNUNC_PROBE_DELAY_SECS 45
+#define ANNUNC_PROBE_TIMEOUT_SECS 10
+#define ANNUNC_PROBE_INSTANCE 0xFFFF
+#define IDD_CMD_RESPONSE_CODE 0x0F55
+#define IDD_CMD_SNOOZE 0x0F69
+#define IDD_CMD_SNOOZE_RESPONSE 0x0F96
+#define IDD_CMD_CONFIRM 0x0F99
+#define IDD_CMD_CONFIRM_RESPONSE 0x0FA5
+static bool s_annunc_probe_done;       // once per boot, like the devinfo sweep
+static uint16_t s_annunc_probe_wait;   // the command awaiting its answer; 0 = none
+static char s_annunc_probe_line[96];
+
+static const char *prv_idd_response_name(uint8_t code) {
+  switch (code) {
+    case 0x0F: return "success";
+    case 0x70: return "opcode not supported";
+    case 0x71: return "invalid operand";
+    case 0x72: return "procedure not completed";
+    case 0x73: return "parameter out of range";
+    case 0x74: return "procedure not applicable (opcode implemented)";
+    case 0x75: return "plausibility check failed";
+    default: return "?";
+  }
+}
+
+static const char *prv_probe_cmd_name(uint16_t op) {
+  return op == IDD_CMD_SNOOZE ? "snooze" : "confirm";
+}
+
+static void prv_annunc_probe_finish(void) {
+  s_annunc_probe_wait = 0;
+  s_annunc_probe_done = true;
+  minimed_task_timer_stop(TimerAnnuncProbe);
+  minimed_sake_log("annunc probe done");
+}
+
+static void prv_annunc_probe_send(uint16_t op) {
+  const uint8_t plain[] = {(uint8_t)op, (uint8_t)(op >> 8), (uint8_t)ANNUNC_PROBE_INSTANCE,
+                           (uint8_t)(ANNUNC_PROBE_INSTANCE >> 8)};
+  uint8_t enc[sizeof(plain) + 3];
+  uint16_t enc_len = 0;
+  MinimedGattStatus status = {0};
+  if (!minimed_sake_encrypt(plain, sizeof(plain), enc, &enc_len) ||
+      !minimed_transport_write(MinimedChrIddCommandCp, enc, enc_len, TagProbeWrite, &status)) {
+    PBL_LOG_INFO("minimed: annunc probe %s: not sent (rc=0x%04x)", prv_probe_cmd_name(op),
+                 status.code);
+    if (op == IDD_CMD_SNOOZE) {
+      prv_annunc_probe_send(IDD_CMD_CONFIRM);
+    } else {
+      prv_annunc_probe_finish();
+    }
+    return;
+  }
+  s_annunc_probe_wait = op;
+  minimed_task_timer_start(TimerAnnuncProbe, ANNUNC_PROBE_TIMEOUT_SECS * 1000);
+}
+
+// The awaited command got its answer (or none): log it, then move on to the next one.
+static void prv_annunc_probe_next(void) {
+  const uint16_t done = s_annunc_probe_wait;
+  s_annunc_probe_wait = 0;
+  if (done == IDD_CMD_SNOOZE) {
+    prv_annunc_probe_send(IDD_CMD_CONFIRM);
+  } else {
+    prv_annunc_probe_finish();
+  }
+}
+
+static void prv_annunc_probe_notify(const uint8_t *data, uint16_t len) {
+  uint8_t plain[24];
+  uint16_t n = 0;
+  if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &n)) {
+    PBL_LOG_INFO("minimed: annunc probe: undecryptable command response (%u bytes)",
+                 (unsigned)len);
+    return;
+  }
+  size_t off = (size_t)snprintf(s_annunc_probe_line, sizeof(s_annunc_probe_line),
+                                "annunc probe resp ");
+  off = prv_append_hex(s_annunc_probe_line, sizeof(s_annunc_probe_line), off, plain, n);
+  PBL_LOG_INFO("minimed: %s", s_annunc_probe_line);
+  if (n < 2 || s_annunc_probe_wait == 0) return;
+  const uint16_t op = (uint16_t)(plain[0] | (plain[1] << 8));
+  if (op == IDD_CMD_RESPONSE_CODE && n >= 5) {
+    const uint16_t req = (uint16_t)(plain[2] | (plain[3] << 8));
+    if (req != s_annunc_probe_wait) return;
+    PBL_LOG_INFO("minimed: annunc probe %s -> 0x%02x %s", prv_probe_cmd_name(req), plain[4],
+                 prv_idd_response_name(plain[4]));
+    char line[40];
+    snprintf(line, sizeof(line), "%s -> 0x%02x", prv_probe_cmd_name(req), plain[4]);
+    minimed_sake_log(line);
+    prv_annunc_probe_next();
+  } else if ((op == IDD_CMD_SNOOZE_RESPONSE && s_annunc_probe_wait == IDD_CMD_SNOOZE) ||
+             (op == IDD_CMD_CONFIRM_RESPONSE && s_annunc_probe_wait == IDD_CMD_CONFIRM)) {
+    // A success response for an ID that should not exist: note it, and still wait for the
+    // Response Code indication that ends the command.
+    PBL_LOG_INFO("minimed: annunc probe %s: success response (opcode implemented)",
+                 prv_probe_cmd_name(s_annunc_probe_wait));
+  }
+}
+
+static void prv_annunc_probe_timer(void) {
+  if (s_annunc_probe_wait != 0) {
+    PBL_LOG_INFO("minimed: annunc probe %s: no response in %u s",
+                 prv_probe_cmd_name(s_annunc_probe_wait), ANNUNC_PROBE_TIMEOUT_SECS);
+    prv_annunc_probe_next();
+    return;
+  }
+  if (s_annunc_probe_done) return;
+  if (!HAVE(MinimedChrIddCommandCp) || !HAVE(MinimedChrIddCommandData)) {
+    PBL_LOG_INFO("minimed: annunc probe: no IDD Command CP/Data characteristic");
+    s_annunc_probe_done = true;
+    return;
+  }
+  minimed_sake_log("annunc probe start");
+  MinimedGattStatus status;
+  if (!minimed_transport_subscribe(MinimedChrIddCommandData, false, TagProbeSubData, &status)) {
+    PBL_LOG_INFO("minimed: annunc probe: command data sub rc=0x%04x", status.code);
+    s_annunc_probe_done = true;
+  }
+}
+
+static void prv_annunc_probe_done(const MinimedEvent *e) {
+  MinimedGattStatus status;
+  switch (e->tag) {
+    case TagProbeSubData:
+      if (!e->status.ok ||
+          !minimed_transport_subscribe(MinimedChrIddCommandCp, true, TagProbeSubCp, &status)) {
+        PBL_LOG_INFO("minimed: annunc probe: subscribe failed err=0x%04x", e->status.code);
+        s_annunc_probe_done = true;
+      }
+      return;
+    case TagProbeSubCp:
+      if (!e->status.ok) {
+        PBL_LOG_INFO("minimed: annunc probe: command CP sub err=0x%04x", e->status.code);
+        s_annunc_probe_done = true;
+        return;
+      }
+      if (!HAVE(MinimedChrIddAnnuncStatus) ||
+          !minimed_transport_read(MinimedChrIddAnnuncStatus, TagProbeStatusRead, &status)) {
+        prv_annunc_probe_send(IDD_CMD_SNOOZE);
+      }
+      return;
+    case TagProbeStatusRead: {
+      uint8_t plain[24];
+      uint16_t n = 0;
+      if (e->status.ok && minimed_sake_decrypt(e->data, e->len, plain, sizeof(plain), &n) &&
+          n >= 6) {
+        // Flags(1) | instance ID(2) | type(2, low 12 bits) | status(1): IDD Annunciation Status.
+        PBL_LOG_INFO("minimed: annunc status flags=%02x id=%u type=0x%03x status=0x%02x",
+                     plain[0], (unsigned)(plain[1] | (plain[2] << 8)),
+                     (unsigned)((plain[3] | (plain[4] << 8)) & 0x0fff), plain[5]);
+      } else {
+        PBL_LOG_INFO("minimed: annunc status read failed err=0x%04x len=%u", e->status.code,
+                     (unsigned)e->len);
+      }
+      prv_annunc_probe_send(IDD_CMD_SNOOZE);
+      return;
+    }
+    case TagProbeWrite:
+      if (!e->status.ok && s_annunc_probe_wait != 0) {
+        PBL_LOG_INFO("minimed: annunc probe %s: write err=0x%04x",
+                     prv_probe_cmd_name(s_annunc_probe_wait), e->status.code);
+        prv_annunc_probe_next();
+      }
+      return;
+    default:
+      return;
+  }
+}
+
 // ---- Connection setup: subscriptions, then polling ----
 
 // Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char is usable; a
@@ -1655,6 +1885,9 @@ static void prv_start_polling(void) {
   minimed_task_timer_start(TimerBattery, BATTERY_FIRST_READ_DELAY_SECS * 1000);
   minimed_task_timer_start(TimerDevinfo, DEVINFO_READ_DELAY_SECS * 1000);
   minimed_task_timer_start(TimerSensorInfo, SENSORINFO_READ_DELAY_SECS * 1000);
+  if (!s_annunc_probe_done) {
+    minimed_task_timer_start(TimerAnnuncProbe, ANNUNC_PROBE_DELAY_SECS * 1000);
+  }
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
@@ -1821,6 +2054,7 @@ static void prv_link_up(void) {
   minimed_task_timer_start(TimerHeap, HEAP_LOG_INTERVAL_SECS * 1000);
   memset(s_have, 0, sizeof(s_have));  // re-discovered per connection; a stale one could alias
   s_sensorinfo_done = false;
+  s_annunc_probe_wait = 0;  // a probe command cut off by the disconnect gets no answer now
   s_rec_len = 0;
   s_srcp_len = 0;
   s_hist_len = 0;
@@ -1838,6 +2072,8 @@ static void prv_link_up(void) {
   s_backfill_clock.have_ref = false;
   s_backfill_n = 0;
   s_backfill_ne = 0;
+  s_pump_clock_known = false;  // re-read per connection, like everything else here
+  s_pump_clock_requested = false;
   s_pred_ready = false;  // primed again by this connection's backfill
   s_hist_edge = 0;
   s_pending = 0;
@@ -1879,6 +2115,7 @@ static void prv_timer(uint8_t timer) {
     case TimerHeap: prv_heap_timer(); break;
     case TimerDevinfo: prv_devinfo_timer(); break;
     case TimerSensorInfo: prv_sensorinfo_timer(); break;
+    case TimerAnnuncProbe: prv_annunc_probe_timer(); break;
     default: break;
   }
 }
@@ -1898,6 +2135,13 @@ static void prv_gatt_done(const MinimedEvent *e) {
     case TagSessionStartRead:
       prv_sensorinfo_done(e);
       break;
+    case TagProbeSubData:
+    case TagProbeSubCp:
+    case TagProbeStatusRead:
+    case TagProbeWrite:
+      prv_annunc_probe_done(e);
+      break;
+    case TagPumpClockRead: prv_pump_clock_read_done(e); break;
     default: prv_setup_done(e); break;
   }
 }

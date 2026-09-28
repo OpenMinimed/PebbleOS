@@ -31,6 +31,9 @@ static const ble_uuid128_t s_idd_srcp_uuid = MEDTRONIC_UUID128(0x05, 0x01);
 static const ble_uuid128_t s_idd_status_changed_uuid = MEDTRONIC_UUID128(0x01, 0x01);
 static const ble_uuid128_t s_idd_status_uuid = MEDTRONIC_UUID128(0x02, 0x01);
 static const ble_uuid128_t s_idd_hist_uuid = MEDTRONIC_UUID128(0x08, 0x01);
+static const ble_uuid128_t s_idd_annunc_status_uuid = MEDTRONIC_UUID128(0x03, 0x01);
+static const ble_uuid128_t s_idd_command_cp_uuid = MEDTRONIC_UUID128(0x06, 0x01);
+static const ble_uuid128_t s_idd_command_data_uuid = MEDTRONIC_UUID128(0x07, 0x01);
 static const ble_uuid128_t s_sensor_exp_uuid = MEDTRONIC_UUID128(0x02, 0x02);
 static const ble_uuid128_t s_idd_features_uuid = MEDTRONIC_UUID128(0x04, 0x01);
 
@@ -39,6 +42,7 @@ static const ble_uuid128_t s_idd_features_uuid = MEDTRONIC_UUID128(0x04, 0x01);
 static const uint16_t s_by_uuid16[MinimedChrCount] = {
     [MinimedChrBattery] = 0x2A19,
     [MinimedChrSessionRunTime] = 0x2AAB,
+    [MinimedChrCurrentTime] = 0x2A2B,
     [MinimedChrDisManufacturer] = 0x2A29,
     [MinimedChrDisModel] = 0x2A24,
     [MinimedChrDisSerial] = 0x2A25,
@@ -122,6 +126,12 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
       s_handles[MinimedChrIddStatus] = chr->val_handle;
     } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_hist_uuid.u) == 0) {
       s_handles[MinimedChrIddHistory] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_annunc_status_uuid.u) == 0) {
+      s_handles[MinimedChrIddAnnuncStatus] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_command_cp_uuid.u) == 0) {
+      s_handles[MinimedChrIddCommandCp] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_command_data_uuid.u) == 0) {
+      s_handles[MinimedChrIddCommandData] = chr->val_handle;
     } else if (chr->uuid.u.type == BLE_UUID_TYPE_16 && ble_uuid_u16(&chr->uuid.u) == RACP_UUID) {
       // The IDD service has its own RACP: same SIG 0x2A52 as the CGM one, different handle.
       s_handles[MinimedChrIddRacp] = chr->val_handle;

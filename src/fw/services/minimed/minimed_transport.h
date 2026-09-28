@@ -29,10 +29,14 @@ typedef enum {
   MinimedChrIddStatus,         //!< IDD 0x0102, read, SAKE-encrypted
   MinimedChrIddRacp,           //!< IDD 0x2A52, write + indicate, plaintext
   MinimedChrIddHistory,        //!< IDD 0x0108, notify, SAKE-encrypted per fragment
+  MinimedChrIddAnnuncStatus,   //!< IDD 0x0103, read, SAKE-encrypted: the annunciation shown now
+  MinimedChrIddCommandCp,      //!< IDD 0x0106, write + indicate, SAKE-encrypted
+  MinimedChrIddCommandData,    //!< IDD 0x0107, notify, SAKE-encrypted
 
   MinimedChrBattery,           //!< 0x2A19
   MinimedChrSessionRunTime,    //!< 0x2AAB
-  MinimedChrIddFeatures,       //!< Medtronic 0x0103
+  MinimedChrIddFeatures,       //!< Medtronic 0x0104
+  MinimedChrCurrentTime,       //!< Current Time 0x2A2B, the pump clock
   MinimedChrDisManufacturer,   //!< Device Information 0x2A29
   MinimedChrDisModel,          //!< 0x2A24
   MinimedChrDisSerial,         //!< 0x2A25

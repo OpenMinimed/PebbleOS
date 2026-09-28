@@ -65,4 +65,8 @@ fi
 grep -q 'fake pump: link up' <<<"$TEXT" || { echo 'FAIL: the MiniMed link never came up'; exit 1; }
 grep -q 'minimed: subscribed IDD Status Changed' <<<"$TEXT" ||
   { echo 'FAIL: the session setup chain did not finish'; exit 1; }
+for cmd in snooze confirm; do
+  grep -q "minimed: annunc probe $cmd -> " <<<"$TEXT" ||
+    { echo "FAIL: the Snooze/Confirm probe got no answer for $cmd"; exit 1; }
+done
 echo 'PASS'

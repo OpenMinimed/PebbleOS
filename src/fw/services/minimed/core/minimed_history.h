@@ -24,6 +24,11 @@ typedef struct {
 //! impossible date.
 bool minimed_history_parse_ref_time(const uint8_t *rec, uint16_t len, MinimedHistRef *out);
 
+//! Decode the pump's Current Time characteristic (SIG 0x2A2B: year(2) month day hours minutes
+//! seconds, then day of week, fractions and adjust reason, which are ignored) into the same pump
+//! clock as MinimedHistRef.secs. False if too short or the date is out of range.
+bool minimed_history_parse_current_time(const uint8_t *val, uint16_t len, uint32_t *secs);
+
 //! SG Measurement (0xf00c): one CGM sample as stored in the pump's event log.
 typedef struct {
   uint32_t seq;

@@ -3,7 +3,8 @@
 
 // A stand-in pump link for QEMU, which has no Bluetooth. It only exists to boot the MiniMed task
 // in the emulator and let the session's setup and timers run, not to simulate the pump: the link
-// comes up once, every operation succeeds and reads return a few fixed bytes.
+// comes up once, every operation succeeds and reads return a few fixed bytes. A command on the
+// IDD Command Control Point is answered "opcode not supported", so the Snooze/Confirm probe runs.
 
 #include "minimed_fake_pump.h"
 
@@ -72,6 +73,11 @@ bool minimed_transport_write(MinimedChr chr, const uint8_t *data, uint16_t len, 
   if (status) *status = (MinimedGattStatus){.ok = s_connected};
   if (!s_connected) return false;
   if (tag) prv_post(MinimedEventGattDone, chr, tag, NULL, 0);
+  if (chr == MinimedChrIddCommandCp && len >= 2) {
+    // Response Code: 0x0f55 | request opcode | 0x70 opcode not supported | cipher pad
+    const uint8_t resp[] = {0x55, 0x0f, data[0], data[1], 0x70, 0, 0, 0};
+    prv_post(MinimedEventNotify, chr, 0, resp, sizeof(resp));
+  }
   return true;
 }
 

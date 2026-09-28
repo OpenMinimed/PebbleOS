@@ -51,6 +51,18 @@ bool minimed_history_parse_ref_time(const uint8_t *rec, uint16_t len, MinimedHis
   return true;
 }
 
+bool minimed_history_parse_current_time(const uint8_t *val, uint16_t len, uint32_t *secs) {
+  if (len < 7) return false;
+  const uint16_t year = prv_u16(val);
+  const uint8_t month = val[2], day = val[3], hour = val[4], min = val[5], sec = val[6];
+  if (year < 2000 || year > 2100 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 ||
+      min > 59 || sec > 59) {
+    return false;
+  }
+  *secs = (uint32_t)prv_days_from_civil(year, month, day) * 86400u + hour * 3600u + min * 60u + sec;
+  return true;
+}
+
 uint32_t minimed_history_sg_secs(const MinimedHistRef *ref, const MinimedHistSg *sg) {
   return ref->secs + (uint32_t)((int32_t)sg->offset_min * 60);
 }
