@@ -37,8 +37,8 @@ MinimedAnnuncRecord minimed_annunciation_parse_record(const uint8_t *rec, uint16
 // Display names, ported from PythonPumpConnector AnnunciationType (several upstream names are
 // themselves guesses from pump alert text). Rename entries to the pump's exact wording as codes
 // are observed on HW -- field-confirmed so far: 0x054 (bridge, 2026-07-20), 0x325 (2026-08-19),
-// 0x31a and 0x33f (2026-08-30). 0x064 and 0x366 are not in the Python enum at all; wording is from
-// a reporter's on-pump reproduction, not our own HW confirmation.
+// 0x31a and 0x33f (2026-08-30), 0x30d and 0x31b (2026-09-25). 0x064 and 0x366 are not in the
+// Python enum at all; wording is from a reporter's on-pump reproduction, not our own HW confirmation.
 // Codes not listed fall back to the caller's hex label -- mirror-everything, never drop.
 typedef struct {
   uint16_t type;
@@ -65,8 +65,15 @@ static const AnnuncName s_names[] = {
     {0x309, "Change sensor"},
     {0x30a, "Change sensor"},
     {0x30c, "Lost sensor signal"},
+    {0x30d, "Possible signal interference"},  // HW-confirmed 2026-09-25: "Move away from
+                                               // electronic devices. May take 15 minutes to find
+                                               // signal."
     {0x315, "Change sensor"},
     {0x31a, "Sensor expired"},  // HW-confirmed 2026-08-30
+    {0x31b, "Check transmitter/sensor"},  // HW-confirmed 2026-09-25: pump screen title "Check
+                                           // connection" says "Ensure transmitter and sensor
+                                           // connection is secure, then select OK." -- named for
+                                           // what to check, not the pump's generic screen title.
     {0x31e, "Sensor connected"},
     {0x321, "Sensor error"},
     {0x322, "Low SG"},
@@ -116,6 +123,25 @@ bool minimed_annunciation_shows_bg(uint16_t type) {
     case 0x329:  // Threshold suspend
     case 0x32a:  // Suspend before low (quiet)
     case 0x32b:  // Suspend before low
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The low-BG family: everything shows_bg() covers (all predicted-low), plus the two alerts about
+// an already-arrived low (0x323, 0x33b) that function deliberately excludes -- those don't want
+// "predicted" framing in their body text, but they are still exactly the "low BG soon"-or-worse
+// alerts a user keeping only low alerts on would want to see.
+bool minimed_annunciation_is_low(uint16_t type) {
+  switch (type) {
+    case 0x322:  // Low SG (PLGM)
+    case 0x323:  // Low SG suspend
+    case 0x325:  // Alert before low
+    case 0x329:  // Threshold suspend
+    case 0x32a:  // Suspend before low (quiet)
+    case 0x32b:  // Suspend before low
+    case 0x33b:  // Severe low SG
       return true;
     default:
       return false;

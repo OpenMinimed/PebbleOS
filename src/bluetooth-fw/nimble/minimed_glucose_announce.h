@@ -20,6 +20,13 @@ typedef struct {
   uint8_t version;
   uint32_t caps;      //!< CAP_* bitfield from pebble_glucose_protocol.h
   uint8_t graph_hours;  //!< 0 = no graph wanted, or the key was absent
+  bool have_alerts;     //!< false if KEY_SETTINGS_ALERTS was absent -- an older watchface, or one
+                         //!< that has not loaded its persisted settings yet
+  uint8_t alerts;       //!< SETTINGS_ALERT_* bitmask from pebble_glucose_protocol.h; valid only
+                         //!< when have_alerts is true
+  bool have_features;   //!< false if KEY_SETTINGS_FEATURES was absent
+  uint8_t features;     //!< SETTINGS_FEATURE_* bitmask from pebble_glucose_protocol.h; valid only
+                         //!< when have_features is true
 } MinimedGlucoseAnnounce;
 
 //! Parse `len` bytes of serialized dictionary. Returns false (leaving *out zeroed) for anything

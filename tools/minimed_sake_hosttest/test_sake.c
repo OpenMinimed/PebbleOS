@@ -5,6 +5,7 @@
 //              server state machine with the capture's RNG values injected,
 //              and assert msg0/msg2/msg4 are byte-identical and the handshake
 //              completes against the pump's real recorded msg1/msg3/msg5.
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -15,6 +16,8 @@
 #include "pebble_glucose_protocol.h"
 #include "minimed_graph.h"
 #include "minimed_history.h"
+#include "minimed_hypo.h"
+#include "minimed_predict.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "minimed_status.h"
@@ -542,6 +545,32 @@ static void section_backfill(void) {
         minimed_history_parse_meal(real59, sizeof(real59), &m) && m.grams == 59 &&
             minimed_history_parse_meal(real65, sizeof(real65), &m) && m.grams == 65 &&
             minimed_history_parse_meal(real0, sizeof(real0), &m) && m.grams == 0);
+  // Real insulin records from a pump's event log.
+  static const uint8_t micro1[] = {0x01, 0xf0, 0xac, 0x4d, 0x0b, 0x00, 0x1d, 0x06, 0x5e, 0x7d, 0x00, 0x00, 0xfd};
+  static const uint8_t micro2[] = {0x01, 0xf0, 0xab, 0x4d, 0x0b, 0x00, 0xef, 0x04, 0x5d, 0x40, 0x42, 0x0f, 0xf9};
+  static const uint8_t bolus1[] = {0x69, 0x00, 0xb4, 0x4d, 0x0b, 0x00, 0x19, 0x0c, 0x71, 0x00, 0x33, 0xa0, 0x9d,
+                                   0x12, 0xfb, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  static const uint8_t bolus2[] = {0x69, 0x00, 0xc0, 0x4c, 0x0b, 0x00, 0x41, 0x06, 0x19, 0x00, 0x33, 0xe0, 0xfd,
+                                   0x1c, 0xfa, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+  static const uint8_t rate1[] = {0x99, 0x00, 0xb4, 0x4c, 0x0b, 0x00, 0x23, 0x05, 0x00, 0x90, 0x05, 0x10, 0xfa,
+                                  0x90, 0x05, 0x10, 0xfa};
+  MinimedHistInsulin ins;
+  check("real microbolus 0.125 U", minimed_history_parse_insulin(micro1, sizeof(micro1), &ins) &&
+                                       ins.kind == MinimedHistInsulinMicro && ins.amount > 0.1249f &&
+                                       ins.amount < 0.1251f);
+  check("real microbolus 0.1 U", minimed_history_parse_insulin(micro2, sizeof(micro2), &ins) &&
+                                     ins.amount > 0.0999f && ins.amount < 0.1001f);
+  check("real bolus 12.2 U", minimed_history_parse_insulin(bolus1, sizeof(bolus1), &ins) &&
+                                 ins.kind == MinimedHistInsulinBolus && ins.amount > 12.19f &&
+                                 ins.amount < 12.21f);
+  check("real bolus 1.9 U", minimed_history_parse_insulin(bolus2, sizeof(bolus2), &ins) &&
+                                ins.amount > 1.89f && ins.amount < 1.91f);
+  check("real basal rate 1.05 U/h, profile-set",
+        minimed_history_parse_insulin(rate1, sizeof(rate1), &ins) &&
+            ins.kind == MinimedHistInsulinBasalRate && ins.amount > 1.049f && ins.amount < 1.051f &&
+            !ins.by_algorithm);
+  check("a short insulin record is rejected", !minimed_history_parse_insulin(bolus1, 15, &ins));
+  check("a non-insulin record is not insulin", !minimed_history_parse_insulin(sg_a, sizeof(sg_a), &ins));
   check("history-event flag is bit 7", MINIMED_IDD_FLAG_HISTORY_EVENT == 0x80);
 }
 
@@ -854,6 +883,18 @@ static void section_annunciation(void) {
   check("0x323 (already-low suspend) does not show BG", !minimed_annunciation_shows_bg(0x323));
   check("0x068 (low battery, unrelated to BG) does not show BG",
         !minimed_annunciation_shows_bg(0x068));
+
+  // Low-BG family (SETTINGS_ALERT_LOW): broader than shows_bg -- includes the two already-a-low
+  // alerts shows_bg deliberately excludes.
+  check("0x322 (Low SG/PLGM) is low", minimed_annunciation_is_low(0x322));
+  check("0x323 (Low SG suspend) is low", minimed_annunciation_is_low(0x323));
+  check("0x325 (alert before low) is low", minimed_annunciation_is_low(0x325));
+  check("0x329 (threshold suspend) is low", minimed_annunciation_is_low(0x329));
+  check("0x32a (suspend before low, quiet) is low", minimed_annunciation_is_low(0x32a));
+  check("0x32b (suspend before low) is low", minimed_annunciation_is_low(0x32b));
+  check("0x33b (severe low SG) is low", minimed_annunciation_is_low(0x33b));
+  check("0x068 (low battery) is not low", !minimed_annunciation_is_low(0x068));
+  check("0x330 (high SG) is not low", !minimed_annunciation_is_low(0x330));
   printf("\n");
 }
 
@@ -905,6 +946,46 @@ static void section_announce(void) {
   check("caps decoded", a.caps == (CAP_BG | CAP_IOB | CAP_STATUS));
   check("graph hours decoded", a.graph_hours == 24);
   check("version decoded", a.version == PROTOCOL_VERSION);
+  check("no settings key -> have_alerts false", !a.have_alerts);
+
+  // KEY_SETTINGS_ALERTS: optional, like GRAPH_HOURS -- absence means "no opinion", not failure.
+  dict_begin(4);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_GRAPH_HOURS, 24, 1);
+  dict_put_uint(KEY_SETTINGS_ALERTS, SETTINGS_ALERT_LOW | SETTINGS_ALERT_OTHER, 1);
+  check("settings key decoded", minimed_glucose_parse_announce(g_dict, g_dict_len, &a) &&
+        a.have_alerts && a.alerts == (SETTINGS_ALERT_LOW | SETTINGS_ALERT_OTHER));
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_ALERTS, 0, 1);  // every alert popup turned off
+  check("settings key of zero is still \"have\"",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_alerts && a.alerts == 0);
+
+  // KEY_SETTINGS_FEATURES: same optional, ignore-if-unknown treatment as KEY_SETTINGS_ALERTS.
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  check("no features key -> have_features false",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && !a.have_features);
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_FEATURES, SETTINGS_FEATURE_HYPO, 1);
+  check("features key decoded",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_features &&
+            a.features == SETTINGS_FEATURE_HYPO);
+
+  dict_begin(3);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
+  dict_put_uint(KEY_SETTINGS_FEATURES, 0, 1);  // hypo model disabled entirely
+  check("features key of zero is still \"have\"",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.have_features &&
+            a.features == 0);
 
   // GRAPH_HOURS is optional; its absence means no graph rather than a parse failure.
   dict_begin(2);
@@ -949,7 +1030,7 @@ static void section_announce(void) {
 
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
-  dict_put_uint(KEY_CAPABILITIES, 0x100, 4);  // bit 8 is not a defined capability
+  dict_put_uint(KEY_CAPABILITIES, 0x200, 4);  // bit 9 is not a defined capability
   check("undefined capability bit rejected",
         !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
 
@@ -975,6 +1056,316 @@ static void section_announce(void) {
   printf("\n");
 }
 
+// --- Section 6: 30-minute glucose predictor ---------------------------------
+// The C port against the numpy model on 256 recorded test-split vectors (testvec.bin, written by
+// sugar_predictor/export_c.py), and the state builder against hand-made timelines.
+static void section_predict(void) {
+  printf("  Section 10: glucose predictor\n");
+  // testvec.bin is recorded from one wearer's data and not committed; without it the vector check
+  // is skipped (regenerate with sugar_predictor/export_c.py and copy it here).
+  FILE *f = fopen("testvec.bin", "rb");
+  if (!f) printf("    [skip] testvec.bin not present: numpy vector check not run\n");
+  if (f) {
+    int n = 0, bad = 0, bad_low = 0;
+    double worst = 0.0;
+    size_t got = fread(&n, sizeof(int), 1, f);
+    for (int i = 0; got == 1 && i < n; i++) {
+      MinimedPredictWindow in;
+      float t[4], want, want_low;
+      int hour;
+      if (fread(in.bg, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.ins, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.carb, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(t, 4, 4, f) != 4 || fread(&hour, 4, 1, f) != 1 || fread(&want, 4, 1, f) != 1 ||
+          fread(&want_low, 4, 1, f) != 1) {
+        got = 0;
+        break;
+      }
+      in.tod_sin = t[0]; in.tod_cos = t[1]; in.dow_sin = t[2]; in.dow_cos = t[3]; in.hour = hour;
+      MinimedPrediction p;
+      minimed_predict_window(&in, &p);
+      const double e = p.mgdl > want ? p.mgdl - want : want - p.mgdl;
+      const double el = p.low_prob > want_low ? p.low_prob - want_low : want_low - p.low_prob;
+      if (e > worst) worst = e;
+      if (e > 0.05) bad++;
+      if (el > 0.001) bad_low++;
+    }
+    fclose(f);
+    check("256 vectors read", got == 1 && n == 256);
+    check("C prediction matches numpy on every vector (worst < 0.05 mg/dL)", bad == 0 && worst < 0.05);
+    check("C low-glucose probability matches numpy", bad_low == 0);
+  }
+
+  // State builder. 2026-06-26 (a Friday) 10:00:00 local, in a zone 2 h east of UTC.
+  const int32_t tz = 2 * 3600;
+  const uint32_t now = 1782460800u;  // 2026-06-26 08:00:00 UTC
+  MinimedPredictState st;
+  MinimedPrediction p;
+  minimed_predict_reset(&st);
+  check("no readings, no prediction", !minimed_predict_run(&st, now, tz, &p));
+  for (int i = 47; i >= 0; i--) {
+    minimed_predict_add_bg(&st, now - (uint32_t)i * 300, 120);
+  }
+  check("a flat 4 h history predicts something near flat",
+        minimed_predict_run(&st, now, tz, &p) && p.mgdl > 90.0f && p.mgdl < 150.0f);
+  check("a stale newest reading gives no prediction",
+        !minimed_predict_run(&st, now + 20 * 60, tz, &p));
+
+  // Shape checks only: the model is personalised and mean-reverting, so a rise does not simply
+  // continue. A fall toward the low range must raise the low-glucose probability.
+  MinimedPrediction rising, falling;
+  MinimedPredictState r, fl;
+  minimed_predict_reset(&r);
+  minimed_predict_reset(&fl);
+  for (int i = 47; i >= 0; i--) {
+    minimed_predict_add_bg(&r, now - (uint32_t)i * 300, 100 + (47 - i) * 2);
+    minimed_predict_add_bg(&fl, now - (uint32_t)i * 300, 194 - (47 - i) * 2);
+  }
+  check("a rise and a fall predict differently",
+        minimed_predict_run(&r, now, tz, &rising) && minimed_predict_run(&fl, now, tz, &falling) &&
+            rising.mgdl != falling.mgdl);
+  MinimedPredictState lo;
+  minimed_predict_reset(&lo);
+  for (int i = 47; i >= 0; i--) {
+    minimed_predict_add_bg(&lo, now - (uint32_t)i * 300, 200 - (47 - i) * 3);
+  }
+  MinimedPrediction plo;
+  check("a steep fall toward the low range raises the low probability",
+        minimed_predict_run(&lo, now, tz, &plo) && plo.low_prob > rising.low_prob);
+  MinimedPredictState g = r;  // the same rise, with a gap of missing readings
+  minimed_predict_reset(&g);
+  for (int i = 47; i >= 0; i--) {
+    if (i >= 20 && i <= 30) continue;
+    minimed_predict_add_bg(&g, now - (uint32_t)i * 300, 100 + (47 - i) * 3);
+  }
+  MinimedPrediction gap;
+  check("gaps are carried forward and still predict",
+        minimed_predict_run(&g, now, tz, &gap) && gap.mgdl > 100.0f);
+
+  // Insulin and carbs are read from cells strictly before the newest, so an entry in the newest
+  // cell must not move the prediction, and one earlier must.
+  MinimedPredictState a = st, b = st;
+  minimed_predict_add_insulin(&a, now, 5.0f);
+  MinimedPrediction pa, pb, p0;
+  minimed_predict_run(&st, now, tz, &p0);
+  check("insulin in the newest cell is ignored",
+        minimed_predict_run(&a, now, tz, &pa) && pa.mgdl == p0.mgdl);
+  minimed_predict_add_insulin(&b, now - 3600, 5.0f);
+  minimed_predict_add_carbs(&b, now - 1800, 60.0f);
+  check("an earlier bolus and meal change the prediction",
+        minimed_predict_run(&b, now, tz, &pb) && pb.mgdl != p0.mgdl);
+
+  // An event in a cell newer than anything so far advances the ring and clears what it passes.
+  MinimedPredictState w;
+  minimed_predict_reset(&w);
+  minimed_predict_add_bg(&w, now, 110);
+  minimed_predict_add_bg(&w, now + 64 * 300, 130);
+  check("advancing past the ring drops the old reading",
+        minimed_predict_run(&w, now + 64 * 300, tz, &p) && p.mgdl > 0.0f);
+  minimed_predict_add_bg(&w, now, 90);  // far older than the ring: ignored
+  check("a reading older than the ring is ignored", minimed_predict_run(&w, now + 64 * 300, tz, &p));
+
+  // The day-of-week index is Thursday = 0: the epoch (1970-01-01) was a Thursday, and 2026-06-26
+  // was a Friday, so a Friday and the following Thursday must differ while a week apart matches.
+  MinimedPredictState d1, d2;
+  minimed_predict_reset(&d1);
+  minimed_predict_reset(&d2);
+  for (int i = 47; i >= 0; i--) {
+    minimed_predict_add_bg(&d1, now - (uint32_t)i * 300, 120);
+    minimed_predict_add_bg(&d2, now - (uint32_t)i * 300 + 7 * 86400, 120);
+  }
+  MinimedPrediction q1, q2;
+  check("the same weekday a week apart predicts the same",
+        minimed_predict_run(&d1, now, tz, &q1) && minimed_predict_run(&d2, now + 7 * 86400, tz, &q2) &&
+            q1.mgdl == q2.mgdl);
+}
+
+static void section_basal_iob(void) {
+  printf("-- Basal IOB --\n");
+  const uint32_t now = 1800000000u;
+  MinimedPredictState st;
+  minimed_predict_reset(&st);
+  check("empty state: 0", minimed_predict_basal_iob_mu(&st, now) == 0);
+
+  minimed_predict_add_bg(&st, now, 120);
+  minimed_predict_add_micro(&st, now, 0.5f);
+  check("a microbolus just given counts in full", minimed_predict_basal_iob_mu(&st, now) == 500);
+  check("half of it is left after half of the active time",
+        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS / 2) == 250);
+  check("none is left after the active time",
+        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS) == 0);
+
+  minimed_predict_add_insulin(&st, now, 2.0f);  // a bolus is not basal
+  check("a bolus adds nothing to the basal part", minimed_predict_basal_iob_mu(&st, now) == 500);
+
+  MinimedPredictState m;
+  minimed_predict_reset(&m);
+  minimed_predict_add_bg(&m, now, 120);
+  minimed_predict_set_basal(&m, now - 3600, 1.2f);
+  const int32_t manual = minimed_predict_basal_iob_mu(&m, now);
+  check("manual 1.2 U/h for an hour leaves 0.8 to 0.95 U", manual > 800 && manual < 950);
+  minimed_predict_set_basal(&m, now - 3600, 0.0f);
+  check("a suspended pump (rate 0) adds none", minimed_predict_basal_iob_mu(&m, now) == 0);
+
+  MinimedPredictState old;
+  minimed_predict_reset(&old);
+  minimed_predict_add_micro(&old, now - 3 * 3600, 1.0f);
+  minimed_predict_add_bg(&old, now, 120);
+  check("delivery from 3 h ago is spent", minimed_predict_basal_iob_mu(&old, now) == 0);
+
+  MinimedPredictState micro, bolus;
+  minimed_predict_reset(&micro);
+  minimed_predict_reset(&bolus);
+  minimed_predict_add_bg(&micro, now - 600, 120);
+  minimed_predict_add_bg(&bolus, now - 600, 120);
+  minimed_predict_add_micro(&micro, now - 600, 0.3f);
+  minimed_predict_add_insulin(&bolus, now - 600, 0.3f);
+  minimed_predict_add_bg(&micro, now, 121);
+  minimed_predict_add_bg(&bolus, now, 121);
+  MinimedPrediction a, b;
+  check("a microbolus feeds the model like any other insulin",
+        minimed_predict_run(&micro, now, 0, &a) && minimed_predict_run(&bolus, now, 0, &b) &&
+            a.mgdl == b.mgdl && a.ins_cu == b.ins_cu && a.ins_cu == 30);
+}
+
+static void section_predict_score(void) {
+  printf("-- Forecast score --\n");
+  MinimedPredictScore sc;
+  minimed_predict_score_reset(&sc);
+  int32_t err = 0;
+  check("nothing scored yet", minimed_predict_score_rmse_x10(&sc, false) == 0);
+
+  minimed_predict_score_note(&sc, 1000, 150, 140);  // due 2800
+  minimed_predict_score_note(&sc, 1300, 120, 130);  // due 3100
+  check("too early: not scored", !minimed_predict_score_actual(&sc, 2500, 100, &err));
+  check("in tolerance: scored", minimed_predict_score_actual(&sc, 2900, 140, &err) && err == 10);
+  check("count is 1", sc.count == 1);
+  check("rmse 10.0, baseline 0.0",
+        minimed_predict_score_rmse_x10(&sc, false) == 100 &&
+            minimed_predict_score_rmse_x10(&sc, true) == 0);
+  check("the second forecast is still pending", sc.pending == 1);
+  check("a forecast whose reading was missed is dropped",
+        !minimed_predict_score_actual(&sc, 3300, 100, &err) && sc.pending == 0);
+  minimed_predict_score_note(&sc, 4000, 100, 100);
+  minimed_predict_score_actual(&sc, 5800, 90, &err);
+  check("two scored: rmse sqrt((100+100)/2) = 10.0", minimed_predict_score_rmse_x10(&sc, false) == 100);
+  for (int i = 0; i < 20; i++) minimed_predict_score_note(&sc, 10000 + i, 100, 100);
+  check("pending stays bounded", sc.pending == MINIMED_SCORE_PENDING);
+}
+
+// --- Section 12: hypo (treat-or-wait) model ------------------------------------------------------
+// The C port against the numpy model on recorded test-split vectors (hypo_testvec.bin, written by
+// sugar_predictor/export_hypo_c.py). Reuses the predictor's own MinimedPredictWindow.
+static void section_hypo(void) {
+  printf("  Section 12: hypo treat-or-wait model\n");
+  // hypo_testvec.bin is recorded from one wearer's data and not committed; without it the vector
+  // check is skipped (regenerate with sugar_predictor/export_hypo_c.py and copy it here).
+  FILE *f = fopen("hypo_testvec.bin", "rb");
+  if (!f) printf("    [skip] hypo_testvec.bin not present: numpy vector check not run\n");
+  if (f) {
+    uint32_t n = 0, hist = 0;
+    int got = fread(&n, 4, 1, f) == 1 && fread(&hist, 4, 1, f) == 1;
+    int bad = 0;
+    double worst_nadir = 0.0, worst_plow = 0.0, worst_treat = 0.0;
+    for (uint32_t r = 0; got && r < n; r++) {
+      MinimedPredictWindow in;
+      float ref[7];
+      if (fread(in.bg, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.ins, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(in.carb, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
+          fread(ref, 4, 7, f) != 7) {
+        got = 0;
+        break;
+      }
+      in.tod_sin = sinf(ref[1]);
+      in.tod_cos = cosf(ref[1]);
+      MinimedHypoPrediction out;
+      minimed_hypo_eval(&in, 0.3f, &out);
+      const double d_nadir = fabs((double)out.nadir_untreated - ref[2]);
+      const double d_plow = fabs((double)out.p_low - ref[5]);
+      const double d_treat = fabs((double)out.treat_pct - ref[6]);
+      if (d_nadir > worst_nadir) worst_nadir = d_nadir;
+      if (d_plow > worst_plow) worst_plow = d_plow;
+      if (d_treat > worst_treat) worst_treat = d_treat;
+      if (d_nadir > 1e-2 || d_plow > 1e-3 || d_treat > 1e-1) bad++;
+    }
+    fclose(f);
+    check("hypo vectors read", got && n > 0);
+    check("C nadir_untreated matches numpy (worst < 0.01 mg/dL)", bad == 0 && worst_nadir < 1e-2);
+    check("C p_low matches numpy (worst < 0.001)", worst_plow < 1e-3);
+    check("C treat_pct matches numpy (worst < 0.1)", worst_treat < 1e-1);
+  }
+
+  // should_evaluate gate: hand-made timelines.
+  MinimedPredictWindow flat;
+  memset(&flat, 0, sizeof(flat));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) flat.bg[i] = 120.0f;
+  flat.tod_cos = 1.0f;
+  check("a flat trace above the trigger is not evaluated", !minimed_hypo_should_evaluate(&flat));
+
+  MinimedPredictWindow falling;
+  memset(&falling, 0, sizeof(falling));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) falling.bg[i] = 200.0f - (float)i * 3.0f;
+  falling.tod_cos = 1.0f;
+  check("a steep fall through the trigger is evaluated", minimed_hypo_should_evaluate(&falling));
+
+  MinimedPredictWindow early;
+  memset(&early, 0, sizeof(early));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) early.bg[i] = 120.0f;
+  early.bg[47] = 105.0f;  // 5.8 mmol/L and falling: inside the 6.0 early band
+  early.tod_cos = 1.0f;
+  check("a fall under 6.0 mmol/L is evaluated", minimed_hypo_should_evaluate(&early));
+  early.bg[47] = 110.0f;
+  check("a fall still above 6.0 mmol/L is not", !minimed_hypo_should_evaluate(&early));
+
+  MinimedHypoPrediction out;
+  minimed_hypo_eval(&falling, 0.3f, &out);
+  check("treat_pct is a percentage", out.treat_pct >= 0.0f && out.treat_pct <= 100.0f);
+  check("p_low is a probability", out.p_low >= 0.0f && out.p_low <= 1.0f);
+  check("mins_saved = untreated - treated", fabsf(out.mins_saved - (out.mins_untreated - out.mins_treated)) < 1e-3f);
+  check("carbs cannot lower the treated nadir below the untreated one",
+        out.nadir_treated >= out.nadir_untreated - 1e-3f);
+  check("carbs cannot lengthen the treated low beyond the untreated one",
+        out.mins_treated <= out.mins_untreated + 1e-3f);
+
+  // falling_fast: the early gate for a reading still above the trigger but dropping at the
+  // physiological worst-case rate (>=3 mg/dL/min) and projected to cross the low line within 30 min.
+  check("already at/below the trigger is should_evaluate's job, not this gate",
+        !minimed_hypo_falling_fast(&falling));  // falling.bg[47] is well under 90
+
+  MinimedPredictWindow flat_high;
+  memset(&flat_high, 0, sizeof(flat_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) flat_high.bg[i] = 120.0f;
+  flat_high.tod_cos = 1.0f;
+  check("flat above the trigger is not a fast fall", !minimed_hypo_falling_fast(&flat_high));
+
+  MinimedPredictWindow slow_fall;
+  memset(&slow_fall, 0, sizeof(slow_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) slow_fall.bg[i] = 150.0f;
+  slow_fall.bg[45] = 140.0f;
+  slow_fall.bg[46] = 130.0f;
+  slow_fall.bg[47] = 120.0f;  // -30 over 15 min = -2 mg/dL/min: an ordinary decline
+  slow_fall.tod_cos = 1.0f;
+  check("an ordinary (sub-3 mg/dL/min) decline does not trigger the early gate",
+        !minimed_hypo_falling_fast(&slow_fall));
+
+  MinimedPredictWindow fast_fall;
+  memset(&fast_fall, 0, sizeof(fast_fall));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall.bg[i] = 170.0f;
+  fast_fall.bg[45] = 150.0f;
+  fast_fall.bg[46] = 130.0f;
+  fast_fall.bg[47] = 115.0f;  // -55 over 15 min = -3.67 mg/dL/min, still above 108
+  fast_fall.tod_cos = 1.0f;
+  check("a >=3 mg/dL/min fall projected under 70 within 30 min triggers the early gate",
+        minimed_hypo_falling_fast(&fast_fall));
+
+  MinimedPredictWindow fast_fall_high;
+  memcpy(&fast_fall_high, &fast_fall, sizeof(fast_fall_high));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall_high.bg[i] += 40.0f;  // now 155: past the ceiling
+  check("the same fast fall does not fire once the reading is too far above the trigger",
+        !minimed_hypo_falling_fast(&fast_fall_high));
+}
+
 int main(void) {
   printf("=== SAKE C port host verification ===\n\n");
   section_primitives();
@@ -987,6 +1378,10 @@ int main(void) {
   section_status();
   section_annunciation();
   section_announce();
+  section_predict();
+  section_predict_score();
+  section_basal_iob();
+  section_hypo();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

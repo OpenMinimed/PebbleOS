@@ -35,6 +35,10 @@ void kernel_pbl_log(LogBinaryMessage* log_message, bool async);
 //! Force a log message out the serial channel.
 void kernel_pbl_log_serial(LogBinaryMessage *log_message, bool async);
 
+//! Force a log message into the flash-backed log ring (subject to FLASH_LOG_LEVEL), independent
+//! of whatever kernel_pbl_log_serial did with it.
+void kernel_pbl_log_flash(LogBinaryMessage *log_message, bool async);
+
 //! Force a log message out the serial channel from a fault handler or
 //! other context where OS services are unavailable or can't be trusted,
 //! and where stack space is at a premium.
