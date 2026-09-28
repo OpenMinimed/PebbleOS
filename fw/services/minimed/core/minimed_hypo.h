@@ -3,9 +3,9 @@
 
 #pragma once
 
-#include <stdbool.h>
-
 #include "minimed_predict.h"
+
+#include <stdbool.h>
 
 //! Treat-or-wait scoring for a falling low (ported from sugar_predictor/firmware/hypo.c). Reuses
 //! the same 4-hour window the 30-minute predictor already builds (MinimedPredictWindow) to forecast
@@ -14,15 +14,15 @@
 //! useful anywhere else. Not dose-aware -- see sugar_predictor/INTEGRATION.md.
 
 typedef struct {
-  float nadir_untreated;  //!< mg/dL, lowest reading expected in the next hour, no treatment
-  float nadir_treated;    //!< mg/dL, after a typical rescue dose (HYPO_DOSE_G, for reference only)
-  float mins_untreated;   //!< minutes below 70 mg/dL expected in the next hour, no treatment
+  float nadir_untreated; //!< mg/dL, lowest reading expected in the next hour, no treatment
+  float nadir_treated;   //!< mg/dL, after a typical rescue dose (HYPO_DOSE_G, for reference only)
+  float mins_untreated;  //!< minutes below 70 mg/dL expected in the next hour, no treatment
   float mins_treated;
-  float mins_saved;  //!< mins_untreated - mins_treated
-  float p_low;        //!< P(nadir < 70), no treatment
-  float p_severe;      //!< P(nadir < 54), no treatment
-  float p_over;        //!< P(peak > 180) after the dose
-  float treat_pct;     //!< 0..100 recommendation: 100 * clip(p_low - w * p_over, 0, 1)
+  float mins_saved; //!< mins_untreated - mins_treated
+  float p_low;      //!< P(nadir < 70), no treatment
+  float p_severe;   //!< P(nadir < 54), no treatment
+  float p_over;     //!< P(peak > 180) after the dose
+  float treat_pct;  //!< 0..100 recommendation: 100 * clip(p_low - w * p_over, 0, 1)
 } MinimedHypoPrediction;
 
 //! True when the newest reading in `in` is at or below 108 mg/dL (6.0 mmol/L) and has fallen over

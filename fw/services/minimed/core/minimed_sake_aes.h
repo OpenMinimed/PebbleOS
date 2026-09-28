@@ -18,4 +18,4 @@ void sake_aes_init(sake_aes_ctx *ctx, const uint8_t key[16]);
 void sake_aes_encrypt_block(const sake_aes_ctx *ctx, const uint8_t in[16], uint8_t out[16]);
 void sake_aes_decrypt_block(const sake_aes_ctx *ctx, const uint8_t in[16], uint8_t out[16]);
 
-#endif  // MINIMED_SAKE_AES_H
+#endif // MINIMED_SAKE_AES_H

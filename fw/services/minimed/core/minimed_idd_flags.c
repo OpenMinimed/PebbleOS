@@ -14,7 +14,7 @@ uint64_t minimed_idd_flags_parse(const uint8_t *plain, uint16_t len) {
     flags |= (uint64_t)block << (16 * blocks);
     blocks++;
     if ((block & 0x8000) == 0) {
-      break;  // no continuation bit: this was the last block
+      break; // no continuation bit: this was the last block
     }
   }
   return flags;
@@ -30,7 +30,8 @@ uint16_t minimed_idd_flags_encode(uint64_t flags, uint8_t out[6]) {
   }
   for (unsigned b = 0; b < blocks; b++) {
     uint16_t word = (uint16_t)(real >> (16 * b)) & 0x7FFF;
-    if (b + 1 < blocks) word |= 0x8000;  // another block follows
+    if (b + 1 < blocks)
+      word |= 0x8000; // another block follows
     out[2 * b] = (uint8_t)word;
     out[2 * b + 1] = (uint8_t)(word >> 8);
   }

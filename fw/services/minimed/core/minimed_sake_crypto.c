@@ -1,8 +1,8 @@
 #include "minimed_sake_crypto.h"
 
-#include <string.h>
-
 #include "minimed_sake_aes.h"
+
+#include <string.h>
 
 // ---------------------------------------------------------------------------
 // AES-CMAC (RFC 4493), truncated to mac_len bytes.
@@ -17,8 +17,8 @@ static void shl_block(const uint8_t in[16], uint8_t out[16]) {
   }
 }
 
-static void sake_cmac(const uint8_t key[16], const uint8_t *msg, size_t len,
-                      uint8_t *out, size_t mac_len) {
+static void sake_cmac(const uint8_t key[16], const uint8_t *msg, size_t len, uint8_t *out,
+                      size_t mac_len) {
   sake_aes_ctx ctx;
   sake_aes_init(&ctx, key);
 
@@ -27,9 +27,11 @@ static void sake_cmac(const uint8_t key[16], const uint8_t *msg, size_t len,
 
   uint8_t k1[16], k2[16];
   shl_block(l, k1);
-  if (l[0] & 0x80) k1[15] ^= 0x87;
+  if (l[0] & 0x80)
+    k1[15] ^= 0x87;
   shl_block(k1, k2);
-  if (k1[0] & 0x80) k2[15] ^= 0x87;
+  if (k1[0] & 0x80)
+    k2[15] ^= 0x87;
 
   size_t n = (len + 15) / 16;
   bool complete;
@@ -43,24 +45,30 @@ static void sake_cmac(const uint8_t key[16], const uint8_t *msg, size_t len,
   uint8_t last[16];
   const uint8_t *last_src = msg + (n - 1) * 16;
   if (complete) {
-    for (int i = 0; i < 16; i++) last[i] = last_src[i] ^ k1[i];
+    for (int i = 0; i < 16; i++)
+      last[i] = last_src[i] ^ k1[i];
   } else {
     size_t rem = len % 16;
     for (size_t i = 0; i < 16; i++) {
       uint8_t b;
-      if (i < rem) b = last_src[i];
-      else if (i == rem) b = 0x80;
-      else b = 0x00;
+      if (i < rem)
+        b = last_src[i];
+      else if (i == rem)
+        b = 0x80;
+      else
+        b = 0x00;
       last[i] = b ^ k2[i];
     }
   }
 
   uint8_t x[16] = {0};
   for (size_t i = 0; i < n - 1; i++) {
-    for (int j = 0; j < 16; j++) x[j] ^= msg[i * 16 + j];
+    for (int j = 0; j < 16; j++)
+      x[j] ^= msg[i * 16 + j];
     sake_aes_encrypt_block(&ctx, x, x);
   }
-  for (int j = 0; j < 16; j++) x[j] ^= last[j];
+  for (int j = 0; j < 16; j++)
+    x[j] ^= last[j];
   sake_aes_encrypt_block(&ctx, x, x);
 
   memcpy(out, x, mac_len);
@@ -71,8 +79,8 @@ static void sake_cmac(const uint8_t key[16], const uint8_t *msg, size_t len,
 // (pycryptodome MODE_CTR with a 13-byte nonce; matches SeqCrypt.)
 // ---------------------------------------------------------------------------
 
-static void sake_aes_ctr(const uint8_t key[16], const uint8_t nonce13[13],
-                         const uint8_t *in, uint8_t *out, size_t len) {
+static void sake_aes_ctr(const uint8_t key[16], const uint8_t nonce13[13], const uint8_t *in,
+                         uint8_t *out, size_t len) {
   sake_aes_ctx ctx;
   sake_aes_init(&ctx, key);
   uint8_t block[16];
@@ -86,7 +94,8 @@ static void sake_aes_ctr(const uint8_t key[16], const uint8_t nonce13[13],
     block[15] = (uint8_t)counter;
     sake_aes_encrypt_block(&ctx, block, ks);
     size_t chunk = len - off < 16 ? len - off : 16;
-    for (size_t i = 0; i < chunk; i++) out[off + i] = in[off + i] ^ ks[i];
+    for (size_t i = 0; i < chunk; i++)
+      out[off + i] = in[off + i] ^ ks[i];
     off += chunk;
     counter++;
   }
@@ -107,9 +116,9 @@ static void seqcrypt_nonce(const sake_seqcrypt *sc, uint64_t seq, uint8_t nonce1
 }
 
 // CMAC-4 over (nonce.ljust(16) || ciphertext).
-static void seqcrypt_mac(const sake_seqcrypt *sc, const uint8_t nonce13[13],
-                         const uint8_t *ct, size_t ct_len, uint8_t mac4[4]) {
-  uint8_t buf[16 + SAKE_MSG_SIZE];  // padded nonce + up to a 20-byte frame body
+static void seqcrypt_mac(const sake_seqcrypt *sc, const uint8_t nonce13[13], const uint8_t *ct,
+                         size_t ct_len, uint8_t mac4[4]) {
+  uint8_t buf[16 + SAKE_MSG_SIZE]; // padded nonce + up to a 20-byte frame body
   memcpy(buf, nonce13, 13);
   buf[13] = buf[14] = buf[15] = 0;
   memcpy(buf + 16, ct, ct_len);
@@ -129,9 +138,10 @@ static void seqcrypt_encrypt(sake_seqcrypt *sc, const uint8_t *pt, size_t n, uin
   sc->seq = seq + 2;
 }
 
-static bool seqcrypt_decrypt(sake_seqcrypt *sc, const uint8_t *msg, size_t m,
-                             uint8_t *out, size_t *out_len) {
-  if (m < 3) return false;
+static bool seqcrypt_decrypt(sake_seqcrypt *sc, const uint8_t *msg, size_t m, uint8_t *out,
+                             size_t *out_len) {
+  if (m < 3)
+    return false;
   size_t ct_len = m - 3;
   uint8_t d = (uint8_t)(msg[m - 3] - (sc->seq / 2));
   uint64_t seq = sc->seq + 2 * (uint64_t)d;
@@ -139,7 +149,8 @@ static bool seqcrypt_decrypt(sake_seqcrypt *sc, const uint8_t *msg, size_t m,
   seqcrypt_nonce(sc, seq, nonce13);
   uint8_t mac[4];
   seqcrypt_mac(sc, nonce13, msg, ct_len, mac);
-  if (mac[0] != msg[m - 2] || mac[1] != msg[m - 1]) return false;
+  if (mac[0] != msg[m - 2] || mac[1] != msg[m - 1])
+    return false;
   sc->seq = seq + 2;
   sake_aes_ctr(sc->key, nonce13, msg, out, ct_len);
   *out_len = ct_len;
@@ -162,13 +173,17 @@ static uint32_t crc32(const uint8_t *data, size_t len) {
 }
 
 bool sake_keydb_parse(sake_keydb *db, const uint8_t *data, size_t len) {
-  if (len < 6) return false;
-  uint32_t want = ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) |
-                  ((uint32_t)data[2] << 8) | data[3];
-  if (crc32(data + 4, len - 4) != want) return false;
+  if (len < 6)
+    return false;
+  uint32_t want =
+      ((uint32_t)data[0] << 24) | ((uint32_t)data[1] << 16) | ((uint32_t)data[2] << 8) | data[3];
+  if (crc32(data + 4, len - 4) != want)
+    return false;
   uint8_t n = data[5];
-  if (n == 0 || n > SAKE_MAX_REMOTES) return false;
-  if (len != (size_t)(6 + 81 * n)) return false;
+  if (n == 0 || n > SAKE_MAX_REMOTES)
+    return false;
+  if (len != (size_t)(6 + 81 * n))
+    return false;
   db->local_device_type = data[4];
   db->n_remotes = n;
   for (uint8_t i = 0; i < n; i++) {
@@ -186,7 +201,8 @@ bool sake_keydb_parse(sake_keydb *db, const uint8_t *data, size_t len) {
 
 static const sake_static_keys *keydb_lookup(const sake_keydb *db, uint8_t dev) {
   for (uint8_t i = 0; i < db->n_remotes; i++) {
-    if (db->remote_device_type[i] == dev) return &db->remote_keys[i];
+    if (db->remote_device_type[i] == dev)
+      return &db->remote_keys[i];
   }
   return NULL;
 }
@@ -234,7 +250,8 @@ static bool check_permit(const sake_static_keys *keys, const uint8_t permit[16],
   sake_aes_decrypt_block(&ctx, permit, plain);
   uint8_t mac[4];
   sake_cmac(keys->permit_auth_key, plain, 12, mac, 4);
-  if (memcmp(mac, plain + 12, 4) != 0) return false;
+  if (memcmp(mac, plain + 12, 4) != 0)
+    return false;
   return plain[0] == 0 && plain[1] == prover_device_type;
 }
 
@@ -242,8 +259,8 @@ static bool check_permit(const sake_static_keys *keys, const uint8_t permit[16],
 // Server state machine.
 // ---------------------------------------------------------------------------
 
-void sake_server_init(sake_server *s, const sake_keydb *db,
-                      uint8_t local_device_type, sake_rng_fn rng, void *rng_ud) {
+void sake_server_init(sake_server *s, const sake_keydb *db, uint8_t local_device_type,
+                      sake_rng_fn rng, void *rng_ud) {
   memset(s, 0, sizeof(*s));
   s->db = db;
   s->local_device_type = local_device_type;
@@ -257,7 +274,8 @@ sake_result sake_server_handshake(sake_server *s, const uint8_t in[SAKE_MSG_SIZE
   switch (s->stage) {
     case 0: {
       for (int i = 0; i < SAKE_MSG_SIZE; i++) {
-        if (in[i] != 0) return SAKE_RESULT_ERR;  // must start with 20 zero bytes
+        if (in[i] != 0)
+          return SAKE_RESULT_ERR; // must start with 20 zero bytes
       }
       out[0] = s->local_device_type;
       out[1] = 0x01;
@@ -271,7 +289,8 @@ sake_result sake_server_handshake(sake_server *s, const uint8_t in[SAKE_MSG_SIZE
       memcpy(s->client_nonce, in + 9, 4);
 
       const sake_static_keys *keys = keydb_lookup(s->db, s->client_device_type);
-      if (!keys) return SAKE_RESULT_ERR;
+      if (!keys)
+        return SAKE_RESULT_ERR;
       s->keys = keys;
       memcpy(s->derivation_key, keys->derivation_key, 16);
       memcpy(s->handshake_auth_key, keys->handshake_auth_key, 16);
@@ -298,14 +317,15 @@ sake_result sake_server_handshake(sake_server *s, const uint8_t in[SAKE_MSG_SIZE
       memcpy(inner + 16, s->derivation_key, 16);
       uint8_t expected[8];
       sake_cmac(s->handshake_auth_key, inner, 32, expected, 8);
-      if (memcmp(expected, in, 8) != 0) return SAKE_RESULT_ERR;
+      if (memcmp(expected, in, 8) != 0)
+        return SAKE_RESULT_ERR;
 
       create_crypts(s);
 
       // Build msg4: session-encrypt (handshake_payload || 1 pad byte).
       uint8_t pt[17];
       memcpy(pt, s->keys->handshake_payload, 16);
-      s->rng(s->rng_ud, pt + 16, 1);  // pad byte (value irrelevant to the peer)
+      s->rng(s->rng_ud, pt + 16, 1); // pad byte (value irrelevant to the peer)
       seqcrypt_encrypt(&s->server_crypt, pt, 17, out);
       s->stage = 5;
       return SAKE_RESULT_MSG;
@@ -316,9 +336,11 @@ sake_result sake_server_handshake(sake_server *s, const uint8_t in[SAKE_MSG_SIZE
       if (!seqcrypt_decrypt(&s->client_crypt, in, SAKE_MSG_SIZE, pt, &pt_len)) {
         return SAKE_RESULT_ERR;
       }
-      if (pt_len < 17) return SAKE_RESULT_ERR;
+      if (pt_len < 17)
+        return SAKE_RESULT_ERR;
       // inner = plaintext without the trailing pad byte (16-byte permit).
-      if (!check_permit(s->keys, pt, s->client_device_type)) return SAKE_RESULT_ERR;
+      if (!check_permit(s->keys, pt, s->client_device_type))
+        return SAKE_RESULT_ERR;
       s->stage = 6;
       return SAKE_RESULT_DONE;
     }
@@ -331,22 +353,22 @@ void sake_encrypt_for_pump(sake_server *s, const uint8_t *pt, size_t n, uint8_t 
   seqcrypt_encrypt(&s->server_crypt, pt, n, out);
 }
 
-bool sake_decrypt_from_pump(sake_server *s, const uint8_t *ct, size_t n,
-                            uint8_t *out, size_t *out_len) {
+bool sake_decrypt_from_pump(sake_server *s, const uint8_t *ct, size_t n, uint8_t *out,
+                            size_t *out_len) {
   return seqcrypt_decrypt(&s->client_crypt, ct, n, out, out_len);
 }
 
 #ifdef SAKE_TEST_HOOKS
 // Expose internals to the host KAT harness only.
-void sake_cmac_test(const uint8_t key[16], const uint8_t *msg, size_t len,
-                    uint8_t *out, size_t mac_len) {
+void sake_cmac_test(const uint8_t key[16], const uint8_t *msg, size_t len, uint8_t *out,
+                    size_t mac_len) {
   sake_cmac(key, msg, len, out, mac_len);
 }
 void sake_seqcrypt_encrypt_test(sake_seqcrypt *sc, const uint8_t *pt, size_t n, uint8_t *out) {
   seqcrypt_encrypt(sc, pt, n, out);
 }
-bool sake_seqcrypt_decrypt_test(sake_seqcrypt *sc, const uint8_t *msg, size_t m,
-                                uint8_t *out, size_t *out_len) {
+bool sake_seqcrypt_decrypt_test(sake_seqcrypt *sc, const uint8_t *msg, size_t m, uint8_t *out,
+                                size_t *out_len) {
   return seqcrypt_decrypt(sc, msg, m, out, out_len);
 }
 #endif

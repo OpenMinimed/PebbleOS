@@ -7,9 +7,9 @@
 #ifndef MINIMED_SAKE_CRYPTO_H
 #define MINIMED_SAKE_CRYPTO_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <stdbool.h>
 
 #define SAKE_MSG_SIZE 20
 
@@ -53,8 +53,8 @@ typedef struct {
 
 typedef struct {
   const sake_keydb *db;
-  uint8_t local_device_type;  // server device type (MOBILE_APPLICATION)
-  int stage;                  // 0 -> 1 -> 3 -> 5 -> 6 (complete)
+  uint8_t local_device_type; // server device type (MOBILE_APPLICATION)
+  int stage;                 // 0 -> 1 -> 3 -> 5 -> 6 (complete)
 
   uint8_t client_key_material[8];
   uint8_t client_nonce[4];
@@ -62,37 +62,39 @@ typedef struct {
   uint8_t server_key_material[8];
   uint8_t server_nonce[4];
 
-  const sake_static_keys *keys;  // static keys selected for the client peer
+  const sake_static_keys *keys; // static keys selected for the client peer
   uint8_t derivation_key[16];
   uint8_t handshake_auth_key[16];
 
-  sake_seqcrypt client_crypt;  // pump -> watch traffic
-  sake_seqcrypt server_crypt;  // watch -> pump traffic
+  sake_seqcrypt client_crypt; // pump -> watch traffic
+  sake_seqcrypt server_crypt; // watch -> pump traffic
 
   sake_rng_fn rng;
   void *rng_ud;
 } sake_server;
 
 typedef enum {
-  SAKE_RESULT_MSG,   // *out holds a 20-byte reply to notify to the pump
-  SAKE_RESULT_DONE,  // handshake complete; session ciphers ready, nothing to send
-  SAKE_RESULT_ERR,   // protocol / auth failure
+  SAKE_RESULT_MSG,  // *out holds a 20-byte reply to notify to the pump
+  SAKE_RESULT_DONE, // handshake complete; session ciphers ready, nothing to send
+  SAKE_RESULT_ERR,  // protocol / auth failure
 } sake_result;
 
-void sake_server_init(sake_server *s, const sake_keydb *db,
-                      uint8_t local_device_type, sake_rng_fn rng, void *rng_ud);
+void sake_server_init(sake_server *s, const sake_keydb *db, uint8_t local_device_type,
+                      sake_rng_fn rng, void *rng_ud);
 
 // Advance the handshake with a 20-byte pump write; the pump's first write is
 // 20 zero bytes. On SAKE_RESULT_MSG, `out` (20 bytes) must be sent back.
 sake_result sake_server_handshake(sake_server *s, const uint8_t in[SAKE_MSG_SIZE],
                                   uint8_t out[SAKE_MSG_SIZE]);
 
-static inline bool sake_server_is_complete(const sake_server *s) { return s->stage == 6; }
+static inline bool sake_server_is_complete(const sake_server *s) {
+  return s->stage == 6;
+}
 
 // Post-handshake session ciphers (only valid once complete). `out` must hold
 // at least plaintext_len + 3 bytes for encrypt. Decrypt writes ciphertext_len - 3.
 void sake_encrypt_for_pump(sake_server *s, const uint8_t *pt, size_t n, uint8_t *out);
-bool sake_decrypt_from_pump(sake_server *s, const uint8_t *ct, size_t n,
-                            uint8_t *out, size_t *out_len);
+bool sake_decrypt_from_pump(sake_server *s, const uint8_t *ct, size_t n, uint8_t *out,
+                            size_t *out_len);
 
-#endif  // MINIMED_SAKE_CRYPTO_H
+#endif // MINIMED_SAKE_CRYPTO_H

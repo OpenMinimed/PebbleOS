@@ -3,10 +3,6 @@
 
 #include "minimed_sake_sender.h"
 
-#include <stddef.h>
-#include <stdio.h>
-#include <string.h>
-
 #include "applib/app_message/app_message_internal.h"
 #include "comm/bt_lock.h"
 #include "drivers/rtc.h"
@@ -14,16 +10,22 @@
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
 #include "minimed_settings.h"
-#include "pebble_glucose_protocol.h"
-#include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
 #include "pbl/services/comm_session/session_transport.h"
-#include "popups/minimed_sake_ui.h"
-#include <pbl/logging/logging.h>
-#include <applib/dict.h>
-#include <pbl/util/byteorder.h>
 #include "pbl/util/size.h"
 #include "pbl/util/uuid.h"
+#include "pebble_glucose_protocol.h"
+#include "popups/minimed_sake_ui.h"
+#include "process_management/app_manager.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <pbl/logging/logging.h>
+#include <pbl/util/byteorder.h>
+
+#include <applib/dict.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
@@ -48,8 +50,8 @@ static bool s_have_not_glucose;
 // out before the walk when the foreground app's own UUID is system/invalid.
 static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 
-#define BG_STR_MAX 8      // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
-#define IOB_STR_MAX 8     // "N.N"/"NN.N" IU
+#define BG_STR_MAX     8 // watchface buffer is 16; bridge sends "N.N"/"NN.N"/"---"
+#define IOB_STR_MAX    8 // "N.N"/"NN.N" IU
 #define STATUS_STR_MAX 20
 
 // Enough for any capability announcement: 3 tuples of at most 7 + 4 bytes plus the count byte.
@@ -74,20 +76,20 @@ static char s_bg_str[BG_STR_MAX];
 static uint32_t s_bg_timestamp;
 static char s_iob_str[IOB_STR_MAX];
 static char s_iob_total_str[IOB_STR_MAX];
-static char s_status_str[STATUS_STR_MAX];  // "" = normal (watchface hides the band)
+static char s_status_str[STATUS_STR_MAX]; // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
-static bool s_pump_connected;  // false (offline) is the correct default until the pump connects
+static bool s_pump_connected; // false (offline) is the correct default until the pump connects
 static bool s_pred_valid;
 static uint16_t s_pred_mgdl;
 static bool s_meal_valid;
 static uint16_t s_meal_grams;
 static uint32_t s_meal_timestamp;
-static bool s_trend_valid;     // false = no trend field in the last reading; omit the key
-static uint8_t s_trend_arrow;  // one of the TREND_* constants; only meaningful if s_trend_valid
-static bool s_hypo_valid;      // false = not in the falling-low regime the hypo model was fit for
-static uint8_t s_hypo_pct;     // treat-or-wait score, 0-100; only meaningful if s_hypo_valid
-static uint8_t s_hypo_p_low;   // P(nadir < 70), 0-100; the watchface's displayed confidence number
+static bool s_trend_valid;    // false = no trend field in the last reading; omit the key
+static uint8_t s_trend_arrow; // one of the TREND_* constants; only meaningful if s_trend_valid
+static bool s_hypo_valid;     // false = not in the falling-low regime the hypo model was fit for
+static uint8_t s_hypo_pct;    // treat-or-wait score, 0-100; only meaningful if s_hypo_valid
+static uint8_t s_hypo_p_low;  // P(nadir < 70), 0-100; the watchface's displayed confidence number
 
 // Every meal still inside the graph window, not just the newest -- KEY_MEAL_LIST. Kept sorted
 // oldest-first by timestamp so eviction (dropping the globally oldest once full) and picking the
@@ -125,8 +127,8 @@ static uint32_t s_last_push_ticks;
 // The one outbound frame: [PebbleProtocolHeader][AppMessagePush ... dictionary]. Static rather
 // than two nested stack buffers -- with the graph blob that pair came to ~500 B of KernelMain
 // stack. Every writer runs on KernelMain, so there is no concurrent use to guard against.
-static uint8_t s_frame[sizeof(PebbleProtocolHeader) + offsetof(AppMessagePush, dictionary) +
-                       WF_DICT_MAX];
+static uint8_t
+    s_frame[sizeof(PebbleProtocolHeader) + offsetof(AppMessagePush, dictionary) + WF_DICT_MAX];
 #define FRAME_PAYLOAD (s_frame + sizeof(PebbleProtocolHeader))
 
 // -- Outbound (watchface -> us): drain the send queue, detect the "ready" ping -----------------
@@ -153,7 +155,7 @@ static void prv_send_next(Transport *transport) {
     const uint16_t endpoint = pbl_be16_to_cpu(hdr.endpoint_id);
     const size_t frame_len = sizeof(hdr) + payload_len;
     if (remaining < frame_len) {
-      break;  // partial frame; wait for the rest
+      break; // partial frame; wait for the rest
     }
     if (endpoint == APP_MESSAGE_ENDPOINT_ID && payload_len >= sizeof(AppMessageHeader)) {
       AppMessageHeader msg;
@@ -165,8 +167,7 @@ static void prv_send_next(Transport *transport) {
         Uuid uuid;
         comm_session_send_queue_copy(s_session, sizeof(hdr) + offsetof(AppMessagePush, uuid),
                                      sizeof(uuid), (uint8_t *)&uuid);
-        const uint16_t dict_len =
-            (uint16_t)(payload_len - offsetof(AppMessagePush, dictionary));
+        const uint16_t dict_len = (uint16_t)(payload_len - offsetof(AppMessagePush, dictionary));
         uint8_t dict[ANNOUNCE_DICT_MAX];
         const bool truncated = dict_len > sizeof(dict);
         const uint16_t copy_len = truncated ? sizeof(dict) : dict_len;
@@ -181,17 +182,19 @@ static void prv_send_next(Transport *transport) {
   }
 }
 
-static void prv_reset(Transport *transport) {}
+static void prv_reset(Transport *transport) {
+}
 
 // Forward: defined below with the session lifecycle. prv_close re-opens the loopback after a phone
 // reconnect evicts it, which routes through this same mode callback.
 static void prv_set_mode_cb(void *ctx);
 
-// comm_session_open closes the *existing* system session when a new one connects (last-system-session
-// wins), via transport->close. The loopback's get_type is QEMU, which prv_get_system_session treats
-// as a last-resort system session, so a phone reconnect will call this to evict us. It must actually
-// close the session (and clear our pointer), or PPoGATT hits "System session already exists and
-// cannot be closed" and the phone loops connect/disconnect forever.
+// comm_session_open closes the *existing* system session when a new one connects
+// (last-system-session wins), via transport->close. The loopback's get_type is QEMU, which
+// prv_get_system_session treats as a last-resort system session, so a phone reconnect will call
+// this to evict us. It must actually close the session (and clear our pointer), or PPoGATT hits
+// "System session already exists and cannot be closed" and the phone loops connect/disconnect
+// forever.
 //
 // After the eviction the loopback is gone, so in DUAL mode the watchface would stop receiving data.
 // Re-open it once the phone's session is up: deferred to KernelMain so we don't race PPoGATT's own
@@ -204,12 +207,13 @@ static void prv_close(Transport *transport) {
   }
   bt_unlock();
   if (minimed_sake_get_mode() == MinimedSakeModeDual) {
-    launcher_task_add_callback(prv_set_mode_cb, (void *)1);  // re-open the loopback
+    launcher_task_add_callback(prv_set_mode_cb, (void *)1); // re-open the loopback
   }
 }
 
 static void prv_set_connection_responsiveness(Transport *transport, enum pbl_bt_consumer consumer,
-                                              enum pbl_bt_response_time_state state, uint16_t max_period_secs,
+                                              enum pbl_bt_response_time_state state,
+                                              uint16_t max_period_secs,
                                               pbl_bt_responsiveness_granted_cb_t granted_handler) {
   if (granted_handler) {
     launcher_task_add_callback((void (*)(void *))granted_handler, NULL);
@@ -246,15 +250,17 @@ static const Uuid *prv_claimed_uuid(void) {
   return &md->uuid;
 }
 
-static const Uuid *prv_get_uuid(struct Transport *transport) { return prv_claimed_uuid(); }
+static const Uuid *prv_get_uuid(struct Transport *transport) {
+  return prv_claimed_uuid();
+}
 
 static const TransportImplementation s_loopback_implementation = {
-    .send_next = prv_send_next,
-    .close = prv_close,
-    .reset = prv_reset,
-    .set_connection_responsiveness = prv_set_connection_responsiveness,
-    .get_uuid = prv_get_uuid,
-    .get_type = prv_get_type,
+  .send_next = prv_send_next,
+  .close = prv_close,
+  .reset = prv_reset,
+  .set_connection_responsiveness = prv_set_connection_responsiveness,
+  .get_uuid = prv_get_uuid,
+  .get_type = prv_get_type,
 };
 
 // -- Inbound injection (us -> watchface) --------------------------------------------------------
@@ -324,12 +330,12 @@ static void prv_push_bg_cb(void *unused) {
     target = s_target_uuid;
     caps = s_caps;
     graph_window_secs = (uint32_t)s_graph_hours * 60 * 60;
-    send_graph = (s_graph_hours > 0);  // GRAPH_HOURS == 0 is how a watchface declines the graph
+    send_graph = (s_graph_hours > 0); // GRAPH_HOURS == 0 is how a watchface declines the graph
   } else {
     const Uuid *fg = prv_claimed_uuid();
     if (uuid_equal(fg, &s_no_claim_uuid)) {
       PBL_LOG_INFO("wf push: dropped, foreground is not a glucose watchface");
-      return;  // not a watchface, or one we already know isn't ours
+      return; // not a watchface, or one we already know isn't ours
     }
     target = *fg;
     // Everything we can currently supply.
@@ -341,8 +347,8 @@ static void prv_push_bg_cb(void *unused) {
 
   AppMessagePush *push = (AppMessagePush *)FRAME_PAYLOAD;
   *push = (AppMessagePush){
-      .header = {.command = CMD_PUSH, .transaction_id = s_txn++},
-      .uuid = target,
+    .header = {.command = CMD_PUSH, .transaction_id = s_txn++},
+    .uuid = target,
   };
 
   uint8_t graph[MINIMED_GRAPH_BLOB_MAX];
@@ -377,7 +383,7 @@ static void prv_push_bg_cb(void *unused) {
     n++;
   }
   if (have_bg && (caps & CAP_STATUS)) {
-    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str);  // "" = normal, band hidden
+    res |= dict_write_cstring(&iter, KEY_STATUS_STRING, s_status_str); // "" = normal, band hidden
     n++;
     if (s_status_start != 0) {
       res |= dict_write_uint32(&iter, KEY_STATUS_START, s_status_start);
@@ -445,7 +451,7 @@ static void prv_push_bg_cb(void *unused) {
   }
   if (n == 0) {
     PBL_LOG_INFO("wf push: dropped, nothing to send");
-    return;  // a watchface that announced nothing we can currently supply
+    return; // a watchface that announced nothing we can currently supply
   }
   if (res != DICT_OK) {
     minimed_sake_log_evt("wf dict fail");
@@ -464,11 +470,11 @@ static void prv_push_bg_cb(void *unused) {
 static void prv_ack_and_resend_cb(void *ctx) {
   AppMessageAck *ack = (AppMessageAck *)FRAME_PAYLOAD;
   *ack = (AppMessageAck){
-      .header = {.command = CMD_ACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
+    .header = {.command = CMD_ACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
   };
   prv_inject(sizeof(*ack));
   minimed_sake_log_evt("wf ready ping");
-  s_last_push_ticks = 0;  // a resend request: do not let the coalesce swallow it
+  s_last_push_ticks = 0; // a resend request: do not let the coalesce swallow it
   prv_push_bg_cb(NULL);
 }
 
@@ -478,7 +484,7 @@ static void prv_ack_and_resend_cb(void *ctx) {
 static void prv_nack_cb(void *ctx) {
   AppMessageAck *nack = (AppMessageAck *)FRAME_PAYLOAD;
   *nack = (AppMessageAck){
-      .header = {.command = CMD_NACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
+    .header = {.command = CMD_NACK, .transaction_id = (uint8_t)(uintptr_t)ctx},
   };
   prv_inject(sizeof(*nack));
   minimed_sake_log_evt("not a glucose wf");
@@ -503,8 +509,8 @@ static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8
   s_have_target = true;
   if (announce.caps != s_caps || announce.graph_hours != s_graph_hours) {
     PBL_LOG_INFO("minimed: announce caps 0x%lx -> 0x%lx, graph_hours %u -> %u",
-                (unsigned long)s_caps, (unsigned long)announce.caps, (unsigned)s_graph_hours,
-                (unsigned)announce.graph_hours);
+                 (unsigned long)s_caps, (unsigned long)announce.caps, (unsigned)s_graph_hours,
+                 (unsigned)announce.graph_hours);
   }
   s_caps = announce.caps;
   s_graph_hours = announce.graph_hours;
@@ -553,7 +559,8 @@ static void prv_set_mode_cb(void *ctx) {
 
 void minimed_sake_sender_send_bg(const char *bg_str, uint32_t timestamp) {
   // Written on the BT host task, consumed on KernelMain. A torn read would garble one displayed
-  // value for one 60s poll cycle -- tolerable, matching the MiniMed pump link's lock-free logging approach.
+  // value for one 60s poll cycle -- tolerable, matching the MiniMed pump link's lock-free logging
+  // approach.
   strncpy(s_bg_str, bg_str, sizeof(s_bg_str) - 1);
   s_bg_str[sizeof(s_bg_str) - 1] = '\0';
   s_bg_timestamp = timestamp;
@@ -659,7 +666,7 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   for (uint8_t i = 0; i < s_meal_list_count; i++) {
     if (s_meal_list_ts[i] == timestamp) {
       s_meal_list_g[i] = grams;
-      at = MINIMED_MEAL_LIST_MAX;  // updated in place, nothing to insert
+      at = MINIMED_MEAL_LIST_MAX; // updated in place, nothing to insert
       break;
     }
     if (s_meal_list_ts[i] > timestamp) {
@@ -671,13 +678,14 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
     uint8_t count = s_meal_list_count;
     if (count == MINIMED_MEAL_LIST_MAX) {
       if (at == 0) {
-        return;  // older than everything already kept: the ring is unchanged
+        return; // older than everything already kept: the ring is unchanged
       }
       memmove(&s_meal_list_ts[0], &s_meal_list_ts[1], (at - 1) * sizeof(s_meal_list_ts[0]));
       memmove(&s_meal_list_g[0], &s_meal_list_g[1], (at - 1) * sizeof(s_meal_list_g[0]));
       at--;
     } else {
-      memmove(&s_meal_list_ts[at + 1], &s_meal_list_ts[at], (count - at) * sizeof(s_meal_list_ts[0]));
+      memmove(&s_meal_list_ts[at + 1], &s_meal_list_ts[at],
+              (count - at) * sizeof(s_meal_list_ts[0]));
       memmove(&s_meal_list_g[at + 1], &s_meal_list_g[at], (count - at) * sizeof(s_meal_list_g[0]));
       s_meal_list_count++;
     }

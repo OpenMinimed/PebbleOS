@@ -6,28 +6,28 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-//! Pure pump-status logic for the on-watch MiniMed pump link: parse the IDD Status characteristic (0x102)
-//! and the Therapy Algorithm States SRCP response (0x03FD -> 0x03FE), map them to the single
-//! status label the watchface shows (key 15), and compose the time-augmented display string
+//! Pure pump-status logic for the on-watch MiniMed pump link: parse the IDD Status characteristic
+//! (0x102) and the Therapy Algorithm States SRCP response (0x03FD -> 0x03FE), map them to the
+//! single status label the watchface shows (key 15), and compose the time-augmented display string
 //! (warm-up countdown, temp-target countdown, suspend count-up). Ported from the bridge's
 //! iterated implementation (BridgeForegroundService.readStatus/statusForWatch + StatusLabels.kt,
 //! IddStatus.kt) so both displays behave identically. NimBLE-free -- host-tested in
 //! tools/minimed_sake_hosttest.
 
 //! Raw wire values (IddStatus.kt / OpenMinimed pump_status.py, tas_flags.py).
-#define MINIMED_THERAPY_STOP 0x33
-#define MINIMED_THERAPY_PAUSE 0x3C
-#define MINIMED_THERAPY_RUN 0x55
-#define MINIMED_OP_PREPARING 0x55
-#define MINIMED_OP_PRIMING 0x5A
-#define MINIMED_OP_WAITING 0x66
-#define MINIMED_OP_READY 0x96
-#define MINIMED_SHIELD_OPEN_LOOP 0x01
-#define MINIMED_SHIELD_AUTO_BASAL 0x02
-#define MINIMED_SHIELD_SAFE_BASAL 0x03
-#define MINIMED_READINESS_BG_REQUIRED 1
+#define MINIMED_THERAPY_STOP                   0x33
+#define MINIMED_THERAPY_PAUSE                  0x3C
+#define MINIMED_THERAPY_RUN                    0x55
+#define MINIMED_OP_PREPARING                   0x55
+#define MINIMED_OP_PRIMING                     0x5A
+#define MINIMED_OP_WAITING                     0x66
+#define MINIMED_OP_READY                       0x96
+#define MINIMED_SHIELD_OPEN_LOOP               0x01
+#define MINIMED_SHIELD_AUTO_BASAL              0x02
+#define MINIMED_SHIELD_SAFE_BASAL              0x03
+#define MINIMED_READINESS_BG_REQUIRED          1
 #define MINIMED_READINESS_CALIBRATION_REQUIRED 4
-#define MINIMED_READINESS_BG_RECOMMENDED 5
+#define MINIMED_READINESS_BG_RECOMMENDED       5
 
 //! Decoded IDD Status (0x102) body. `valid` false = the read failed; the mapping then simply
 //! skips the therapy/sensor clauses (mirrors the bridge treating a null read).
@@ -53,8 +53,8 @@ typedef struct {
 //! Start and end timestamps for pump statuses (Unix epoch seconds)
 //! Can be used to display count-up/down status timers on watchface, like "TEMP TARGET 1:59".
 typedef struct {
-  uint32_t start;  // When the status started
-  uint32_t end;    // When the status is expected to end
+  uint32_t start; // When the status started
+  uint32_t end;   // When the status is expected to end
 } MinimedStatusTimers;
 
 //! Parse a decrypted 9-byte IDD Status body (therapy, operational, reservoir medfloat32, flags,

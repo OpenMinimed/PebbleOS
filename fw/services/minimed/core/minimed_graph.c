@@ -20,7 +20,7 @@ void minimed_graph_add(MinimedGraph *graph, uint32_t timestamp, int32_t mgdl) {
   }
   int32_t half = (mgdl + 1) / 2;
   if (half > 255) {
-    half = 255;  // 510 mg/dL, above the sensor's range
+    half = 255; // 510 mg/dL, above the sensor's range
   }
 
   // Keep the array strictly ascending. Only reachable if the RTC moved backwards (time sync, DST),
@@ -34,7 +34,7 @@ void minimed_graph_add(MinimedGraph *graph, uint32_t timestamp, int32_t mgdl) {
     drop++;
   }
   if (graph->count - drop == MINIMED_GRAPH_MAX_POINTS) {
-    drop++;  // full: make room for the new point
+    drop++; // full: make room for the new point
   }
   prv_drop_oldest(graph, drop);
 
@@ -54,11 +54,11 @@ void minimed_graph_insert_past(MinimedGraph *graph, uint32_t timestamp, int32_t 
   if (graph->count > 0) {
     const uint32_t newest = graph->ts[graph->count - 1];
     if (newest > timestamp && newest - timestamp >= MINIMED_GRAPH_RETENTION_SECS) {
-      return;  // outside the window
+      return; // outside the window
     }
   }
 
-  uint16_t pos = 0;  // first point at or after `timestamp`
+  uint16_t pos = 0; // first point at or after `timestamp`
   while (pos < graph->count && graph->ts[pos] < timestamp) {
     pos++;
   }
@@ -71,7 +71,7 @@ void minimed_graph_insert_past(MinimedGraph *graph, uint32_t timestamp, int32_t 
 
   if (graph->count == MINIMED_GRAPH_MAX_POINTS) {
     if (pos == 0) {
-      return;  // older than everything we keep
+      return; // older than everything we keep
     }
     prv_drop_oldest(graph, 1);
     pos--;
@@ -84,8 +84,7 @@ void minimed_graph_insert_past(MinimedGraph *graph, uint32_t timestamp, int32_t 
   graph->count++;
 }
 
-uint16_t minimed_graph_serialize(const MinimedGraph *graph, uint32_t window_secs,
-                                 uint8_t *out) {
+uint16_t minimed_graph_serialize(const MinimedGraph *graph, uint32_t window_secs, uint8_t *out) {
   // Snapshot count once. The firmware appends on the BT host task and serializes on KernelMain
   // without a lock (the accepted convention here), so re-reading it could emit a blob whose
   // embedded count, byte layout and returned length disagree -- a garbled frame rather than a torn

@@ -11,24 +11,21 @@
 //! Readings arrive live as the pump reports them; on connect the recent past is filled in from the
 //! pump's event log (minimed_graph_insert_past).
 
-
 //! The protocol permits requests for up to 24 hours. At five-minute intervals, the derived point
 //! count covers that history plus the 30-minute margin needed to draw the entering left edge.
-#define MINIMED_GRAPH_MAX_HOURS 24
-#define MINIMED_GRAPH_MARGIN_SECS (30 * 60)
-#define MINIMED_GRAPH_INTERVAL_SECS (5 * 60)
-#define MINIMED_GRAPH_RETENTION_SECS \
-  (MINIMED_GRAPH_MAX_HOURS * 60 * 60 + MINIMED_GRAPH_MARGIN_SECS)
-#define MINIMED_GRAPH_MAX_POINTS \
-  ((MINIMED_GRAPH_RETENTION_SECS / MINIMED_GRAPH_INTERVAL_SECS) + 1)
+#define MINIMED_GRAPH_MAX_HOURS      24
+#define MINIMED_GRAPH_MARGIN_SECS    (30 * 60)
+#define MINIMED_GRAPH_INTERVAL_SECS  (5 * 60)
+#define MINIMED_GRAPH_RETENTION_SECS (MINIMED_GRAPH_MAX_HOURS * 60 * 60 + MINIMED_GRAPH_MARGIN_SECS)
+#define MINIMED_GRAPH_MAX_POINTS ((MINIMED_GRAPH_RETENTION_SECS / MINIMED_GRAPH_INTERVAL_SECS) + 1)
 
 //! Wire format (pebble-glucose-protocol/PROTOCOL.md, GRAPH_DATA key 30), little-endian:
 //! [ref_ts u32][count u16][offset_min u16 xN][bg u8 xN], where bg is mg/dL / 2.
 #define MINIMED_GRAPH_BLOB_MAX (6 + 3 * MINIMED_GRAPH_MAX_POINTS)
 
 typedef struct {
-  uint32_t ts[MINIMED_GRAPH_MAX_POINTS];  //!< oldest first, strictly ascending
-  uint8_t bg[MINIMED_GRAPH_MAX_POINTS];   //!< mg/dL / 2
+  uint32_t ts[MINIMED_GRAPH_MAX_POINTS]; //!< oldest first, strictly ascending
+  uint8_t bg[MINIMED_GRAPH_MAX_POINTS];  //!< mg/dL / 2
   uint16_t count;
 } MinimedGraph;
 
