@@ -14,6 +14,7 @@
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
 #include "minimed_settings.h"
+#include "pbl/services/new_timer/new_timer.h"
 #include "pebble_glucose_protocol.h"
 #include "process_management/app_manager.h"
 #include "pbl/services/comm_session/protocol.h"
@@ -112,10 +113,14 @@ static bool s_graph_dirty;
 // scheduling a push. If the watchface is busy (or not foreground) the injected frames sit in its
 // app-inbox, which is a fixed 2048 B buffer in KernelMain -- under a burst it accumulates faster
 // than the watchface drains and was a contributor to the OOM crash (kernel heap to ~2.7 KB,
-// 2026-09-09). Pushes within 150 ms of the previous one are dropped; the next one carries the
-// latest values, so nothing is lost, only coalesced.
+// 2026-09-09). Pushes within 150 ms of the previous one are held back, and one trailing push fires
+// when the window ends and carries the latest values. Dropping them outright lost the newest BG: a
+// reading pushes prediction/hypo/trend first and the BG string last, inside the window, so the
+// watchface kept the previous value until some later IOB push happened along.
 #define PUSH_COALESCE_MS 150
 static uint32_t s_last_push_ticks;
+static TimerID s_trailing_push_timer = TIMER_INVALID_ID;
+static bool s_trailing_push_armed;
 
 // The one outbound frame: [PebbleProtocolHeader][AppMessagePush ... dictionary]. Static rather
 // than two nested stack buffers -- with the graph blob that pair came to ~500 B of KernelMain
@@ -283,15 +288,35 @@ static void prv_inject(uint16_t payload_len) {
 // Every push carries every announced field, not just the one that changed. The protocol allows
 // sending only what is new, but this transport is a memcpy rather than a radio, so re-sending the
 // whole frame costs nothing and keeps the watchface correct after a relaunch.
+static void prv_push_bg_cb(void *unused);
+
+static void prv_trailing_push_timer_cb(void *unused) {
+  s_trailing_push_armed = false;  // lets the push below re-arm if it still lands inside the window
+  launcher_task_add_callback(prv_push_bg_cb, NULL);
+}
+
 static void prv_push_bg_cb(void *unused) {
   // Coalesce bursts (see PUSH_COALESCE_MS). The injected frame would otherwise pile up in the
   // watchface's app-inbox when the watchface is busy or not foreground.
   const uint32_t now = (uint32_t)rtc_get_ticks();
-  if (s_last_push_ticks != 0 && (now - s_last_push_ticks) < PUSH_COALESCE_MS) {
-    PBL_LOG_DBG("wf push: dropped, within coalesce window");
+  const uint32_t elapsed_ms = (uint32_t)(((uint64_t)(now - s_last_push_ticks) * 1000) / RTC_TICKS_HZ);
+  if (s_last_push_ticks != 0 && elapsed_ms < PUSH_COALESCE_MS) {
+    if (!s_trailing_push_armed) {
+      if (s_trailing_push_timer == TIMER_INVALID_ID) {
+        s_trailing_push_timer = new_timer_create();
+      }
+      s_trailing_push_armed = new_timer_start(s_trailing_push_timer,
+                                              PUSH_COALESCE_MS - elapsed_ms + 1,
+                                              prv_trailing_push_timer_cb, NULL, 0);
+    }
+    PBL_LOG_DBG("wf push: deferred, within coalesce window");
     return;
   }
   s_last_push_ticks = now;
+  s_trailing_push_armed = false;
+  if (s_trailing_push_timer != TIMER_INVALID_ID) {
+    new_timer_stop(s_trailing_push_timer);  // this push already carries the latest values
+  }
 
   if (!s_session) {
     PBL_LOG_DBG("wf push: dropped, no session");
