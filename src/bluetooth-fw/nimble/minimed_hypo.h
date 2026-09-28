@@ -25,15 +25,15 @@ typedef struct {
   float treat_pct;     //!< 0..100 recommendation: 100 * clip(p_low - w * p_over, 0, 1)
 } MinimedHypoPrediction;
 
-//! True when the newest reading in `in` is at or below 90 mg/dL and has fallen over the last 15
-//! minutes -- the only regime the model was fitted in. minimed_hypo_eval's output is undefined
-//! outside of it.
+//! True when the newest reading in `in` is at or below 108 mg/dL (6.0 mmol/L) and has fallen over
+//! the last 15 minutes. The model was fitted at or below 90 mg/dL; the 90-108 band is an early
+//! look whose score the watchface only surfaces once it reaches the treat threshold.
 bool minimed_hypo_should_evaluate(const MinimedPredictWindow *in);
 
-//! True when the reading is still above 90 mg/dL, but its last-15-minute slope is at or past
+//! True when the reading is still above 108 mg/dL, but its last-15-minute slope is at or past
 //! HYPO_FAST_FALL_MGDL_PER_MIN (see minimed_hypo.c) and, extrapolated linearly, would cross the low
 //! line within HYPO_EARLY_LOOKAHEAD_MIN minutes: a genuinely fast drop about to enter the model's
-//! regime, not merely trending down. Bounded to a modest ceiling above 90 mg/dL so the model is
+//! regime, not merely trending down. Bounded to a modest ceiling above 108 mg/dL so the model is
 //! never evaluated far outside where it was fitted. minimed_hypo_should_evaluate and this are meant
 //! to be OR'd: either one justifies a call to minimed_hypo_eval.
 bool minimed_hypo_falling_fast(const MinimedPredictWindow *in);

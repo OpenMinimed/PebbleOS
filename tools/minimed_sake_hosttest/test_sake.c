@@ -1309,6 +1309,15 @@ static void section_hypo(void) {
   falling.tod_cos = 1.0f;
   check("a steep fall through the trigger is evaluated", minimed_hypo_should_evaluate(&falling));
 
+  MinimedPredictWindow early;
+  memset(&early, 0, sizeof(early));
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) early.bg[i] = 120.0f;
+  early.bg[47] = 105.0f;  // 5.8 mmol/L and falling: inside the 6.0 early band
+  early.tod_cos = 1.0f;
+  check("a fall under 6.0 mmol/L is evaluated", minimed_hypo_should_evaluate(&early));
+  early.bg[47] = 110.0f;
+  check("a fall still above 6.0 mmol/L is not", !minimed_hypo_should_evaluate(&early));
+
   MinimedHypoPrediction out;
   minimed_hypo_eval(&falling, 0.3f, &out);
   check("treat_pct is a percentage", out.treat_pct >= 0.0f && out.treat_pct <= 100.0f);
@@ -1342,17 +1351,17 @@ static void section_hypo(void) {
 
   MinimedPredictWindow fast_fall;
   memset(&fast_fall, 0, sizeof(fast_fall));
-  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall.bg[i] = 150.0f;
-  fast_fall.bg[45] = 130.0f;
-  fast_fall.bg[46] = 110.0f;
-  fast_fall.bg[47] = 100.0f;  // -50 over 15 min = -3.33 mg/dL/min, still above 90
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall.bg[i] = 170.0f;
+  fast_fall.bg[45] = 150.0f;
+  fast_fall.bg[46] = 130.0f;
+  fast_fall.bg[47] = 115.0f;  // -55 over 15 min = -3.67 mg/dL/min, still above 108
   fast_fall.tod_cos = 1.0f;
   check("a >=3 mg/dL/min fall projected under 70 within 30 min triggers the early gate",
         minimed_hypo_falling_fast(&fast_fall));
 
   MinimedPredictWindow fast_fall_high;
   memcpy(&fast_fall_high, &fast_fall, sizeof(fast_fall_high));
-  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall_high.bg[i] += 40.0f;  // now 140: past the ceiling
+  for (int i = 0; i < MINIMED_PREDICT_WINDOW; i++) fast_fall_high.bg[i] += 40.0f;  // now 155: past the ceiling
   check("the same fast fall does not fire once the reading is too far above the trigger",
         !minimed_hypo_falling_fast(&fast_fall_high));
 }

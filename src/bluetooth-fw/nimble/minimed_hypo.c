@@ -46,8 +46,13 @@ static float prv_std_normal_cdf(float z) {
   return 0.5f * (1.0f + sign * y);
 }
 
+// Evaluate from 6.0 mmol/L down, earlier than the model's own fitted trigger (HYPO_TRIGGER, 90):
+// the watchface shows nothing until the score reaches its treat threshold, so a quiet early score
+// costs nothing, while a low that is coming gets flagged sooner.
+#define HYPO_EVAL_TRIGGER_MGDL 108.0f
+
 bool minimed_hypo_should_evaluate(const MinimedPredictWindow *in) {
-  return in->bg[NEW] <= HYPO_TRIGGER && in->bg[NEW] < prv_lag(in->bg, 4);
+  return in->bg[NEW] <= HYPO_EVAL_TRIGGER_MGDL && in->bg[NEW] < prv_lag(in->bg, 4);
 }
 
 // The physiological ceiling this is anchored on: CGM systems' own steepest trend-arrow bucket
@@ -69,7 +74,7 @@ bool minimed_hypo_should_evaluate(const MinimedPredictWindow *in) {
 
 bool minimed_hypo_falling_fast(const MinimedPredictWindow *in) {
   const float now = in->bg[NEW];
-  if (now <= HYPO_TRIGGER || now > HYPO_EARLY_CEILING_MGDL) {
+  if (now <= HYPO_EVAL_TRIGGER_MGDL || now > HYPO_EARLY_CEILING_MGDL) {
     return false;  // already handled by should_evaluate, or too far above the model's regime
   }
   const float l4 = prv_lag(in->bg, 4);  // 15 minutes back
