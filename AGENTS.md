@@ -73,7 +73,9 @@ below).
 - Touch boards: `./pbl touch X Y` taps, `./pbl swipe X1 Y1 X2 Y2 [--steps N --duration S]`
   swipes. Screen-pixel coordinates; single touch only.
 - UART1 output goes to `uart1.log` in the repository root; `./pbl debug` attaches gdb.
-- QEMU has no Bluetooth: the MiniMed pump link below can only be tested on a real watch.
+- QEMU has no Bluetooth. With `CONFIG_MINIMED_SAKE` the QEMU build starts the MiniMed task
+  against a stand-in link (`src/bluetooth-fw/qemu/minimed_fake_pump.c`) that only proves the task
+  plumbing boots and survives; the real pump link needs a watch. See "Emulator smoke test" below.
 
 ## Adding a new SDK function
 
@@ -164,6 +166,19 @@ in mind.
   existing configure cache (see `build_slot` in `minimed-build.sh`).
 - Host tests for `core/` (no watch, no ARM toolchain): `make -C tools/minimed_sake_hosttest`.
   They must pass before any firmware build.
+- Docker image with everything preinstalled (pip requirements, SDL2 for QEMU, toolchain and
+  QEMU on `PATH`): `docker build -t pebbleos-minimed:local -f tools/minimed/Dockerfile .` Use it
+  in place of the CI image for local builds and emulator runs.
+
+### Emulator smoke test
+
+Run `tools/minimed/qemu_smoke_test.sh [seconds]` before flashing any change to the MiniMed task,
+session or transport. It builds `qemu_emery` with MiniMed enabled, boots it headless, lets the
+stand-in pump link come up, then fails on any assert, fault, watchdog or reboot in the serial
+logs (`build/qemu_uart*.log`, screenshot in `build/qemu_shot.ppm`). It reconfigures `build/`;
+the next `minimed-build.sh` run switches back. The MiniMed task must never be able to take the
+watch down: it is deliberately not under the task watchdog, and its init degrades to "pump link
+off" instead of asserting.
 
 ### Flash
 
