@@ -2,23 +2,23 @@ excludes = []
 if not bld.env.CONFIG_GH3X2X_TUNING_SERVICE_ENABLED:
     excludes.extend(['gh3x2x_tuning_service.c'])
 if not bld.env.CONFIG_MINIMED_SAKE:
-    excludes.extend(['minimed_sake_service.c', 'minimed_sake_crypto.c', 'minimed_sake_aes.c',
-                     'minimed_sake_read.c', 'minimed_sake_sender.c', 'minimed_iob.c',
-                     'minimed_annunciation.c',
-                     'minimed_graph.c', 'minimed_idd_flags.c', 'minimed_status.c',
-                     'minimed_glucose_announce.c'])
+    excludes.extend(['minimed_sake_service.c', 'minimed_sake_read.c'])
 
 driver_source = bld.path.ant_glob(['*.c'], excl=excludes)
+
+driver_use = [
+    'nimble',
+    'freertos',
+    'fw_includes',
+    'pbl_includes',
+]
+if bld.env.CONFIG_MINIMED_SAKE:
+    driver_use.append('minimed_includes')  # src/fw/services/minimed
 
 bld.objects(
     source=driver_source,
     target='bt_driver',
-    use=[
-      'nimble',
-      'freertos',
-      'fw_includes',
-      'pbl_includes',
-    ],
+    use=driver_use,
 )
 
 # vim:filetype=python

@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen
+# SPDX-License-Identifier: Apache-2.0
+
+# core/ is plain C with no PebbleOS or NimBLE dependency: the protocol parsers, the SAKE crypto
+# and the models. It is what a standalone library or a watchapp would reuse as is, and what the
+# host tests in tools/minimed_sake_hosttest build. Everything else here is the firmware service.
+bld(export_includes=['.', 'core'], name='minimed_includes')
+
+bld.stlib(
+    source=bld.path.ant_glob(['*.c', 'core/*.c']),
+    target='services_minimed',
+    use=['fw_includes', 'minimed_includes'],
+)
+
+bld.env.SERVICES.append('services_minimed')

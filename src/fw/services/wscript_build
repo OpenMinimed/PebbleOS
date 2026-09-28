@@ -75,6 +75,8 @@ if bld.env.CONFIG_SERVICE_IDLE_WATCHDOG:
     bld.recurse('idle_watchdog')
 if bld.env.CONFIG_SERVICE_LIGHT:
     bld.recurse('light')
+if bld.env.CONFIG_MINIMED_SAKE:
+    bld.recurse('minimed')
 if bld.env.CONFIG_SERVICE_MUSIC:
     bld.recurse('music')
 if bld.env.CONFIG_SERVICE_NEW_TIMER:
