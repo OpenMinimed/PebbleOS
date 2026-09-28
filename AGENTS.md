@@ -186,6 +186,13 @@ off" instead of asserting.
   Connect says "no reachable device" while the phone is on the LAN, add its IP as a custom device:
   `busctl --user set-property org.kde.kdeconnect /modules/kdeconnect org.kde.kdeconnect.daemon
   customDevices as 1 <phone-ip>`, then call `forceOnNetworkChange` on the same interface.
+- Two firmware slots (A/B): the watch runs from one and a firmware update is written to the
+  other, so a bad image can never overwrite the running one. Each `.pbz` is linked for one slot's
+  flash address, which is why every build produces `_slot0` and `_slot1`, and the Pebble app only
+  accepts the image for the slot that is NOT running. So the file that worked last time is
+  refused ("did not parse") once the watch has booted it; flash the other one. The running slot
+  is in the boot log (`Boot slot: N`). Keep both files on the phone. Never repack both into one
+  bundle or edit the manifest; `TESTING.md` lists what breaks.
 - On the phone: Pebble app -> Settings -> debug options -> Devices -> the watch -> Firmware
   Update Debug -> Sideload FW, and pick the slot the app asks for (it wants the one not running).
 - From the PC instead: `tools/flash_firmware.py build/minimed-...-<desc>` picks the right slot.
