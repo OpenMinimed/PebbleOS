@@ -155,3 +155,5 @@ PBL_ANALYTICS_METRIC_DEFINE_UNSIGNED(display_flush_time_ms)
 // Time the touch controller spent in active scan, estimated from the wake
 // window following each interrupt.
 PBL_ANALYTICS_METRIC_DEFINE_UNSIGNED(touch_driver_awake_time_ms)
+// MiniMed pump session task (PebbleTask_Minimed), like the task_cpu_*_pct above.
+PBL_ANALYTICS_METRIC_DEFINE_SCALED_UNSIGNED(task_cpu_minimed_pct, 100)

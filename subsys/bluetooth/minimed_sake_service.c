@@ -3,27 +3,32 @@
 
 #include "minimed_sake_service.h"
 
-#include <stdio.h>
-#include <string.h>
-
-#include "host/ble_gatt.h"
 #include "host/ble_gap.h"
+#include "host/ble_gatt.h"
 #include "host/ble_hs.h"
 #include "host/ble_hs_hci.h"
 #include "host/ble_uuid.h"
+#include "minimed_sake_crypto.h"
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 
-#include "minimed_sake_crypto.h"
-#include "minimed_sake_read.h"
-#include "nimble_type_conversions.h"
+#include <stdio.h>
+#include <string.h>
+#ifdef CONFIG_BT_HCI_FAKE
+#include "minimed_fake_pump.h"
+#endif
 #include "comm/ble/gap_le_advert.h"
 #include "comm/bt_lock.h"
-#include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
-#include "popups/minimed_sake_ui.h"
 #include "kernel/event_loop.h"
+#include "minimed_task.h"
+#include "minimed_transport.h"
+#include "minimed_transport_nimble.h"
+#include "nimble_type_conversions.h"
+#include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "pbl/services/settings/settings_file.h"
 #include "pbl/util/size.h"
+#include "popups/minimed_sake_ui.h"
+
 #include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
@@ -35,9 +40,8 @@ static const ble_uuid16_t s_sake_svc_uuid = BLE_UUID16_INIT(0xfe82);
 
 // SAKE Port characteristic 0000fe82-0000-1000-0000-009132591325 -- Medtronic's
 // custom 128-bit base (NOT the standard BT base). Little-endian byte order.
-static const ble_uuid128_t s_sake_port_chr_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x82, 0xfe, 0x00, 0x00);
+static const ble_uuid128_t s_sake_port_chr_uuid = BLE_UUID128_INIT(
+    0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x82, 0xfe, 0x00, 0x00);
 
 static uint16_t s_sake_port_val_handle;
 
@@ -49,18 +53,16 @@ static uint16_t s_notify_conn;
 static uint8_t s_notify_buf[SAKE_MESSAGE_SIZE];
 
 // SAKE server-role handshake state. The crypto + state machine live in minimed_sake_crypto.c and
-// are byte-verified on the host against OpenMinimed's captured 780G trace (tools/minimed_sake_hosttest).
-// KEYDB_PUMP_EXTRACTED: the 780G-model-static key database (same bytes the working Android bridge
-// uses at runtime via org.openminimed.sake.Constants).
+// are byte-verified on the host against OpenMinimed's captured 780G trace
+// (tools/minimed_sake_hosttest). KEYDB_PUMP_EXTRACTED: the 780G-model-static key database (same
+// bytes the working Android bridge uses at runtime via org.openminimed.sake.Constants).
 static const uint8_t s_pump_keydb_bytes[] = {
-    0xf7, 0x59, 0x95, 0xe7, 0x04, 0x01, 0x01, 0x1b, 0xc1, 0xbf, 0x7c, 0xbf,
-    0x36, 0xfa, 0x1e, 0x23, 0x67, 0xd7, 0x95, 0xff, 0x09, 0x21, 0x19, 0x03,
-    0xda, 0x6a, 0xfb, 0xe9, 0x86, 0xb6, 0x50, 0xf1, 0x41, 0x79, 0xc0, 0xe6,
-    0x85, 0x2e, 0x0c, 0xe3, 0x93, 0x78, 0x10, 0x78, 0xff, 0xc6, 0xf5, 0x19,
-    0x19, 0xe2, 0xea, 0xef, 0xbd, 0xe6, 0x9b, 0x8e, 0xca, 0x21, 0xe4, 0x1a,
-    0xb5, 0x9b, 0x88, 0x1a, 0x0b, 0xea, 0x02, 0x86, 0xea, 0x91, 0xdc, 0x75,
-    0x82, 0xa8, 0x6a, 0x71, 0x4e, 0x17, 0x37, 0xf5, 0x58, 0xf0, 0xd6, 0x6d,
-    0xc1, 0x89, 0x5c,
+  0xf7, 0x59, 0x95, 0xe7, 0x04, 0x01, 0x01, 0x1b, 0xc1, 0xbf, 0x7c, 0xbf, 0x36, 0xfa, 0x1e,
+  0x23, 0x67, 0xd7, 0x95, 0xff, 0x09, 0x21, 0x19, 0x03, 0xda, 0x6a, 0xfb, 0xe9, 0x86, 0xb6,
+  0x50, 0xf1, 0x41, 0x79, 0xc0, 0xe6, 0x85, 0x2e, 0x0c, 0xe3, 0x93, 0x78, 0x10, 0x78, 0xff,
+  0xc6, 0xf5, 0x19, 0x19, 0xe2, 0xea, 0xef, 0xbd, 0xe6, 0x9b, 0x8e, 0xca, 0x21, 0xe4, 0x1a,
+  0xb5, 0x9b, 0x88, 0x1a, 0x0b, 0xea, 0x02, 0x86, 0xea, 0x91, 0xdc, 0x75, 0x82, 0xa8, 0x6a,
+  0x71, 0x4e, 0x17, 0x37, 0xf5, 0x58, 0xf0, 0xd6, 0x6d, 0xc1, 0x89, 0x5c,
 };
 static sake_keydb s_keydb;
 static bool s_keydb_ok;
@@ -95,7 +97,7 @@ static GAPLEAdvertisingJobRef s_pump_advert_job;
 static bool s_gateway_addr_known;
 static ble_addr_t s_gateway_addr;
 
-#define MINIMED_SETTINGS_FILE "minimedsake"
+#define MINIMED_SETTINGS_FILE     "minimedsake"
 #define MINIMED_SETTINGS_MAX_SIZE 256
 static const char s_paired_setting_key[] = "paired";
 static const char s_pump_addr_key[] = "pumpaddr";
@@ -103,7 +105,7 @@ static const char s_pump_addr_key[] = "pumpaddr";
 static void prv_load_pump_paired(void) {
   SettingsFile fd;
   if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
-    return;  // no file yet -> stay unpaired (FE82)
+    return; // no file yet -> stay unpaired (FE82)
   }
   uint8_t v = 0;
   if (settings_file_get(&fd, s_paired_setting_key, sizeof(s_paired_setting_key), &v, sizeof(v)) ==
@@ -136,8 +138,8 @@ static void prv_store_pump_paired_cb(void *data) {
     minimed_sake_log_evt("persist set fail");
   }
   if (s_pump_addr_known) {
-    if (settings_file_set(&fd, s_pump_addr_key, sizeof(s_pump_addr_key),
-                          (uint8_t *)&s_pump_id_addr, sizeof(s_pump_id_addr)) != S_SUCCESS) {
+    if (settings_file_set(&fd, s_pump_addr_key, sizeof(s_pump_addr_key), (uint8_t *)&s_pump_id_addr,
+                          sizeof(s_pump_id_addr)) != S_SUCCESS) {
       minimed_sake_log_evt("persist addr fail");
     } else {
       s_pump_addr_persisted = true;
@@ -148,7 +150,7 @@ static void prv_store_pump_paired_cb(void *data) {
 
 static void prv_set_pump_paired(bool paired) {
   if (s_pump_paired == paired) {
-    return;  // no change -> no flash write (handshake re-runs on every reconnect)
+    return; // no change -> no flash write (handshake re-runs on every reconnect)
   }
   s_pump_paired = paired;
   launcher_task_add_callback(prv_store_pump_paired_cb, paired ? (void *)1 : NULL);
@@ -171,8 +173,8 @@ static void prv_pump_advert_unscheduled_cb(GAPLEAdvertisingJobRef job, bool comp
 }
 
 static void prv_pump_advert_rebuild(void) {
-  bt_lock();  // the unschedule callback below runs under bt_lock; guard the pointer against
-              // concurrent rebuilds from the app task (toggle/forget) and the BT task (handshake).
+  bt_lock(); // the unschedule callback below runs under bt_lock; guard the pointer against
+             // concurrent rebuilds from the app task (toggle/forget) and the BT task (handshake).
   // Stop whatever is scheduled; when not in DUAL mode that is all we want (NORMAL has no pump job).
   if (s_pump_advert_job) {
     gap_le_advert_unschedule(s_pump_advert_job);
@@ -182,7 +184,8 @@ static void prv_pump_advert_rebuild(void) {
     goto unlock;
   }
 
-  // struct pbl_bt_ad_data ends in a flexible array, so it can't be declared on its own and then written past
+  // struct pbl_bt_ad_data ends in a flexible array, so it can't be declared on its own and then
+  // written past
   // -- allocate the struct and the data buffer as one object. ad.data aliases data[].
   typedef struct {
     struct pbl_bt_ad_data ad;
@@ -197,10 +200,10 @@ static void prv_pump_advert_rebuild(void) {
   // called fresh (cur_term resets to 0) whenever the pump is expected back soon -- on a mode entry
   // and, from the disconnect handler, right after the pump link drops.
   const GAPLEAdvertisingJobTerm terms[] = {
-      {.duration_secs = PUMP_ADVERT_FAST_DURATION_SECS,
-       .interval = GAPLEAdvertisingInterval_Medtronic},
-      {.duration_secs = GAPLE_ADVERTISING_DURATION_INFINITE,
-       .interval = GAPLEAdvertisingInterval_MedtronicSlow},
+    {.duration_secs = PUMP_ADVERT_FAST_DURATION_SECS,
+     .interval = GAPLEAdvertisingInterval_Medtronic},
+    {.duration_secs = GAPLE_ADVERTISING_DURATION_INFINITE,
+     .interval = GAPLEAdvertisingInterval_MedtronicSlow},
   };
   s_pump_advert_job =
       gap_le_advert_schedule(&s_pump_ad.ad, terms, ARRAY_LENGTH(terms),
@@ -217,9 +220,15 @@ unlock:
   bt_unlock();
 }
 
-void minimed_sake_pump_advert_start(void) { prv_pump_advert_rebuild(); }
-void minimed_sake_pump_advert_stop(void) { prv_pump_advert_rebuild(); }
-void minimed_sake_pump_advert_update(void) { prv_pump_advert_rebuild(); }
+void minimed_sake_pump_advert_start(void) {
+  prv_pump_advert_rebuild();
+}
+void minimed_sake_pump_advert_stop(void) {
+  prv_pump_advert_rebuild();
+}
+void minimed_sake_pump_advert_update(void) {
+  prv_pump_advert_rebuild();
+}
 
 // The pump-pairing window: while in DUAL mode with the pump not yet bonded, any incoming
 // connection is presumed to be the pump (its identity is unknown until the handshake completes)
@@ -297,24 +306,26 @@ static void prv_adopt_pump_bond_cb2(void *unused) {
   ble_addr_t addr = {0};
   for (int i = 0; i < search.count; i++) {
     if (bt_persistent_storage_is_ble_ancs_bonding(search.ids[i])) {
-      continue;  // the phone
+      continue; // the phone
     }
     found++;
     addr = search.addrs[i];
   }
   if (found != 1) {
-    return;  // no pump bond, or ambiguous -- leave it to the next handshake
+    return; // no pump bond, or ambiguous -- leave it to the next handshake
   }
   s_pump_id_addr = addr;
   s_pump_addr_known = true;
   minimed_sake_log_evt("pump addr from bond");
 }
 
-static void prv_adopt_pump_bond(void) { launcher_task_add_callback(prv_adopt_pump_bond_cb2, NULL); }
+static void prv_adopt_pump_bond(void) {
+  launcher_task_add_callback(prv_adopt_pump_bond_cb2, NULL);
+}
 
 static void prv_rng(void *ud, uint8_t *out, size_t n) {
   (void)ud;
-  ble_hs_hci_rand(out, (int)n);  // the NimBLE host's CSPRNG (also used for SM pairing randoms)
+  ble_hs_hci_rand(out, (int)n); // the NimBLE host's CSPRNG (also used for SM pairing randoms)
 }
 
 static void prv_defer_notify(uint16_t conn, const uint8_t payload[SAKE_MESSAGE_SIZE],
@@ -328,9 +339,8 @@ static void prv_defer_notify(uint16_t conn, const uint8_t payload[SAKE_MESSAGE_S
 // 00000900-0000-1000-0000-009132591325. The pump matches this during discovery and refuses to
 // pair when only the standard 0x180A DIS is present. Its characteristics use standard SIG 16-bit
 // UUIDs; values are placeholders (the pump doesn't validate them -- SAKE is the real auth).
-static const ble_uuid128_t s_dis_svc_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00);
+static const ble_uuid128_t s_dis_svc_uuid = BLE_UUID128_INIT(
+    0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00);
 
 static const ble_uuid16_t s_dis_manuf_uuid = BLE_UUID16_INIT(0x2A29);
 static const ble_uuid16_t s_dis_model_uuid = BLE_UUID16_INIT(0x2A24);
@@ -368,14 +378,16 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
                all_zero ? " (all-zero)" : "", buf[0], buf[1], buf[2], buf[3]);
   char line[32];
   if (all_zero) {
-    // The first (stage 0) write is the milestone that proved the initial implementation; keep its distinct report.
+    // The first (stage 0) write is the milestone that proved the initial implementation; keep its
+    // distinct report.
     minimed_sake_report(MinimedSakeStageWrote);
   }
   snprintf(line, sizeof(line), "wrote %u:%02x %02x %02x %02x", len, buf[0], buf[1], buf[2], buf[3]);
   minimed_sake_log_evt(line);
 
   if (!s_keydb_ok) {
-    return 0;  // no key DB -> stay inert (initial implementation behavior: log the write, don't handshake)
+    return 0; // no key DB -> stay inert (initial implementation behavior: log the write, don't
+              // handshake)
   }
 
   // Advance the handshake. The wake-up (20 zeros on subscribe) is NOT fed here -- only pump writes.
@@ -388,7 +400,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
     minimed_sake_log_evt(line);
   } else if (r == SAKE_RESULT_DONE) {
     prv_set_pump_paired(true);  // pump is bonded now -> advertise FE81 (reconnect) from here on
-    struct ble_gap_conn_desc d;  // remember who the pump is, for the v29 PUMP/phone conn label
+    struct ble_gap_conn_desc d; // remember who the pump is, for the v29 PUMP/phone conn label
     if (ble_gap_conn_find(conn_handle, &d) == 0) {
       const bool changed =
           !s_pump_addr_known || memcmp(&s_pump_id_addr, &d.peer_id_addr, sizeof(s_pump_id_addr));
@@ -403,7 +415,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
       }
     }
     minimed_sake_report(MinimedSakeStageHandshakeComplete);
-    minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
+    minimed_transport_nimble_link_up(conn_handle); // the session starts its GATT client reads
     // The pump is bonded now: close the pump-pairing window (back to strict LESC for the phone)
     // and re-air the pump advert as FE81.
     minimed_sake_apply_sm_config(false);
@@ -440,11 +452,11 @@ static int prv_dis_access(uint16_t conn_handle, uint16_t attr_handle,
     val = (const uint8_t *)"0";
     len = 1;
   } else if (ble_uuid_cmp(u, &s_dis_sysid_uuid.u) == 0) {
-    len = 8;  // System ID: 8 zero bytes
+    len = 8; // System ID: 8 zero bytes
   } else if (ble_uuid_cmp(u, &s_dis_pnp_uuid.u) == 0) {
-    len = 7;  // PnP ID: 7 zero bytes
+    len = 7; // PnP ID: 7 zero bytes
   } else if (ble_uuid_cmp(u, &s_dis_reg_uuid.u) == 0) {
-    len = 0;  // Regulatory cert list: empty
+    len = 0; // Regulatory cert list: empty
   }
 
   int rc = os_mbuf_append(ctxt->om, val, len);
@@ -452,48 +464,48 @@ static int prv_dis_access(uint16_t conn_handle, uint16_t attr_handle,
 }
 
 #define DIS_READ_CHR(uuid_ptr) \
-  { .uuid = (uuid_ptr), .access_cb = prv_dis_access, .flags = BLE_GATT_CHR_F_READ }
+  {.uuid = (uuid_ptr), .access_cb = prv_dis_access, .flags = BLE_GATT_CHR_F_READ}
 
 static const struct ble_gatt_svc_def s_sake_svcs[] = {
-    {
-        // Medtronic custom Device Information service (required for pairing).
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &s_dis_svc_uuid.u,
-        .characteristics =
-            (struct ble_gatt_chr_def[]){
-                DIS_READ_CHR(&s_dis_manuf_uuid.u),
-                DIS_READ_CHR(&s_dis_model_uuid.u),
-                DIS_READ_CHR(&s_dis_serial_uuid.u),
-                DIS_READ_CHR(&s_dis_fw_uuid.u),
-                DIS_READ_CHR(&s_dis_hw_uuid.u),
-                DIS_READ_CHR(&s_dis_sw_uuid.u),
-                DIS_READ_CHR(&s_dis_sysid_uuid.u),
-                DIS_READ_CHR(&s_dis_pnp_uuid.u),
-                DIS_READ_CHR(&s_dis_reg_uuid.u),
-                {
-                    0, /* no more characteristics */
-                },
-            },
-    },
-    {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &s_sake_svc_uuid.u,
-        .characteristics =
-            (struct ble_gatt_chr_def[]){
-                {
-                    .uuid = &s_sake_port_chr_uuid.u,
-                    .access_cb = prv_sake_port_access,
-                    .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
-                    .val_handle = &s_sake_port_val_handle,
-                },
-                {
-                    0, /* no more characteristics */
-                },
-            },
-    },
-    {
-        0, /* no more services */
-    },
+  {
+    // Medtronic custom Device Information service (required for pairing).
+    .type = BLE_GATT_SVC_TYPE_PRIMARY,
+    .uuid = &s_dis_svc_uuid.u,
+    .characteristics =
+        (struct ble_gatt_chr_def[]){
+          DIS_READ_CHR(&s_dis_manuf_uuid.u),
+          DIS_READ_CHR(&s_dis_model_uuid.u),
+          DIS_READ_CHR(&s_dis_serial_uuid.u),
+          DIS_READ_CHR(&s_dis_fw_uuid.u),
+          DIS_READ_CHR(&s_dis_hw_uuid.u),
+          DIS_READ_CHR(&s_dis_sw_uuid.u),
+          DIS_READ_CHR(&s_dis_sysid_uuid.u),
+          DIS_READ_CHR(&s_dis_pnp_uuid.u),
+          DIS_READ_CHR(&s_dis_reg_uuid.u),
+          {
+            0, /* no more characteristics */
+          },
+        },
+  },
+  {
+    .type = BLE_GATT_SVC_TYPE_PRIMARY,
+    .uuid = &s_sake_svc_uuid.u,
+    .characteristics =
+        (struct ble_gatt_chr_def[]){
+          {
+            .uuid = &s_sake_port_chr_uuid.u,
+            .access_cb = prv_sake_port_access,
+            .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
+            .val_handle = &s_sake_port_val_handle,
+          },
+          {
+            0, /* no more characteristics */
+          },
+        },
+  },
+  {
+    0, /* no more services */
+  },
 };
 
 // Runs on the BT host task; sends whatever prv_defer_notify staged (wake-up or a handshake reply).
@@ -527,6 +539,8 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
   prv_defer_notify(conn_handle, wakeup, 120);
 }
 
+// The stand-in link (minimed_fake_pump.c) has no handshake and brings its own cipher.
+#ifndef CONFIG_BT_HCI_FAKE
 bool minimed_sake_decrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t out_cap,
                           uint16_t *out_len) {
   if (!s_keydb_ok || !sake_server_is_complete(&s_server)) {
@@ -550,9 +564,10 @@ bool minimed_sake_encrypt(const uint8_t *in, uint16_t n, uint8_t *out, uint16_t 
     return false;
   }
   sake_encrypt_for_pump(&s_server, in, n, out);
-  *out_len = (uint16_t)(n + 3);  // SeqCrypt appends a 1-byte counter + 2-byte MAC
+  *out_len = (uint16_t)(n + 3); // SeqCrypt appends a 1-byte counter + 2-byte MAC
   return true;
 }
+#endif // !CONFIG_BT_HCI_FAKE
 
 uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
   // Flags: LE General Discoverable + BR/EDR not supported.
@@ -567,24 +582,44 @@ uint8_t minimed_sake_build_adv(uint8_t *buf, uint8_t buf_len) {
   // Documentation/bluetooth.md ("Mobile " + 0-7 chars). Reverted to these exact bytes, which have
   // paired reliably since v10. Unexplained, so treat the payload as load-bearing.
   static const uint8_t adv[] = {
-      0x02, 0x01, 0x06,
-      0x03, 0x03, 0x82, 0xfe,
-      // mfr data (company 0x01f9): 0x00 + name + 0x00. Name "Mobile PB" (9 chars) -> payload
-      // len 0x0e.
-      0x0e, 0xff, 0xf9, 0x01, 0x00,
-      'M', 'o', 'b', 'i', 'l', 'e', ' ', 'P', 'B', 0x00,
+    0x02,
+    0x01,
+    0x06,
+    0x03,
+    0x03,
+    0x82,
+    0xfe,
+    // mfr data (company 0x01f9): 0x00 + name + 0x00. Name "Mobile PB" (9 chars) -> payload
+    // len 0x0e.
+    0x0e,
+    0xff,
+    0xf9,
+    0x01,
+    0x00,
+    'M',
+    'o',
+    'b',
+    'i',
+    'l',
+    'e',
+    ' ',
+    'P',
+    'B',
+    0x00,
   };
   if (buf_len < sizeof(adv)) {
     return 0;
   }
   memcpy(buf, adv, sizeof(adv));
   if (s_pump_paired) {
-    buf[5] = 0x81;  // service class low byte: 0xfe82 -> 0xfe81
+    buf[5] = 0x81; // service class low byte: 0xfe82 -> 0xfe81
   }
   return sizeof(adv);
 }
 
-bool minimed_sake_pump_paired(void) { return s_pump_paired; }
+bool minimed_sake_pump_paired(void) {
+  return s_pump_paired;
+}
 
 bool minimed_sake_addr_is_pump(const ble_addr_t *addr) {
   return s_pump_addr_known && ble_addr_cmp(addr, &s_pump_id_addr) == 0;
@@ -610,13 +645,13 @@ void minimed_sake_apply_sm_config(bool pump_window) {
   // reflash) while the pump pairs legacy Just Works -- only during the pump-pairing window (DUAL
   // mode with the pump not yet bonded).
   if (pump_window) {
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT;  // pump: no MITM -> Just Works
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_NO_INPUT_OUTPUT; // pump: no MITM -> Just Works
     ble_hs_cfg.sm_mitm = 0;
-    ble_hs_cfg.sm_our_key_dist = 3;  // + IRK/identity so the pump can resolve our RPA on reconnect
+    ble_hs_cfg.sm_our_key_dist = 3; // + IRK/identity so the pump can resolve our RPA on reconnect
     ble_hs_cfg.sm_their_key_dist = 3;
     minimed_sake_log_evt("SM: pump (legacy JW)");
   } else {
-    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_YESNO;  // phone: stock LESC + numeric-compare MITM
+    ble_hs_cfg.sm_io_cap = BLE_HS_IO_DISPLAY_YESNO; // phone: stock LESC + numeric-compare MITM
     ble_hs_cfg.sm_mitm = 1;
     ble_hs_cfg.sm_our_key_dist = 1;
     ble_hs_cfg.sm_their_key_dist = 3;
@@ -625,7 +660,7 @@ void minimed_sake_apply_sm_config(bool pump_window) {
 
 int minimed_sake_service_init(void) {
   ble_npl_callout_init(&s_notify_co, nimble_port_get_dflt_eventq(), prv_notify_cb, NULL);
-  minimed_sake_read_init();
+  minimed_task_init();
 
   // Re-arm DUAL state after a Bluetooth stack restart that was triggered while in DUAL (the
   // pump-liveness watchdog's recovery, or a manual DUAL-keep restart). s_mode survives the
@@ -650,7 +685,7 @@ int minimed_sake_service_init(void) {
   if (s_pump_paired) {
     minimed_sake_log_evt("paired (persisted): FE81");
     if (!s_pump_addr_known) {
-      prv_adopt_pump_bond();  // paired before pumpaddr existed; the handshake will persist it
+      prv_adopt_pump_bond(); // paired before pumpaddr existed; the handshake will persist it
     }
   }
 
@@ -673,5 +708,8 @@ int minimed_sake_service_init(void) {
   }
   PBL_LOG_INFO("minimed: service registered (MiniMed)");
   minimed_sake_report(MinimedSakeStageAdvertising);
+#ifdef CONFIG_BT_HCI_FAKE
+  minimed_fake_pump_start();
+#endif
   return 0;
 }

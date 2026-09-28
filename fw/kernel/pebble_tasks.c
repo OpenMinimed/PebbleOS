@@ -90,6 +90,8 @@ char pebble_task_get_char(PebbleTask task) {
       return 't';
     case PebbleTask_PULSE:
       return 'p';
+    case PebbleTask_Minimed:
+      return 'g';
     case NumPebbleTask:
     case PebbleTask_Unknown:;
   }
@@ -153,6 +155,7 @@ static const enum pbl_analytics_key s_task_cpu_pct_keys[NumPebbleTask] = {
   [PebbleTask_BTHCI] = PBL_ANALYTICS_KEY(task_cpu_bt_hci_pct),
   [PebbleTask_NewTimers] = PBL_ANALYTICS_KEY(task_cpu_new_timers_pct),
   [PebbleTask_PULSE] = PBL_ANALYTICS_KEY(task_cpu_pulse_pct),
+  [PebbleTask_Minimed] = PBL_ANALYTICS_KEY(task_cpu_minimed_pct),
 };
 
 void pbl_analytics_external_collect_task_cpu_stats(void) {
@@ -251,6 +254,7 @@ struct pbl_thread *pebble_task_create(PebbleTask pebble_task, struct pbl_thread_
     case PebbleTask_BTHCI:
     case PebbleTask_NewTimers:
     case PebbleTask_PULSE:
+    case PebbleTask_Minimed:
       mpu_init_region_from_region(&app_region, memory_layout_get_app_region(),
                                   false /* allow_user_access */);
       mpu_init_region_from_region(&worker_region, memory_layout_get_worker_region(),
@@ -287,6 +291,7 @@ struct pbl_thread *pebble_task_create(PebbleTask pebble_task, struct pbl_thread_
     case PebbleTask_BTHCI:
     case PebbleTask_NewTimers:
     case PebbleTask_PULSE:
+    case PebbleTask_Minimed:
       break;
     default:
       WTF;

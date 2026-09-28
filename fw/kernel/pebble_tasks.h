@@ -27,6 +27,8 @@ typedef enum PebbleTask {
 
   PebbleTask_PULSE,
 
+  PebbleTask_Minimed, // MiniMed pump session (CONFIG_MINIMED_SAKE)
+
   NumPebbleTask,
 
   PebbleTask_Unknown
