@@ -3,14 +3,13 @@
 
 #include "minimed_task.h"
 
-#include <pbl/drivers/task_watchdog.h>
 #include <pbl/logging/logging.h>
 
+#include "drivers/rtc.h"
 #include "kernel/pebble_tasks.h"
 #include "minimed_session.h"
 #include "pbl/mcu/fpu.h"
 #include "pbl/services/new_timer/new_timer.h"
-#include "system/passert.h"
 
 #include "FreeRTOS.h"
 #include "queue.h"
@@ -19,9 +18,15 @@
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
 // Deep enough for a 0x101 burst (a fingerstick fires ~5 indications in 15 s) plus the history
-// fragments of a read, with the session a little behind. A drop is logged, not fatal: the op timeout
-// and the 6-minute fallback poll recover from a lost event.
-#define QUEUE_DEPTH 16
+// fragments of a read, with the session a little behind.
+#define QUEUE_DEPTH 24
+
+// Timer and link events must never be dropped: the poll and watchdog timers re-arm only from
+// their own handler, so a lost expiry would stop polling for good. Each timer has at most one
+// expiry outstanding and link changes are rare, so this many slots are held back for them. A
+// transport result that finds only the reserve left is dropped instead; the op timeout and the
+// fallback poll recover from that.
+#define RESERVED_SLOTS (MINIMED_TIMER_COUNT + 2)
 
 // PBL_LOG is stack-hungry, and the models run here. The host task these came from had 5000.
 #define STACK_BYTES 4096
@@ -30,9 +35,9 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 // works on seconds), and the watchface UI must never wait on a model run.
 #define TASK_PRIORITY (tskIDLE_PRIORITY + 1)
 
-// The loop wakes at least this often to feed the task watchdog, so a session callback stuck for
-// more than the watchdog's 6.5 s resets the watch with a coredump instead of silently stalling.
-#define WATCHDOG_FEED_MS 2000
+// Deliberately NOT under the task watchdog: a stalled pump session must cost glucose data, never
+// a watch reset. An event that takes this long is logged instead.
+#define SLOW_EVENT_MS 1000
 
 static QueueHandle_t s_queue;
 static TimerID s_timers[MINIMED_TIMER_COUNT];
@@ -49,15 +54,20 @@ static bool prv_timer_event_is_current(const MinimedEvent *event) {
 }
 
 static void prv_task_main(void *unused) {
-  task_watchdog_mask_set(PebbleTask_Minimed);
   for (;;) {
     static MinimedEvent s_event;  // one task, one event at a time: keep it off the stack
-    if (xQueueReceive(s_queue, &s_event, pdMS_TO_TICKS(WATCHDOG_FEED_MS)) == pdTRUE &&
-        prv_timer_event_is_current(&s_event)) {
-      minimed_session_handle_event(&s_event);
-      mcu_fpu_cleanup();  // the models use the FPU; don't carry its context into the next wait
+    if (xQueueReceive(s_queue, &s_event, portMAX_DELAY) != pdTRUE ||
+        !prv_timer_event_is_current(&s_event)) {
+      continue;
     }
-    task_watchdog_bit_set(PebbleTask_Minimed);
+    const RtcTicks start = rtc_get_ticks();
+    minimed_session_handle_event(&s_event);
+    mcu_fpu_cleanup();  // the models use the FPU; don't carry its context into the next wait
+    const uint32_t ms = (uint32_t)(((rtc_get_ticks() - start) * 1000) / RTC_TICKS_HZ);
+    if (ms >= SLOW_EVENT_MS) {
+      PBL_LOG_WRN("minimed: event type %u took %lu ms", (unsigned)s_event.type,
+                  (unsigned long)ms);
+    }
     if (s_dropped != 0) {
       PBL_LOG_WRN("minimed: event queue full, dropped %lu", (unsigned long)s_dropped);
       s_dropped = 0;
@@ -83,11 +93,21 @@ void minimed_task_init(void) {
   // Synchronously, before anything can post: the settings must be loaded before the first
   // watchface announcement can change them.
   minimed_session_init();
-  s_queue = xQueueCreate(QUEUE_DEPTH, sizeof(MinimedEvent));
-  PBL_ASSERTN(s_queue);
+  // Fail soft: without a queue or its timers the pump link just stays off. Nothing here may take
+  // the watch down with it.
   for (unsigned i = 0; i < MINIMED_TIMER_COUNT; i++) {
     s_timers[i] = new_timer_create();
+    if (s_timers[i] == TIMER_INVALID_ID) {
+      PBL_LOG_ERR("minimed: no timers, pump link disabled");
+      return;
+    }
   }
+  QueueHandle_t queue = xQueueCreate(QUEUE_DEPTH, sizeof(MinimedEvent));
+  if (!queue) {
+    PBL_LOG_ERR("minimed: no event queue, pump link disabled");
+    return;
+  }
+  s_queue = queue;
   TaskParameters_t params = {
       .pvTaskCode = prv_task_main,
       .pcName = "Minimed",
@@ -102,7 +122,10 @@ bool minimed_task_post(const MinimedEvent *event) {
   if (!s_queue) {
     return false;
   }
-  if (xQueueSendToBack(s_queue, event, 0) != pdTRUE) {
+  const bool reserved = event->type == MinimedEventTimer || event->type == MinimedEventLinkUp ||
+                        event->type == MinimedEventLinkDown;
+  if ((!reserved && uxQueueSpacesAvailable(s_queue) <= RESERVED_SLOTS) ||
+      xQueueSendToBack(s_queue, event, 0) != pdTRUE) {
     s_dropped++;
     return false;
   }
@@ -110,13 +133,13 @@ bool minimed_task_post(const MinimedEvent *event) {
 }
 
 void minimed_task_timer_start(uint8_t timer, uint32_t ms) {
-  PBL_ASSERTN(timer < MINIMED_TIMER_COUNT);
+  if (timer >= MINIMED_TIMER_COUNT || !s_queue) return;
   const uint8_t gen = ++s_timer_gen[timer];
   new_timer_start(s_timers[timer], ms, prv_timer_cb, (void *)(uintptr_t)(timer | (gen << 8)), 0);
 }
 
 void minimed_task_timer_stop(uint8_t timer) {
-  PBL_ASSERTN(timer < MINIMED_TIMER_COUNT);
+  if (timer >= MINIMED_TIMER_COUNT || !s_queue) return;
   s_timer_gen[timer]++;
   new_timer_stop(s_timers[timer]);
 }
