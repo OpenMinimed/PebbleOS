@@ -19,29 +19,33 @@
 //! Every characteristic the session uses. The first group is found by service discovery; the
 //! second is read by UUID over the whole handle range and needs none.
 typedef enum {
-  MinimedChrCgmMeasurement,    //!< CGM 0x2AA7, notify, SAKE-encrypted
-  MinimedChrCgmFeature,        //!< CGM 0x2AA8, read, plaintext
-  MinimedChrCgmRacp,           //!< CGM 0x2A52, write + indicate, plaintext
-  MinimedChrCgmSessionStart,   //!< CGM 0x2AAA, read
-  MinimedChrSensorExpiration,  //!< Medtronic 0x0202, indicate
-  MinimedChrIddSrcp,           //!< IDD 0x0105, write + indicate, SAKE-encrypted
-  MinimedChrIddStatusChanged,  //!< IDD 0x0101, indicate, SAKE-encrypted
-  MinimedChrIddStatus,         //!< IDD 0x0102, read, SAKE-encrypted
-  MinimedChrIddRacp,           //!< IDD 0x2A52, write + indicate, plaintext
-  MinimedChrIddHistory,        //!< IDD 0x0108, notify, SAKE-encrypted per fragment
+  MinimedChrCgmMeasurement,   //!< CGM 0x2AA7, notify, SAKE-encrypted
+  MinimedChrCgmFeature,       //!< CGM 0x2AA8, read, plaintext
+  MinimedChrCgmRacp,          //!< CGM 0x2A52, write + indicate, plaintext
+  MinimedChrCgmSessionStart,  //!< CGM 0x2AAA, read
+  MinimedChrSensorExpiration, //!< Medtronic 0x0202, indicate
+  MinimedChrIddSrcp,          //!< IDD 0x0105, write + indicate, SAKE-encrypted
+  MinimedChrIddStatusChanged, //!< IDD 0x0101, indicate, SAKE-encrypted
+  MinimedChrIddStatus,        //!< IDD 0x0102, read, SAKE-encrypted
+  MinimedChrIddRacp,          //!< IDD 0x2A52, write + indicate, plaintext
+  MinimedChrIddHistory,       //!< IDD 0x0108, notify, SAKE-encrypted per fragment
+  MinimedChrIddAnnuncStatus,  //!< IDD 0x0103, read, SAKE-encrypted: the annunciation shown now
+  MinimedChrIddCommandCp,     //!< IDD 0x0106, write + indicate, SAKE-encrypted
+  MinimedChrIddCommandData,   //!< IDD 0x0107, notify, SAKE-encrypted
 
-  MinimedChrBattery,           //!< 0x2A19
-  MinimedChrSessionRunTime,    //!< 0x2AAB
-  MinimedChrIddFeatures,       //!< Medtronic 0x0103
-  MinimedChrDisManufacturer,   //!< Device Information 0x2A29
-  MinimedChrDisModel,          //!< 0x2A24
-  MinimedChrDisSerial,         //!< 0x2A25
-  MinimedChrDisHardware,       //!< 0x2A27
-  MinimedChrDisFirmware,       //!< 0x2A26
-  MinimedChrDisSoftware,       //!< 0x2A28
-  MinimedChrDisSystemId,       //!< 0x2A23
-  MinimedChrDisPnpId,          //!< 0x2A50
-  MinimedChrDisRegulatory,     //!< 0x2A2A
+  MinimedChrBattery,         //!< 0x2A19
+  MinimedChrSessionRunTime,  //!< 0x2AAB
+  MinimedChrIddFeatures,     //!< Medtronic 0x0104
+  MinimedChrCurrentTime,     //!< Current Time 0x2A2B, the pump clock
+  MinimedChrDisManufacturer, //!< Device Information 0x2A29
+  MinimedChrDisModel,        //!< 0x2A24
+  MinimedChrDisSerial,       //!< 0x2A25
+  MinimedChrDisHardware,     //!< 0x2A27
+  MinimedChrDisFirmware,     //!< 0x2A26
+  MinimedChrDisSoftware,     //!< 0x2A28
+  MinimedChrDisSystemId,     //!< 0x2A23
+  MinimedChrDisPnpId,        //!< 0x2A50
+  MinimedChrDisRegulatory,   //!< 0x2A2A
 
   MinimedChrCount
 } MinimedChr;
@@ -50,8 +54,8 @@ typedef enum {
 
 typedef struct {
   bool ok;
-  bool link_dead;  //!< the error means the link itself is gone, not just this operation
-  uint16_t code;   //!< raw stack status, for logs
+  bool link_dead; //!< the error means the link itself is gone, not just this operation
+  uint16_t code;  //!< raw stack status, for logs
 } MinimedGattStatus;
 
 //! Find the CGM and IDD services and their characteristics. Posts MinimedEventDiscovered once

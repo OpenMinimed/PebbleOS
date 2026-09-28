@@ -497,6 +497,20 @@ static void section_backfill(void) {
   check("real below-range sample maps to the floor",
         minimed_history_sg_to_mgdl(bl.sg, 50, 400) == 50);
 
+  // Current Time (0x2A2B): 2026-09-28 23:39:50, then day of week, fractions, adjust reason.
+  const uint8_t cts[] = {0xea, 0x07, 9, 28, 23, 39, 50, 1, 0, 0};
+  uint32_t cts_secs = 0;
+  MinimedHistRef cts_ref;
+  const uint8_t ref_rec[] = {0x0e, 0xf0, 1, 0, 0, 0, 0, 0, 1, 0xea, 0x07, 9, 28, 23, 39, 50};
+  check("current time parses onto the history clock",
+        minimed_history_parse_current_time(cts, sizeof(cts), &cts_secs) &&
+            minimed_history_parse_ref_time(ref_rec, sizeof(ref_rec), &cts_ref) &&
+            cts_secs == cts_ref.secs);
+  check("current time too short is rejected", !minimed_history_parse_current_time(cts, 6, &cts_secs));
+  const uint8_t cts_bad[] = {0xea, 0x07, 13, 28, 23, 39, 50};
+  check("current time with month 13 is rejected",
+        !minimed_history_parse_current_time(cts_bad, sizeof(cts_bad), &cts_secs));
+
   // History SG records.
   const uint8_t rec[] = {0x0c, 0xf0, 0x39, 0x05, 0x00, 0x00, 0x2a, 0x00,  // type, seq=1337, rel
                          0x31, 0x24, 0x8d, 0x00, 0x11, 0x02, 0x05, 0x00};   // off=9265 sg=141

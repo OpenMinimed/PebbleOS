@@ -16,19 +16,24 @@
 //! before it.
 typedef struct {
   uint32_t seq;
-  uint32_t secs;  //!< pump clock as seconds since 2000-01-01 (local time, no time zone; only
-                  //!< differences between values are meaningful)
+  uint32_t secs; //!< pump clock as seconds since 2000-01-01 (local time, no time zone; only
+                 //!< differences between values are meaningful)
 } MinimedHistRef;
 
 //! Decode a Reference Time record. False if it is another event type, truncated, or holds an
 //! impossible date.
 bool minimed_history_parse_ref_time(const uint8_t *rec, uint16_t len, MinimedHistRef *out);
 
+//! Decode the pump's Current Time characteristic (SIG 0x2A2B: year(2) month day hours minutes
+//! seconds, then day of week, fractions and adjust reason, which are ignored) into the same pump
+//! clock as MinimedHistRef.secs. False if too short or the date is out of range.
+bool minimed_history_parse_current_time(const uint8_t *val, uint16_t len, uint32_t *secs);
+
 //! SG Measurement (0xf00c): one CGM sample as stored in the pump's event log.
 typedef struct {
   uint32_t seq;
-  int16_t offset_min;  //!< minutes after the governing Reference Time (not the CGM session clock)
-  uint16_t sg;         //!< raw SG value; see minimed_history_sg_to_mgdl
+  int16_t offset_min; //!< minutes after the governing Reference Time (not the CGM session clock)
+  uint16_t sg;        //!< raw SG value; see minimed_history_sg_to_mgdl
 } MinimedHistSg;
 
 //! Pump-clock time of a sample: its Reference Time plus its offset. The offset, not the record's
@@ -42,7 +47,7 @@ bool minimed_history_parse_sg(const uint8_t *rec, uint16_t len, MinimedHistSg *o
 //! Meal (0xf005): carbohydrates entered for a meal bolus.
 typedef struct {
   uint32_t seq;
-  uint16_t grams;  //!< food amount, rounded to whole grams
+  uint16_t grams; //!< food amount, rounded to whole grams
 } MinimedHistMeal;
 
 //! Decode a Meal record. False if it is another event type, truncated, or carries no usable amount
@@ -53,17 +58,17 @@ bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMea
 //! is one record, closed-loop basal is a stream of small microboluses, and manual-mode basal is a
 //! rate that holds until the next rate change.
 typedef enum {
-  MinimedHistInsulinBolus,      //!< Bolus Delivered Part 1 (0x0069): fast + extended amount, U
-  MinimedHistInsulinMicro,      //!< Auto Basal Delivery (0xf001): one microbolus, U
-  MinimedHistInsulinBasalRate,  //!< Delivered Basal Rate Changed (0x0099): the new rate, U/h
+  MinimedHistInsulinBolus,     //!< Bolus Delivered Part 1 (0x0069): fast + extended amount, U
+  MinimedHistInsulinMicro,     //!< Auto Basal Delivery (0xf001): one microbolus, U
+  MinimedHistInsulinBasalRate, //!< Delivered Basal Rate Changed (0x0099): the new rate, U/h
 } MinimedHistInsulinKind;
 
 typedef struct {
   uint32_t seq;
   MinimedHistInsulinKind kind;
-  float amount;       //!< U for a bolus or microbolus, U/h for a rate
-  bool by_algorithm;  //!< BasalRate only: set by the pump's algorithm rather than a profile; its
-                      //!< delivery then arrives as microboluses instead
+  float amount;      //!< U for a bolus or microbolus, U/h for a rate
+  bool by_algorithm; //!< BasalRate only: set by the pump's algorithm rather than a profile; its
+                     //!< delivery then arrives as microboluses instead
 } MinimedHistInsulin;
 
 //! Decode a bolus, microbolus or basal-rate record. False for any other type or a short record.
@@ -73,8 +78,8 @@ bool minimed_history_parse_insulin(const uint8_t *rec, uint16_t len, MinimedHist
 //! range edge.
 #define MINIMED_HIST_SG_STARTING 0x0301
 #define MINIMED_HIST_SG_UPDATING 0x0303
-#define MINIMED_HIST_SG_ABOVE 0x0308
-#define MINIMED_HIST_SG_BELOW 0x030d
+#define MINIMED_HIST_SG_ABOVE    0x0308
+#define MINIMED_HIST_SG_BELOW    0x030d
 
 //! Off-scale side of a raw SG value: 1 for the below-range code, 2 for above-range, 0 for anything
 //! else (a normal value, or a code that says nothing about range such as "updating").
@@ -87,18 +92,18 @@ int32_t minimed_history_sg_to_mgdl(uint16_t sg, int32_t floor_mgdl, int32_t ceil
 
 //! One history record reduced to what the predictor needs, with its time on the pump's clock.
 typedef enum {
-  MinimedHistEventRef,      //!< a Reference Time: updates the clock, carries no data
-  MinimedHistEventSg,       //!< a CGM sample: `mgdl` (-1 if no usable value), `sg` raw code
-  MinimedHistEventInsulin,  //!< a bolus delivered: `value` U
-  MinimedHistEventMicro,    //!< an Auto Basal microbolus, the algorithm's basal: `value` U
-  MinimedHistEventBasal,    //!< a basal rate from now on: `value` U/h, 0 when the algorithm sets it
-  MinimedHistEventCarbs,    //!< a meal: `value` grams (never 0)
+  MinimedHistEventRef,     //!< a Reference Time: updates the clock, carries no data
+  MinimedHistEventSg,      //!< a CGM sample: `mgdl` (-1 if no usable value), `sg` raw code
+  MinimedHistEventInsulin, //!< a bolus delivered: `value` U
+  MinimedHistEventMicro,   //!< an Auto Basal microbolus, the algorithm's basal: `value` U
+  MinimedHistEventBasal,   //!< a basal rate from now on: `value` U/h, 0 when the algorithm sets it
+  MinimedHistEventCarbs,   //!< a meal: `value` grams (never 0)
 } MinimedHistEventKind;
 
 typedef struct {
   MinimedHistEventKind kind;
   uint32_t seq;
-  uint32_t secs;  //!< pump clock, as MinimedHistRef.secs
+  uint32_t secs; //!< pump clock, as MinimedHistRef.secs
   float value;
   int32_t mgdl;
   uint16_t sg;

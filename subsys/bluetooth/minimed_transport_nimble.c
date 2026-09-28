@@ -7,8 +7,6 @@
 
 #include "minimed_transport_nimble.h"
 
-#include <string.h>
-
 #include "comm/bt_lock.h"
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
@@ -17,37 +15,37 @@
 #include "minimed_task.h"
 #include "minimed_transport.h"
 
+#include <string.h>
+
 #define CGM_SERVICE_UUID 0x181F
-#define RACP_UUID 0x2A52
+#define RACP_UUID        0x2A52
 
 // Medtronic vendor base 0000XXXX-0000-1000-0000-009132591325, little-endian; the last two data
 // bytes are the 16-bit short code low/high (00 01 for 0x0100, 05 01 for 0x0105).
-#define MEDTRONIC_UUID128(lo, hi)                                                          \
-  BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, \
-                   (lo), (hi), 0x00, 0x00)
+#define MEDTRONIC_UUID128(lo, hi)                                                                \
+  BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, (lo), \
+                   (hi), 0x00, 0x00)
 
 static const ble_uuid128_t s_idd_svc_uuid = MEDTRONIC_UUID128(0x00, 0x01);
 static const ble_uuid128_t s_idd_srcp_uuid = MEDTRONIC_UUID128(0x05, 0x01);
 static const ble_uuid128_t s_idd_status_changed_uuid = MEDTRONIC_UUID128(0x01, 0x01);
 static const ble_uuid128_t s_idd_status_uuid = MEDTRONIC_UUID128(0x02, 0x01);
 static const ble_uuid128_t s_idd_hist_uuid = MEDTRONIC_UUID128(0x08, 0x01);
+static const ble_uuid128_t s_idd_annunc_status_uuid = MEDTRONIC_UUID128(0x03, 0x01);
+static const ble_uuid128_t s_idd_command_cp_uuid = MEDTRONIC_UUID128(0x06, 0x01);
+static const ble_uuid128_t s_idd_command_data_uuid = MEDTRONIC_UUID128(0x07, 0x01);
 static const ble_uuid128_t s_sensor_exp_uuid = MEDTRONIC_UUID128(0x02, 0x02);
 static const ble_uuid128_t s_idd_features_uuid = MEDTRONIC_UUID128(0x04, 0x01);
 
 // The read-by-UUID characteristics: no discovery, a read over the whole handle range. None of
 // these 16-bit SIG UUIDs can collide with the vendor 128-bit ones.
 static const uint16_t s_by_uuid16[MinimedChrCount] = {
-    [MinimedChrBattery] = 0x2A19,
-    [MinimedChrSessionRunTime] = 0x2AAB,
-    [MinimedChrDisManufacturer] = 0x2A29,
-    [MinimedChrDisModel] = 0x2A24,
-    [MinimedChrDisSerial] = 0x2A25,
-    [MinimedChrDisHardware] = 0x2A27,
-    [MinimedChrDisFirmware] = 0x2A26,
-    [MinimedChrDisSoftware] = 0x2A28,
-    [MinimedChrDisSystemId] = 0x2A23,
-    [MinimedChrDisPnpId] = 0x2A50,
-    [MinimedChrDisRegulatory] = 0x2A2A,
+  [MinimedChrBattery] = 0x2A19,     [MinimedChrSessionRunTime] = 0x2AAB,
+  [MinimedChrCurrentTime] = 0x2A2B, [MinimedChrDisManufacturer] = 0x2A29,
+  [MinimedChrDisModel] = 0x2A24,    [MinimedChrDisSerial] = 0x2A25,
+  [MinimedChrDisHardware] = 0x2A27, [MinimedChrDisFirmware] = 0x2A26,
+  [MinimedChrDisSoftware] = 0x2A28, [MinimedChrDisSystemId] = 0x2A23,
+  [MinimedChrDisPnpId] = 0x2A50,    [MinimedChrDisRegulatory] = 0x2A2A,
 };
 
 #define CONN_NONE 0xFFFF
@@ -55,8 +53,8 @@ static const uint16_t s_by_uuid16[MinimedChrCount] = {
 // All of it written on the host task during discovery and link changes, read on the MiniMed task
 // by the operations below; bt_lock covers both.
 static uint16_t s_conn = CONN_NONE;
-static uint16_t s_handles[MinimedChrCount];  // value handles of the discovered characteristics
-static uint16_t s_svc_start, s_svc_end;      // the service being walked
+static uint16_t s_handles[MinimedChrCount]; // value handles of the discovered characteristics
+static uint16_t s_svc_start, s_svc_end;     // the service being walked
 static bool s_by_uuid_delivered[MinimedChrCount];
 
 static MinimedGattStatus prv_status(int rc) {
@@ -65,8 +63,8 @@ static MinimedGattStatus prv_status(int rc) {
   // ENOTCONN / ETIMEOUT, or an HCI disconnect reason (0x08 supervision timeout, 0x13 remote
   // terminated, 0x16 local terminated, 0x22 LL response timeout, 0x3e failed to establish): the
   // host knows the link is gone, and a disconnect event should follow shortly.
-  const bool link_dead = status == BLE_HS_ENOTCONN || status == BLE_HS_ETIMEOUT ||
-                         hci == 0x08 || hci == 0x13 || hci == 0x16 || hci == 0x22 || hci == 0x3e;
+  const bool link_dead = status == BLE_HS_ENOTCONN || status == BLE_HS_ETIMEOUT || hci == 0x08 ||
+                         hci == 0x13 || hci == 0x16 || hci == 0x22 || hci == 0x3e;
   return (MinimedGattStatus){.ok = rc == 0, .link_dead = link_dead, .code = status};
 }
 
@@ -87,10 +85,10 @@ static bool prv_is_current(uint16_t conn) {
 static void prv_post_done(MinimedChr chr, uint8_t tag, MinimedGattStatus status,
                           const struct os_mbuf *om) {
   MinimedEvent event = {
-      .type = MinimedEventGattDone,
-      .chr = chr,
-      .tag = tag,
-      .status = status,
+    .type = MinimedEventGattDone,
+    .chr = chr,
+    .tag = tag,
+    .status = status,
   };
   if (om) {
     const uint16_t len = OS_MBUF_PKTLEN(om);
@@ -102,16 +100,19 @@ static void prv_post_done(MinimedChr chr, uint8_t tag, MinimedGattStatus status,
 }
 
 #define PACK_ARG(chr, tag) ((void *)(uintptr_t)(((chr) << 8) | (tag)))
-#define ARG_CHR(arg) ((MinimedChr)(((uintptr_t)(arg)) >> 8))
-#define ARG_TAG(arg) ((uint8_t)(uintptr_t)(arg))
+#define ARG_CHR(arg)       ((MinimedChr)(((uintptr_t)(arg)) >> 8))
+#define ARG_TAG(arg)       ((uint8_t)(uintptr_t)(arg))
 
 // -- Discovery: CGM service, its characteristics, then the same for IDD --------------------------
 
-static void prv_discovery_done(void) { prv_post_simple(MinimedEventDiscovered); }
+static void prv_discovery_done(void) {
+  prv_post_simple(MinimedEventDiscovered);
+}
 
 static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
                                const struct ble_gatt_chr *chr, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   if (error->status == 0 && chr) {
     bt_lock();
     if (ble_uuid_cmp(&chr->uuid.u, &s_idd_srcp_uuid.u) == 0) {
@@ -122,6 +123,12 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
       s_handles[MinimedChrIddStatus] = chr->val_handle;
     } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_hist_uuid.u) == 0) {
       s_handles[MinimedChrIddHistory] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_annunc_status_uuid.u) == 0) {
+      s_handles[MinimedChrIddAnnuncStatus] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_command_cp_uuid.u) == 0) {
+      s_handles[MinimedChrIddCommandCp] = chr->val_handle;
+    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_command_data_uuid.u) == 0) {
+      s_handles[MinimedChrIddCommandData] = chr->val_handle;
     } else if (chr->uuid.u.type == BLE_UUID_TYPE_16 && ble_uuid_u16(&chr->uuid.u) == RACP_UUID) {
       // The IDD service has its own RACP: same SIG 0x2A52 as the CGM one, different handle.
       s_handles[MinimedChrIddRacp] = chr->val_handle;
@@ -129,13 +136,14 @@ static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error
     bt_unlock();
     return 0;
   }
-  prv_discovery_done();  // BLE_HS_EDONE or an error: report whatever was found
+  prv_discovery_done(); // BLE_HS_EDONE or an error: report whatever was found
   return 0;
 }
 
 static int prv_disc_idd_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
                                const struct ble_gatt_svc *service, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   if (error->status == 0 && service) {
     s_svc_start = service->start_handle;
     s_svc_end = service->end_handle;
@@ -143,7 +151,7 @@ static int prv_disc_idd_svc_cb(uint16_t conn, const struct ble_gatt_error *error
   }
   if (error->status != BLE_HS_EDONE || s_svc_start == 0 ||
       ble_gattc_disc_all_chrs(conn, s_svc_start, s_svc_end, prv_disc_idd_chr_cb, NULL) != 0) {
-    prv_discovery_done();  // no IDD service: BG still works, without IOB/status/alerts
+    prv_discovery_done(); // no IDD service: BG still works, without IOB/status/alerts
   }
   return 0;
 }
@@ -157,7 +165,8 @@ static void prv_discover_idd(uint16_t conn) {
 
 static int prv_disc_cgm_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
                                const struct ble_gatt_chr *chr, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   if (error->status == 0 && chr) {
     const uint16_t u = (chr->uuid.u.type == BLE_UUID_TYPE_16) ? ble_uuid_u16(&chr->uuid.u) : 0;
     bt_lock();
@@ -181,7 +190,8 @@ static int prv_disc_cgm_chr_cb(uint16_t conn, const struct ble_gatt_error *error
 
 static int prv_disc_cgm_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
                                const struct ble_gatt_svc *service, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   if (error->status == 0 && service) {
     s_svc_start = service->start_handle;
     s_svc_end = service->end_handle;
@@ -218,7 +228,8 @@ static const ble_uuid_t *prv_by_uuid(MinimedChr chr, ble_uuid16_t *storage) {
 }
 
 bool minimed_transport_has(MinimedChr chr) {
-  if (chr >= MinimedChrCount) return false;
+  if (chr >= MinimedChrCount)
+    return false;
   bt_lock();
   const bool has = s_conn != CONN_NONE && (chr >= MINIMED_CHR_FIRST_BY_UUID || s_handles[chr] != 0);
   bt_unlock();
@@ -227,7 +238,8 @@ bool minimed_transport_has(MinimedChr chr) {
 
 static int prv_read_cb(uint16_t conn, const struct ble_gatt_error *error,
                        struct ble_gatt_attr *attr, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   prv_post_done(ARG_CHR(arg), ARG_TAG(arg), prv_status(error->status),
                 error->status == 0 && attr ? attr->om : NULL);
   return 0;
@@ -237,7 +249,8 @@ static int prv_read_cb(uint16_t conn, const struct ble_gatt_error *error,
 // first value only; an EDONE with none delivered is "not there" (ok false, code 0).
 static int prv_read_by_uuid_cb(uint16_t conn, const struct ble_gatt_error *error,
                                struct ble_gatt_attr *attr, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   const MinimedChr chr = ARG_CHR(arg);
   if (error->status == 0 && attr) {
     if (!s_by_uuid_delivered[chr]) {
@@ -273,13 +286,15 @@ bool minimed_transport_read(MinimedChr chr, uint8_t tag, MinimedGattStatus *stat
       rc = handle ? ble_gattc_read(conn, handle, prv_read_cb, PACK_ARG(chr, tag)) : BLE_HS_ENOENT;
     }
   }
-  if (status) *status = prv_status(rc);
+  if (status)
+    *status = prv_status(rc);
   return rc == 0;
 }
 
 static int prv_write_cb(uint16_t conn, const struct ble_gatt_error *error,
                         struct ble_gatt_attr *attr, void *arg) {
-  if (!prv_is_current(conn)) return 0;
+  if (!prv_is_current(conn))
+    return 0;
   prv_post_done(ARG_CHR(arg), ARG_TAG(arg), prv_status(error->status), NULL);
   return 0;
 }
@@ -292,11 +307,12 @@ static bool prv_write_handle(MinimedChr chr, uint16_t offset, const uint8_t *dat
   bt_unlock();
   int rc = BLE_HS_ENOTCONN;
   if (conn != CONN_NONE) {
-    rc = handle ? ble_gattc_write_flat(conn, handle + offset, data, len,
-                                       tag ? prv_write_cb : NULL, PACK_ARG(chr, tag))
+    rc = handle ? ble_gattc_write_flat(conn, handle + offset, data, len, tag ? prv_write_cb : NULL,
+                                       PACK_ARG(chr, tag))
                 : BLE_HS_ENOENT;
   }
-  if (status) *status = prv_status(rc);
+  if (status)
+    *status = prv_status(rc);
   return rc == 0;
 }
 
@@ -326,7 +342,8 @@ bool minimed_transport_link_alive(uint16_t *mtu) {
   bt_unlock();
   struct ble_gap_conn_desc desc;
   const bool alive = conn != CONN_NONE && ble_gap_conn_find(conn, &desc) == 0;
-  if (mtu) *mtu = alive ? ble_att_mtu(conn) : 0;
+  if (mtu)
+    *mtu = alive ? ble_att_mtu(conn) : 0;
   return alive;
 }
 
@@ -365,7 +382,7 @@ bool minimed_transport_nimble_handle_notify(uint16_t conn_handle, uint16_t attr_
   }
   bt_unlock();
   if (chr == MinimedChrCount) {
-    return false;  // not ours; the caller hands it on
+    return false; // not ours; the caller hands it on
   }
   MinimedEvent event = {.type = MinimedEventNotify, .chr = chr};
   const uint16_t len = OS_MBUF_PKTLEN(om);
