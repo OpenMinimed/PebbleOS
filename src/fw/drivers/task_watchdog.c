@@ -112,6 +112,7 @@ static void prv_log_stuck_task(RebootReason *reboot_reason, PebbleTask task) {
 // so it's safe from above configMAX_SYSCALL_INTERRUPT_PRIORITY.
 static void prv_capture_stuck_task_info(RebootReason *reboot_reason) {
   const PebbleTask tasks_in_reverse_priority[] = {
+    PebbleTask_Minimed,
     PebbleTask_KernelBackground,
     PebbleTask_KernelMain,
     PebbleTask_PULSE,
@@ -141,6 +142,7 @@ static void prv_log_failed_message(RebootReason *reboot_reason) {
   // We'll have to remember to update this list whenever we add additional tasks to the mask. For now this is all
   // the ones that the task_watchdog service watches over.
   const PebbleTask tasks_in_reverse_priority[] = {
+    PebbleTask_Minimed,
     PebbleTask_KernelBackground,
     PebbleTask_KernelMain,
     PebbleTask_PULSE,

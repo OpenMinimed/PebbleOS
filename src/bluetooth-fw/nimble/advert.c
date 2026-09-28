@@ -21,7 +21,7 @@
 
 #ifdef CONFIG_MINIMED_SAKE
 #include "comm/ble/gap_le_advert.h"
-#include "minimed_sake_read.h"
+#include "minimed_transport_nimble.h"
 #include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
 #include "popups/minimed_sake_ui.h"
@@ -356,7 +356,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
     minimed_sake_sender_send_pump_connected(false);
     minimed_sake_sender_commit();
-    minimed_sake_read_stop();  // stop CGM polling; the link is gone
+    minimed_transport_nimble_link_down();  // stop the session; the link is gone
     {
       char line[32];
       snprintf(line, sizeof(line), "disc pump reason=0x%02x", (uint8_t)event->disconnect.reason);
@@ -547,10 +547,10 @@ static void prv_handle_subscription_event(struct ble_gap_event *event) {
 static void prv_handle_notification_rx_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE
   // In DUAL mode the pump's CGM notifications/indications land here (watch = GATT client). Let the
-  // SAKE read layer consume the ones it owns before the normal Pebble routing sees them.
+  // MiniMed transport take the ones on its characteristics before the normal Pebble routing.
   if (minimed_sake_get_mode() == MinimedSakeModeDual &&
-      minimed_sake_read_handle_notify(event->notify_rx.attr_handle, event->notify_rx.om->om_data,
-                                      event->notify_rx.om->om_len)) {
+      minimed_transport_nimble_handle_notify(event->notify_rx.conn_handle,
+                                             event->notify_rx.attr_handle, event->notify_rx.om)) {
     return;
   }
 #endif

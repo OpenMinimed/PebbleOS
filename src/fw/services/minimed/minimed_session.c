@@ -1,16 +1,16 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
+/* SPDX-FileCopyrightText: 2026 Pal Marci */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "minimed_sake_read.h"
+// The pump session: after the SAKE handshake, read the pump's CGM and IDD services as a GATT
+// client -- the exchange serialiser, the parsers, the predictor and hypo models, and what goes to
+// the watchface. Runs on the MiniMed task (minimed_task.c), driven by the events the transport
+// (minimed_transport.h) and the timers post; it never calls the Bluetooth stack directly.
+
+#include "minimed_session.h"
 
 #include <stdio.h>
 #include <string.h>
-
-#include "host/ble_gatt.h"
-#include "host/ble_hs.h"
-#include "host/ble_uuid.h"
-#include "nimble/nimble_npl.h"
-#include "nimble/nimble_port.h"
 
 #include "drivers/rtc.h"
 #include "util/time/time.h"
@@ -25,63 +25,52 @@
 #include "popups/minimed_alert_popup.h"
 #include "minimed_sake_sender.h"
 #include "minimed_status.h"
+#include "minimed_task.h"
+#include "minimed_transport.h"
 #include "pebble_glucose_protocol.h"
-#include "minimed_sake_service.h"
 #include "popups/minimed_sake_ui.h"
 #include <pbl/logging/logging.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
-// Standard SIG 16-bit UUIDs for the pump's CGM service (Documentation/cgm-service.md; the bridge's
-// MedtronicProtocol.kt). The pump exposes these as a GATT server over the post-handshake link.
-#define CGM_SERVICE_UUID 0x181F
-#define CGM_MEASUREMENT_UUID 0x2AA7  // notify, SAKE-encrypted records
-#define CGM_SESSION_START_UUID 0x2AAA  // read, SAKE-encrypted; standard CGMS DateTime format
-#define CGM_FEATURE_UUID 0x2AA8      // read, plaintext (E2E-CRC flag)
-#define RACP_UUID 0x2A52             // write/indicate, plaintext control point
+// Timers (minimed_task_timer_start). Each fires as a MinimedEventTimer on this task.
+enum {
+  TimerKickoff,     // a beat after the handshake: start discovery
+  TimerPoll,        // 60 s poll, or the 6-minute dead-man once push mode is proven
+  TimerWatchdog,    // pump-liveness watchdog (silent-link retoggle)
+  TimerDispatch,    // issue the next pending exchange
+  TimerOpTimeout,   // unwedge a lost terminating indication
+  TimerBattery,
+  TimerHeap,        // fixed-interval kernel heap watch
+  TimerDevinfo,
+  TimerSensorInfo,
+  TimerCount
+};
+_Static_assert(TimerCount <= MINIMED_TIMER_COUNT, "raise MINIMED_TIMER_COUNT");
+
+// GATT operation tags: which request a MinimedEventGattDone answers.
+enum {
+  TagNone,  // fire-and-forget: no completion event
+  TagCgmFeatureRead,
+  TagSubMeasurement,
+  TagSubCgmRacp,
+  TagSubSrcp,
+  TagSubIddRacp,
+  TagSubHistory,
+  TagCgmRacpWrite,
+  TagIddRacpWrite,
+  TagSrcpWrite,
+  TagIddStatusRead,
+  TagDevinfoRead,
+  TagBatteryRead,
+  TagSensorInfoRead,
+  TagSensorExpSub,
+  TagSessionStartRead,
+};
 
 // RACP "Report Stored Records: Last Record" and its success response (Bluetooth SIG RACP).
 static const uint8_t RACP_REPORT_LAST_RECORD[] = {0x01, 0x06};
 static const uint8_t RACP_REPORT_SUCCESS[] = {0x06, 0x00, 0x01, 0x01};
-
-// Medtronic Insulin Delivery service (vendor 128-bit base 0000XXXX-0000-1000-0000-009132591325):
-// IDD service 0x100, SRCP (Status Reader Control Point) char 0x105 (write + indicate). Byte order
-// is little-endian, same convention as the SAKE-port UUID in minimed_sake_service.c (last two data
-// bytes = the 16-bit short code low/high: 00 01 for 0x0100, 05 01 for 0x0105).
-// Medtronic 128-bit chars in the CGM service family (same base as the IDD ones above). 0x0202
-// Time Of Sensor Expiration is what the MiniMed app's "sensor days left" is computed from;
-// 0x0103 IDD Features advertises whether that (and other extensions) are supported.
-static const ble_uuid128_t s_sensor_exp_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x02, 0x02, 0x00, 0x00);
-static const ble_uuid128_t s_idd_features_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x04, 0x01, 0x00, 0x00);
-
-static const ble_uuid128_t s_idd_svc_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00);
-static const ble_uuid128_t s_idd_srcp_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x05, 0x01, 0x00, 0x00);
-// IDD Status Changed 0x101 (read + indicate): the pump's "something changed" push, the event
-// source that replaced the 60 s poll (v40). Each bit LATCHES until an SRCP Reset Status
-// (0x030C + the bits to clear), so every received indication queues a reset write-back.
-static const ble_uuid128_t s_idd_status_changed_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00);
-// IDD Status 0x102 (read, SAKE-encrypted): therapy/operational state, reservoir, sensor state --
-// the record behind the watchface status line (v41). Parsed in minimed_status.{c,h}.
-static const ble_uuid128_t s_idd_status_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00);
-// IDD History Data 0x108 (notify, SAKE-encrypted per fragment): the event log, read via the IDD
-// service's own RACP (SIG 0x2A52, plaintext, write + indicate). Used for pump annunciations
-// (alarms/alerts): the 0x101 annunciation bit only says "changed"; the reason lives here as
-// Annunciation Consolidated records (minimed_annunciation.{c,h}).
-static const ble_uuid128_t s_idd_hist_uuid =
-    BLE_UUID128_INIT(0x25, 0x13, 0x59, 0x32, 0x91, 0x00, 0x00, 0x00,
-                     0x00, 0x10, 0x00, 0x00, 0x08, 0x01, 0x00, 0x00);
 
 // SRCP "Get Insulin On Board" request: little-endian opcode 0x03F3. NOT E2E-CRC-wrapped -- the
 // 780G leaves E2E protection off for the IDD service (Documentation/idd-service.md), matching the
@@ -102,15 +91,12 @@ static const uint8_t SRCP_GET_TAS[] = {0xFD, 0x03};
 #define POLL_INTERVAL_SECS 60
 
 // Push mode: once a 0x101 indication has actually arrived (not merely been subscribed to), the
-// poll callout becomes a dead-man fallback at the bridge's tuned rate. CGM should push every
+// poll timer becomes a dead-man fallback at the bridge's tuned rate. CGM should push every
 // ~5 min, so 6 min of silence means push is late or dead -- do one full read and re-arm. A
 // silently dead push thus degrades to a 6-minute poll, the bridge's soaked trade-off.
 #define FALLBACK_AFTER_SECS (6 * 60)
 static bool s_push_mode;  // false until the first indication of this connection proves push
 
-static struct ble_npl_callout s_read_co;
-static struct ble_npl_callout s_poll_co;
-static struct ble_npl_callout s_wd_co;  // pump-liveness watchdog (silent-link retoggle)
 
 // Exchange serialiser (spec: docs/superpowers/specs/2026-07-27-pump-push-design.md). The pump
 // exchanges (CGM poll, SRCP IOB read, IDD Status read, SRCP TAS read, SRCP Reset Status) each
@@ -128,10 +114,8 @@ static struct ble_npl_callout s_wd_co;  // pump-liveness watchdog (silent-link r
 static uint8_t s_pending;
 static uint8_t s_op;
 static uint64_t s_reset_flags;  // union of received 0x101 flags awaiting a Reset Status write
-static struct ble_npl_callout s_dispatch_co;    // issue the next pending exchange
-static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating indication
 
-// Writes are dispatched off a callout, never from a notify/indication handler: NimBLE sends an
+// Writes are dispatched off a timer, never straight from a notify/indication: NimBLE sends an
 // indication's confirmation only after the handler returns, so a synchronous write would go on
 // air ahead of the confirmation the pump awaits. 200 ms is the v30-tuned CGM->IOB gap, kept.
 #define DISPATCH_DELAY_MS 200
@@ -153,34 +137,30 @@ static struct ble_npl_callout s_op_timeout_co;  // unwedge a lost terminating in
 // captured in OpenMinimed's todo.md, so the values are also a doc contribution. The nine
 // characteristics are those documented in Documentation/pump-services.md.
 #define DEVINFO_READ_DELAY_SECS 20
-static struct ble_npl_callout s_devinfo_co;
 static bool s_devinfo_read;
 static uint8_t s_devinfo_idx;
 
 // Binary fields are logged as hex: System ID is 8 bytes, PnP ID 7, and the IEEE 11073 regulatory
 // certification list is a structured blob -- none of them are text.
 static const struct {
-  uint16_t uuid;
+  MinimedChr chr;
   const char *name;
   bool hex;
 } s_devinfo_chrs[] = {
-    {0x2A29, "manufacturer", false},
-    {0x2A24, "model", false},
-    {0x2A25, "serial", false},
-    {0x2A27, "hardware revision", false},
-    {0x2A26, "firmware revision", false},
-    {0x2A28, "software revision", false},
-    {0x2A23, "system id", true},
-    {0x2A50, "pnp id", true},
-    {0x2A2A, "ieee regulatory cert", true},
+    {MinimedChrDisManufacturer, "manufacturer", false},
+    {MinimedChrDisModel, "model", false},
+    {MinimedChrDisSerial, "serial", false},
+    {MinimedChrDisHardware, "hardware revision", false},
+    {MinimedChrDisFirmware, "firmware revision", false},
+    {MinimedChrDisSoftware, "software revision", false},
+    {MinimedChrDisSystemId, "system id", true},
+    {MinimedChrDisPnpId, "pnp id", true},
+    {MinimedChrDisRegulatory, "ieee regulatory cert", true},
 };
 #define DEVINFO_CHR_COUNT (sizeof(s_devinfo_chrs) / sizeof(s_devinfo_chrs[0]))
 
-#define BATTERY_LEVEL_UUID 0x2A19
 #define BATTERY_READ_INTERVAL_SECS (60 * 60)
 #define BATTERY_FIRST_READ_DELAY_SECS 30
-static struct ble_npl_callout s_battery_co;
-static struct ble_npl_callout s_heap_co;  // fixed-interval kernel heap watch
 
 static void prv_op_complete(void);
 static void prv_request(uint8_t mask);
@@ -189,20 +169,16 @@ static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts);
 static void prv_predict_reading(int32_t mgdl);
 static void prv_hypo_check(const MinimedPredictWindow *win);
 static void prv_status_publish_if_done(uint8_t completed_op);
-static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
-                             struct ble_gatt_attr *attr, void *arg);
-static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                  struct ble_gatt_attr *attr, void *arg);
 static void prv_sensorinfo_read(uint8_t step);
 static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n);
-static int prv_sensorinfo_session_start_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                           struct ble_gatt_attr *attr, void *arg);
-static int prv_sensorinfo_sub_exp_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                     struct ble_gatt_attr *attr, void *arg);
-static int prv_idd_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                 struct ble_gatt_attr *attr, void *arg);
 
-static uint16_t s_conn;
+// True between LinkUp and LinkDown: events for a link that is gone are dropped.
+static bool s_link_up;
+
+// Which characteristics this connection can use: what discovery found, minus any the setup gave
+// up on (a failed subscribe drops IOB or alerts, and BG keeps working). Reset per connection.
+static bool s_have[MinimedChrCount];
+#define HAVE(chr) (s_have[(chr)])
 
 // ---- Sensor-info probe (spike for issue #16) ----
 // One chained sweep per connection, ~30 s after polling starts: Session Run Time (0x2AAB),
@@ -210,7 +186,6 @@ static uint16_t s_conn;
 // Every value is logged raw AND after a decrypt attempt, so the probe itself settles whether
 // each characteristic is plaintext or SAKE-encrypted, and its real field width.
 #define SENSORINFO_READ_DELAY_SECS 30
-static struct ble_npl_callout s_sensorinfo_co;
 static bool s_sensorinfo_done;
 // Steps of the sweep; each ends with a chained read of the next.
 #define SI_STEP_RUN_TIME 0
@@ -219,8 +194,6 @@ static bool s_sensorinfo_done;
 #define SI_STEP_SESSION_START 3
 #define SI_STEP_COUNT 4
 static uint8_t s_sensorinfo_step;
-static uint16_t s_h_session_start;
-static uint16_t s_h_sensor_exp;  // 0x0202, indicate-only: subscribed during the probe
 // Shared line buffers: PBL_LOG is stack-hungry (see the v57 note on the devinfo sweep).
 static char s_sensorinfo_line[112];
 
@@ -230,12 +203,6 @@ static char s_sensorinfo_line[112];
 // not a diagnostic, hence separate from the Layer 4 'lnk' check.
 #define PUMP_WD_NO_TRAFFIC_SECS (15 * 60)
 static uint32_t s_last_pump_traffic;  // wall-clock time of the last pump data/exchange completion
-static uint16_t s_cgm_start, s_cgm_end;
-static uint16_t s_h_measurement, s_h_feature, s_h_racp;
-static uint16_t s_idd_start, s_idd_end, s_h_srcp;
-static uint16_t s_h_status_changed;
-static uint16_t s_h_idd_status;
-static uint16_t s_h_idd_racp, s_h_hist;
 
 // Latest parsed status pair, one-shot per read cycle: invalidated after each publish so a failed
 // read next cycle is not papered over with the previous cycle's fields (mirrors the bridge
@@ -865,7 +832,9 @@ static void prv_backfill_finish(void) {
 // case). Re-run the same backfill read used at connect time so the pump's own history fills the
 // hole in the graph and the predictor's window, instead of the gap sitting there for good.
 static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts) {
-  if (!s_annunc_have || !s_have_offset || s_h_idd_racp == 0 || s_h_hist == 0) return;
+  if (!s_annunc_have || !s_have_offset || !HAVE(MinimedChrIddRacp) || !HAVE(MinimedChrIddHistory)) {
+    return;
+  }
   if (prev_ts == 0 || new_ts <= prev_ts) return;  // no prior reading yet, or a clock step back
   const uint32_t gap_min = (new_ts - prev_ts) / 60;
   if (gap_min < REFILL_GAP_MIN) return;
@@ -882,7 +851,8 @@ static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts) {
 // Queue the backfill read once both of its inputs exist: the log cursor (baseline) and a CGM
 // reading to anchor sample times on.
 static void prv_backfill_maybe_request(void) {
-  if (s_backfill_done || !s_annunc_have || !s_have_offset || s_h_idd_racp == 0 || s_h_hist == 0) {
+  if (s_backfill_done || !s_annunc_have || !s_have_offset || !HAVE(MinimedChrIddRacp) ||
+      !HAVE(MinimedChrIddHistory)) {
     return;
   }
   s_backfill_done = true;
@@ -957,20 +927,26 @@ static void prv_annunc_record_done(void) {
   minimed_alert_popup_push("MiniMed", body);
 }
 
-// Feed an inbound pump notification/indication. Returns true if consumed (a CGM char we own).
-bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, uint16_t len) {
+// An inbound pump notification/indication on one of the characteristics the session uses.
+static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len, bool truncated) {
   s_last_pump_traffic = (uint32_t)rtc_get_time();  // any pump notification = the link is alive
-  if (s_h_sensor_exp != 0 && attr_handle == s_h_sensor_exp) {
+  if (truncated) {
+    char line[32];
+    snprintf(line, sizeof(line), "notify cut chr=%u", (unsigned)chr);
+    minimed_sake_log(line);
+    return;  // a cut SAKE frame fails its MAC anyway
+  }
+  if (chr == MinimedChrSensorExpiration) {
     // Sensor-info probe: the pump pushes Time Of Sensor Expiration here (indicate-only char).
     prv_sensorinfo_log_value("sensor exp", data, len);
-    return true;
+    return;
   }
-  if (s_h_measurement != 0 && attr_handle == s_h_measurement) {
+  if (chr == MinimedChrCgmMeasurement) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("CGM decrypt failed");
-      return true;
+      return;
     }
     if (s_rec_len + plain_len > sizeof(s_rec)) {
       s_rec_len = 0;  // overflow guard; abandon this frame
@@ -981,15 +957,15 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       prv_parse_and_show();
       s_rec_len = 0;
     }
-    return true;
+    return;
   }
-  if (s_h_status_changed != 0 && attr_handle == s_h_status_changed) {
+  if (chr == MinimedChrIddStatusChanged) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("0x101 decrypt failed");
       PBL_LOG_INFO("minimed: 0x101 decrypt failed (%u bytes on the wire)", (unsigned)len);
-      return true;
+      return;
     }
 
     // The pump's push channel. React like the bridge: targeted read(s) for the bits we display,
@@ -1016,9 +992,9 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
       // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
       // the status pair (bridge bits + bit 1).
-      req |= (s_h_idd_status != 0 ? PEND_STATUS : 0) | (s_h_srcp != 0 ? PEND_TAS : 0);
+      req |= (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) | (HAVE(MinimedChrIddSrcp) ? PEND_TAS : 0);
     }
-    if (s_h_idd_racp != 0 && s_h_hist != 0 &&
+    if (HAVE(MinimedChrIddRacp) && HAVE(MinimedChrIddHistory) &&
         ((flags & (MINIMED_IDD_FLAG_ANNUNCIATION | MINIMED_IDD_FLAG_HISTORY_EVENT)) != 0 ||
          !s_annunc_have)) {
       // An alarm was raised or cleared, or any event was logged (a meal entry among them): read
@@ -1026,7 +1002,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       // a retry of it.
       req |= PEND_ANNUNC;
     }
-    if (s_h_srcp != 0) {
+    if (HAVE(MinimedChrIddSrcp)) {
       if (flags & MINIMED_IDD_FLAG_IOB) req |= PEND_IOB;
       s_reset_flags |= flags;
       req |= PEND_RESET;  // no SRCP char would mean no reset possible; fallback still covers us
@@ -1037,12 +1013,12 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       minimed_sake_log("push mode (6m fallback)");
     }
     // Re-arm the dead-man: an indication is proof push is alive.
-    ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(FALLBACK_AFTER_SECS * 1000));
+    minimed_task_timer_start(TimerPoll, FALLBACK_AFTER_SECS * 1000);
 
     if (req != 0) prv_request(req);
-    return true;
+    return;
   }
-  if (s_h_racp != 0 && attr_handle == s_h_racp) {
+  if (chr == MinimedChrCgmRacp) {
     // Success is the common case and stays quiet so the log keeps scrolling BG readings; only an
     // unexpected RACP response is worth a line.
     bool ok = (len == sizeof(RACP_REPORT_SUCCESS) &&
@@ -1051,26 +1027,25 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       minimed_sake_log("RACP unexpected resp");
     }
     // Either way the CGM exchange is over. The serialiser then issues whatever is pending
-    // (an IOB read queued with this poll, or a Reset Status). Note ops don't strictly need
-    // serialising for NimBLE's sake -- gattc ops queue FIFO (BLE_GATT_MAX_PROCS=8) rather than
-    // returning BLE_HS_EBUSY as an older comment here claimed -- but the 30 s unresponsive timer
-    // starts at *queue* time, and the two reassembly buffers are single-exchange.
+    // (an IOB read queued with this poll, or a Reset Status). Ops don't strictly need
+    // serialising for the stack's sake -- gattc ops queue FIFO -- but its 30 s unresponsive
+    // timer starts at *queue* time, and the two reassembly buffers are single-exchange.
     if (s_op == PEND_CGM) {
       if (s_push_mode) {
         // A completed CGM exchange also proves the link; keep the dead-man from re-firing
         // right after a fallback-driven poll.
-        ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(FALLBACK_AFTER_SECS * 1000));
+        minimed_task_timer_start(TimerPoll, FALLBACK_AFTER_SECS * 1000);
       }
       prv_op_complete();
     }
-    return true;
+    return;
   }
-  if (s_h_hist != 0 && attr_handle == s_h_hist) {
+  if (chr == MinimedChrIddHistory) {
     uint8_t plain[64];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("hist decrypt failed");
-      return true;
+      return;
     }
     if (s_hist_len + plain_len > sizeof(s_hist)) {
       s_hist_len = 0;  // overflow guard; abandon this record
@@ -1080,16 +1055,14 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
     // No length prefix: a wire fragment shorter than the ATT cap ends the record (the pump fills
     // notifications to the cap; the bridge's reassembler uses the same rule). An exact-multiple
     // record is flushed at the RACP terminal instead.
-    const uint16_t mtu = ble_att_mtu(s_conn);
-    const uint16_t att_max = (mtu > 3) ? (mtu - 3) : 20;
-    if (len < att_max) prv_annunc_record_done();
+    if (len < minimed_transport_max_value_len()) prv_annunc_record_done();
     // A long catch-up read can outlive the 10 s op timer; each fragment is proof of progress.
     if (s_op == PEND_ANNUNC) {
-      ble_npl_callout_reset(&s_op_timeout_co, ble_npl_time_ms_to_ticks32(OP_TIMEOUT_SECS * 1000));
+      minimed_task_timer_start(TimerOpTimeout, OP_TIMEOUT_SECS * 1000);
     }
-    return true;
+    return;
   }
-  if (s_h_idd_racp != 0 && attr_handle == s_h_idd_racp) {
+  if (chr == MinimedChrIddRacp) {
     // Plaintext terminal indication: 0f 0f 33 f0 = success, 0f 0f 33 06 = no records (an empty
     // window is a clean result, not an error).
     if (s_hist_len != 0) prv_annunc_record_done();  // exact-multiple flush
@@ -1113,14 +1086,14 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       }
       prv_op_complete();
     }
-    return true;
+    return;
   }
-  if (s_h_srcp != 0 && attr_handle == s_h_srcp) {
+  if (chr == MinimedChrIddSrcp) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
     if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("SRCP decrypt failed");
-      return true;
+      return;
     }
     if (s_op == PEND_RESET) {
       // The whole response is one short indication: the generic SRCP Response Code, expected
@@ -1133,7 +1106,7 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
                plain_len > 4 ? plain[4] : 0);
       minimed_sake_log(line);
       prv_op_complete();
-      return true;
+      return;
     }
     if (s_op == PEND_TAS) {
       // Single short indication (max ~14 plaintext bytes); no reassembly needed.
@@ -1145,11 +1118,11 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       }
       prv_status_publish_if_done(PEND_TAS);
       prv_op_complete();
-      return true;
+      return;
     }
     if (s_op != PEND_IOB) {
       minimed_sake_log("SRCP unsolicited");
-      return true;
+      return;
     }
     if (s_srcp_len + plain_len > sizeof(s_srcp)) {
       s_srcp_len = 0;  // overflow guard; abandon this frame
@@ -1163,61 +1136,32 @@ bool minimed_sake_read_handle_notify(uint16_t attr_handle, const uint8_t *data, 
       s_srcp_len = 0;
       prv_op_complete();
     }
-    return true;
+    return;
   }
-  return false;
 }
 
-// Layer 3 diagnostic: classify a GATT op failure. A status of ENOTCONN / ETIMEOUT / an HCI
-// disconnect reason (0x08 spvn timeout, 0x13 remote user term, 0x16 local term, 0x22 LL rsp tmo,
-// 0x3e establish fail) is a LINK-DEAD signature -- the host knows the pump connection is gone, so
-// the disconnect event should follow shortly. Any other status is an op-level error on a live
-// link. Logs both the raw status and the verdict so a silent pump drop is attributable.
-static void prv_log_gatt_err(const char *op, uint16_t status) {
+// Layer 3 diagnostic: classify a GATT failure. A link-dead status (the transport's verdict: the
+// stack knows the pump connection is gone, and the disconnect event should follow shortly) is
+// told apart from an op-level error on a live link, so a silent pump drop is attributable.
+// `issue` marks a failure to even start the operation rather than an error response.
+static void prv_log_gatt_err(const char *op, MinimedGattStatus status, bool issue) {
   char line[40];
-  const bool link_dead =
-      status == BLE_HS_ENOTCONN || status == BLE_HS_ETIMEOUT ||
-      (status >= BLE_HS_ERR_HCI_BASE &&
-       ((status - BLE_HS_ERR_HCI_BASE) == 0x08 || (status - BLE_HS_ERR_HCI_BASE) == 0x13 ||
-        (status - BLE_HS_ERR_HCI_BASE) == 0x16 || (status - BLE_HS_ERR_HCI_BASE) == 0x22 ||
-        (status - BLE_HS_ERR_HCI_BASE) == 0x3e));
-  if (link_dead) {
-    snprintf(line, sizeof(line), "LINK DEAD %s err=0x%04x hdl=%u", op, status, s_conn);
+  if (status.link_dead) {
+    snprintf(line, sizeof(line), "LINK DEAD %s %s=0x%04x", op, issue ? "rc" : "err", status.code);
   } else {
-    snprintf(line, sizeof(line), "%s err=0x%04x", op, status);
+    snprintf(line, sizeof(line), "%s %s=0x%04x", op, issue ? "rc" : "err", status.code);
   }
   minimed_sake_log(line);
-  if (link_dead) {
-    PBL_LOG_WRN("minimed: %s failed with link-dead status 0x%04x", op, (unsigned)status);
+  if (status.link_dead && !issue) {
+    PBL_LOG_WRN("minimed: %s failed with link-dead status 0x%04x", op, (unsigned)status.code);
   }
-}
-
-static int prv_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
-                             struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    prv_log_gatt_err("RACP wr", (uint16_t)error->status);
-    // No terminating indication will come for a failed write; skip the exchange now rather
-    // than stalling the serialiser until the op timeout.
-    if (s_op == PEND_CGM) prv_op_complete();
-  }
-  return 0;
-}
-
-static int prv_idd_racp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                 struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    prv_log_gatt_err("IDD RACP wr", (uint16_t)error->status);
-    // No terminating indication will come for a failed write; skip the exchange.
-    if (s_op == PEND_ANNUNC) prv_op_complete();
-  }
-  return 0;
 }
 
 static void prv_op_complete(void) {
-  ble_npl_callout_stop(&s_op_timeout_co);
+  minimed_task_timer_stop(TimerOpTimeout);
   s_op = 0;
   if (s_pending != 0) {
-    ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
+    minimed_task_timer_start(TimerDispatch, DISPATCH_DELAY_MS);
   }
   // Any completed exchange proves the pump responded to a request; record it as traffic.
   s_last_pump_traffic = (uint32_t)rtc_get_time();
@@ -1226,8 +1170,8 @@ static void prv_op_complete(void) {
 }
 
 // Watchdog tick: if in DUAL with the pump connected but silent for PUMP_WD_NO_TRAFFIC_SECS,
-// re-toggle DUAL to free the phantom slot and re-arm the pump advert. Runs on the BT host task.
-static void prv_wd_cb(struct ble_npl_event *ev) {
+// re-toggle DUAL to free the phantom slot and re-arm the pump advert.
+static void prv_wd_timer(void) {
   if (minimed_sake_get_mode() == MinimedSakeModeDual && minimed_sake_pump_connected() &&
       ((uint32_t)rtc_get_time() - s_last_pump_traffic) > PUMP_WD_NO_TRAFFIC_SECS) {
     minimed_sake_log("WD: pump silent, re-toggle");
@@ -1235,7 +1179,7 @@ static void prv_wd_cb(struct ble_npl_event *ev) {
                 (unsigned)((uint32_t)rtc_get_time() - s_last_pump_traffic));
     minimed_sake_watchdog_retoggle();
   }
-  ble_npl_callout_reset(&s_wd_co, ble_npl_time_ms_to_ticks32(60 * 1000));
+  minimed_task_timer_start(TimerWatchdog, 60 * 1000);
 }
 
 // Called when a STATUS or TAS exchange finishes (success, failure, or timeout). The two are
@@ -1277,19 +1221,15 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
   s_tas.valid = false;
 }
 
-// IDD Status (0x102) is a plain encrypted READ -- the one exchange that completes in its own
-// GATT callback rather than via an indication.
-static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                  struct ble_gatt_attr *attr, void *arg) {
-  if (s_op != PEND_STATUS) return 0;  // late/stale callback; a newer op owns the buffers now
+// IDD Status (0x102) is a plain encrypted READ -- the one exchange that completes with its own
+// read result rather than via an indication.
+static void prv_idd_status_read_done(const MinimedEvent *e) {
+  if (s_op != PEND_STATUS) return;  // late/stale result; a newer op owns the buffers now
   char line[32];
-  if (error->status == 0 && attr && attr->om) {
-    // Single mbuf fragment is safe here: the value is 12 bytes on the wire (9 + SeqCrypt 3).
-    const uint16_t n = attr->om->om_len;
-    const uint8_t *d = attr->om->om_data;
+  if (e->status.ok && e->len > 0) {
     uint8_t plain[24];
     uint16_t plain_len = 0;
-    if (!minimed_sake_decrypt(d, n, plain, sizeof(plain), &plain_len)) {
+    if (!minimed_sake_decrypt(e->data, e->len, plain, sizeof(plain), &plain_len)) {
       minimed_sake_log("st decrypt failed");
     } else if (!minimed_status_parse_idd(plain, plain_len, &s_idd_st)) {
       snprintf(line, sizeof(line), "st bad len=%u", plain_len);
@@ -1300,55 +1240,53 @@ static int prv_idd_status_read_cb(uint16_t conn, const struct ble_gatt_error *er
                    s_idd_st.sensor_msg, (long)s_idd_st.reservoir_mu);
     }
   } else {
-    prv_log_gatt_err("st read", (uint16_t)error->status);
+    prv_log_gatt_err("st read", e->status, false);
   }
   prv_status_publish_if_done(PEND_STATUS);
   prv_op_complete();
-  return 0;
 }
 
-// Queue work and kick the dispatcher. Callers guard on the handles they need (PEND_IOB and
-// PEND_RESET require s_h_srcp != 0), so the dispatcher never has to skip a queued op.
+// Queue work and kick the dispatcher. Callers guard on the characteristics they need (PEND_IOB
+// and PEND_RESET require the SRCP), so the dispatcher never has to skip a queued op.
 static void prv_request(uint8_t mask) {
   s_pending |= mask;
   if (s_op == 0) {
-    ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
+    minimed_task_timer_start(TimerDispatch, DISPATCH_DELAY_MS);
   }
 }
 
-// Layer 3 diagnostic: classify an immediate ble_gattc_* return code at dispatch time (before any
-// callback). An ENOTCONN/ETIMEOUT/HCI-disconnect rc means the host already knows the link is dead
-// at issue time; any other nonzero rc is an issue failure on a presumably-live link.
-static void prv_log_dispatch_rc(const char *op, int rc) {
-  char line[40];
-  const uint16_t status = (uint16_t)rc;
-  const bool link_dead =
-      status == BLE_HS_ENOTCONN || status == BLE_HS_ETIMEOUT ||
-      (status >= BLE_HS_ERR_HCI_BASE &&
-       ((status - BLE_HS_ERR_HCI_BASE) == 0x08 || (status - BLE_HS_ERR_HCI_BASE) == 0x13 ||
-        (status - BLE_HS_ERR_HCI_BASE) == 0x16 || (status - BLE_HS_ERR_HCI_BASE) == 0x22 ||
-        (status - BLE_HS_ERR_HCI_BASE) == 0x3e));
-  if (link_dead) {
-    snprintf(line, sizeof(line), "LINK DEAD %s rc=0x%04x hdl=%u", op, status, s_conn);
-  } else {
-    snprintf(line, sizeof(line), "%s rc=0x%04x", op, status);
+// Encrypt and write an SRCP request (IOB, TAS, Reset Status). False: the op never started.
+static bool prv_srcp_write(const uint8_t *plain, uint16_t plain_len, const char *what) {
+  uint8_t enc[24];  // SeqCrypt appends a 1-byte counter + 2-byte MAC
+  uint16_t enc_len = 0;
+  if ((size_t)plain_len + 3 > sizeof(enc) || !minimed_sake_encrypt(plain, plain_len, enc, &enc_len)) {
+    char line[32];
+    snprintf(line, sizeof(line), "%s encrypt failed", what);
+    minimed_sake_log(line);
+    return false;
   }
-  minimed_sake_log(line);
+  s_srcp_len = 0;
+  MinimedGattStatus status;
+  if (!minimed_transport_write(MinimedChrIddSrcp, enc, enc_len, TagSrcpWrite, &status)) {
+    prv_log_gatt_err(what, status, true);
+    return false;
+  }
+  return true;
 }
 
 // Issue the highest-priority pending exchange. Reads before reset (data lands ASAP; one reset
 // then covers a whole indication burst). On a failed issue, complete immediately -- no
 // indication will terminate an exchange that never started.
-static void prv_dispatch_cb(struct ble_npl_event *ev) {
+static void prv_dispatch_timer(void) {
   if (s_op != 0) return;  // in flight; prv_op_complete re-kicks
+  MinimedGattStatus status;
   if (s_pending & PEND_CGM) {
     s_pending &= ~PEND_CGM;
     s_op = PEND_CGM;
     s_rec_len = 0;  // reassembly reset at issue time, not in a free-running poll
-    int rc = ble_gattc_write_flat(s_conn, s_h_racp, RACP_REPORT_LAST_RECORD,
-                                  sizeof(RACP_REPORT_LAST_RECORD), prv_racp_write_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("RACP", rc);
+    if (!minimed_transport_write(MinimedChrCgmRacp, RACP_REPORT_LAST_RECORD,
+                                 sizeof(RACP_REPORT_LAST_RECORD), TagCgmRacpWrite, &status)) {
+      prv_log_gatt_err("RACP", status, true);
       prv_op_complete();
       return;
     }
@@ -1385,35 +1323,23 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
       }
       req_len = 11;
     }
-    int rc = ble_gattc_write_flat(s_conn, s_h_idd_racp, req, req_len, prv_idd_racp_write_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("IDD RACP", rc);
+    if (!minimed_transport_write(MinimedChrIddRacp, req, req_len, TagIddRacpWrite, &status)) {
+      prv_log_gatt_err("IDD RACP", status, true);
       prv_op_complete();
       return;
     }
   } else if (s_pending & PEND_IOB) {
     s_pending &= ~PEND_IOB;
     s_op = PEND_IOB;
-    uint8_t enc[sizeof(SRCP_GET_IOB) + 3];  // SeqCrypt appends a 1-byte counter + 2-byte MAC
-    uint16_t enc_len = 0;
-    if (!minimed_sake_encrypt(SRCP_GET_IOB, sizeof(SRCP_GET_IOB), enc, &enc_len)) {
-      minimed_sake_log("IOB encrypt failed");
-      prv_op_complete();
-      return;
-    }
-    s_srcp_len = 0;
-    int rc = ble_gattc_write_flat(s_conn, s_h_srcp, enc, enc_len, prv_srcp_write_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("SRCP", rc);
+    if (!prv_srcp_write(SRCP_GET_IOB, sizeof(SRCP_GET_IOB), "IOB")) {
       prv_op_complete();
       return;
     }
   } else if (s_pending & PEND_STATUS) {
     s_pending &= ~PEND_STATUS;
     s_op = PEND_STATUS;
-    int rc = ble_gattc_read(s_conn, s_h_idd_status, prv_idd_status_read_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("st", rc);
+    if (!minimed_transport_read(MinimedChrIddStatus, TagIddStatusRead, &status)) {
+      prv_log_gatt_err("st", status, true);
       prv_status_publish_if_done(PEND_STATUS);
       prv_op_complete();
       return;
@@ -1421,18 +1347,7 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
   } else if (s_pending & PEND_TAS) {
     s_pending &= ~PEND_TAS;
     s_op = PEND_TAS;
-    uint8_t enc[sizeof(SRCP_GET_TAS) + 3];
-    uint16_t enc_len = 0;
-    if (!minimed_sake_encrypt(SRCP_GET_TAS, sizeof(SRCP_GET_TAS), enc, &enc_len)) {
-      minimed_sake_log("TAS encrypt failed");
-      prv_status_publish_if_done(PEND_TAS);
-      prv_op_complete();
-      return;
-    }
-    s_srcp_len = 0;
-    int rc = ble_gattc_write_flat(s_conn, s_h_srcp, enc, enc_len, prv_srcp_write_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("TAS", rc);
+    if (!prv_srcp_write(SRCP_GET_TAS, sizeof(SRCP_GET_TAS), "TAS")) {
       prv_status_publish_if_done(PEND_TAS);
       prv_op_complete();
       return;
@@ -1445,29 +1360,19 @@ static void prv_dispatch_cb(struct ble_npl_event *ev) {
     const uint16_t flags_len =
         minimed_idd_flags_encode(s_reset_flags, plain + sizeof(SRCP_RESET_STATUS));
     s_reset_flags = 0;  // an indication landing mid-exchange starts a fresh union
-    uint8_t enc[sizeof(plain) + 3];
-    uint16_t enc_len = 0;
-    if (!minimed_sake_encrypt(plain, sizeof(SRCP_RESET_STATUS) + flags_len, enc, &enc_len)) {
-      minimed_sake_log("rst encrypt failed");
-      prv_op_complete();
-      return;
-    }
-    s_srcp_len = 0;
-    int rc = ble_gattc_write_flat(s_conn, s_h_srcp, enc, enc_len, prv_srcp_write_cb, NULL);
-    if (rc != 0) {
-      prv_log_dispatch_rc("rst", rc);
+    if (!prv_srcp_write(plain, sizeof(SRCP_RESET_STATUS) + flags_len, "rst")) {
       prv_op_complete();
       return;
     }
   } else {
     return;  // nothing pending
   }
-  ble_npl_callout_reset(&s_op_timeout_co, ble_npl_time_ms_to_ticks32(OP_TIMEOUT_SECS * 1000));
+  minimed_task_timer_start(TimerOpTimeout, OP_TIMEOUT_SECS * 1000);
 }
 
 // A lost terminating indication must not wedge the serialiser (fallback polls dispatch through
 // it too, so a wedge would mean "no data", not "stale data"). Drop the exchange and move on.
-static void prv_op_timeout_cb(struct ble_npl_event *ev) {
+static void prv_op_timeout_timer(void) {
   char line[32];
   snprintf(line, sizeof(line), "op timeout 0x%02x", s_op);
   minimed_sake_log(line);
@@ -1484,96 +1389,96 @@ static void prv_op_timeout_cb(struct ble_npl_event *ev) {
     prv_status_publish_if_done(op);
   }
   if (s_pending != 0) {
-    ble_npl_callout_reset(&s_dispatch_co, ble_npl_time_ms_to_ticks32(DISPATCH_DELAY_MS));
+    minimed_task_timer_start(TimerDispatch, DISPATCH_DELAY_MS);
   }
   // Whatever the dropped op's partial work set (a backfill's meals and forecast) still goes out.
   minimed_sake_sender_commit();
 }
 
-// Everything a full poll reads, gated on the handles that were actually discovered.
+// A write the session answers only on failure: its exchange ends with an indication, which no
+// failed write will produce, so skip the exchange now rather than stalling until the op timeout.
+static void prv_write_done(const MinimedEvent *e) {
+  if (e->status.ok) return;
+  if (e->tag == TagCgmRacpWrite) {
+    prv_log_gatt_err("RACP wr", e->status, false);
+    if (s_op == PEND_CGM) prv_op_complete();
+  } else if (e->tag == TagIddRacpWrite) {
+    prv_log_gatt_err("IDD RACP wr", e->status, false);
+    if (s_op == PEND_ANNUNC) prv_op_complete();
+  } else if (e->tag == TagSrcpWrite) {
+    prv_log_gatt_err("SRCP wr", e->status, false);
+    if (s_op == PEND_TAS) prv_status_publish_if_done(PEND_TAS);
+    if (s_op == PEND_IOB || s_op == PEND_RESET || s_op == PEND_TAS) prv_op_complete();
+  }
+}
+
+// Everything a full poll reads, gated on the characteristics this connection has.
 static uint8_t prv_full_poll_mask(void) {
-  return PEND_CGM | (s_h_srcp != 0 ? (PEND_IOB | PEND_TAS) : 0) |
-         (s_h_idd_status != 0 ? PEND_STATUS : 0) |
+  return PEND_CGM | (HAVE(MinimedChrIddSrcp) ? (PEND_IOB | PEND_TAS) : 0) |
+         (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) |
          // Annunciation baseline rides the poll until it succeeds; after that only 0x101
          // annunciation pushes trigger reads.
-         (s_h_idd_racp != 0 && s_h_hist != 0 && !s_annunc_have ? PEND_ANNUNC : 0);
+         (HAVE(MinimedChrIddRacp) && HAVE(MinimedChrIddHistory) && !s_annunc_have ? PEND_ANNUNC
+                                                                                  : 0);
 }
 
-static void prv_devinfo_read_next(void);
+// ---- Device Information, once per boot ----
+// These only change across a pump firmware update or a pump swap, and the pump reconnects often
+// enough that a per-session sweep would be log spam.
 
 // v57 hard-faulted twice inside picolibc's %s conversion, with the fault correlating to this
-// sweep. Unproven, but the plausible mechanism is stack exhaustion on the NimBLE host task: v57
-// put 73 bytes of buffers in this callback's frame and then called PBL_LOG, which is itself
-// stack-hungry (logging.c guards the same hazard via prv_use_default_log_msg). So the whole line
-// is composed into one *static* buffer here and logged with a single %s, leaving this frame
-// nearly empty. The sweep is serialised, so one shared buffer is safe.
+// sweep. Unproven, but the plausible mechanism is stack exhaustion: v57 put 73 bytes of buffers
+// in the callback's frame and then called PBL_LOG, which is itself stack-hungry. So the whole
+// line is composed into one *static* buffer here and logged with a single %s. The sweep is
+// serialised, so one shared buffer is safe.
 static char s_devinfo_line[80];
 
-// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE. NimBLE runs
-// one GATT procedure at a time per connection, so the next characteristic is chained off EDONE
-// rather than issuing all nine at once.
-static int prv_devinfo_read_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               struct ble_gatt_attr *attr, void *arg) {
-  const uint8_t idx = (uint8_t)(uintptr_t)arg;
-
-  if (error->status == BLE_HS_EDONE) {
-    s_devinfo_idx = idx + 1;
-    prv_devinfo_read_next();
-    return 0;
-  }
-  if (error->status != 0 || !attr || !attr->om || attr->om->om_len < 1) {
-    // Advance past a field the pump will not give us; v57 returned here without advancing, which
-    // stalled the sweep on that characteristic and re-read it every session.
-    snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s read err=0x%04x", s_devinfo_chrs[idx].name,
-             (uint16_t)error->status);
-    PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
-    s_devinfo_idx = idx + 1;
-    prv_devinfo_read_next();
-    return 0;
-  }
-
-  const uint16_t n = attr->om->om_len;
-  int off = snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s ", s_devinfo_chrs[idx].name);
-  if (off < 0 || (unsigned)off >= sizeof(s_devinfo_line)) {
-    return 0;
-  }
-
-  if (s_devinfo_chrs[idx].hex) {
-    for (uint16_t i = 0; i < n && (unsigned)off + 3 < sizeof(s_devinfo_line); i++) {
-      off += snprintf(&s_devinfo_line[off], 3, "%02x", attr->om->om_data[i]);
-    }
-  } else {
-    unsigned room = sizeof(s_devinfo_line) - off - 1;
-    uint16_t len = n > room ? (uint16_t)room : n;
-    memcpy(&s_devinfo_line[off], attr->om->om_data, len);
-    while (len > 0 && s_devinfo_line[off + len - 1] == '\0') len--;  // trim a trailing NUL
-    s_devinfo_line[off + len] = '\0';
-  }
-  PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
-  return 0;
-}
-
-// Read by UUID over the whole handle range, like the battery read: saves discovering the service,
-// and these 16-bit UUIDs cannot collide with the vendor 128-bit ones.
 static void prv_devinfo_read_next(void) {
   if (s_devinfo_idx >= DEVINFO_CHR_COUNT) {
     s_devinfo_read = true;  // whole sweep done; latch so it stays once per boot
     return;
   }
   const uint8_t idx = s_devinfo_idx;
-  const ble_uuid16_t uuid = BLE_UUID16_INIT(s_devinfo_chrs[idx].uuid);
-  int rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, &uuid.u, prv_devinfo_read_cb,
-                                  (void *)(uintptr_t)idx);
-  if (rc != 0) {
+  MinimedGattStatus status;
+  if (!minimed_transport_read(s_devinfo_chrs[idx].chr, TagDevinfoRead, &status)) {
     // Abandon the sweep without latching, so the next session retries from the start.
-    PBL_LOG_INFO("minimed: pump %s read rc=0x%04x", s_devinfo_chrs[idx].name, (uint16_t)rc);
+    PBL_LOG_INFO("minimed: pump %s read rc=0x%04x", s_devinfo_chrs[idx].name, status.code);
     s_devinfo_idx = 0;
   }
 }
 
-// Once per boot, not per session: these only change across a pump firmware update or a pump swap,
-// and the pump reconnects often enough that a per-session sweep would be log spam.
-static void prv_devinfo_timer_cb(struct ble_npl_event *ev) {
+static void prv_devinfo_read_done(const MinimedEvent *e) {
+  const uint8_t idx = s_devinfo_idx;
+  if (idx >= DEVINFO_CHR_COUNT || e->chr != s_devinfo_chrs[idx].chr) return;
+  s_devinfo_idx = idx + 1;  // advance whatever happened: a field the pump won't give is skipped
+  if (!e->status.ok || e->len < 1) {
+    if (e->status.code != 0) {  // code 0: the pump just doesn't have it
+      snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s read err=0x%04x",
+               s_devinfo_chrs[idx].name, e->status.code);
+      PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
+    }
+    prv_devinfo_read_next();
+    return;
+  }
+  int off = snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s ", s_devinfo_chrs[idx].name);
+  if (off >= 0 && (unsigned)off < sizeof(s_devinfo_line)) {
+    if (s_devinfo_chrs[idx].hex) {
+      for (uint16_t i = 0; i < e->len && (unsigned)off + 3 < sizeof(s_devinfo_line); i++) {
+        off += snprintf(&s_devinfo_line[off], 3, "%02x", e->data[i]);
+      }
+    } else {
+      unsigned room = sizeof(s_devinfo_line) - off - 1;
+      uint16_t len = e->len > room ? (uint16_t)room : e->len;
+      memcpy(&s_devinfo_line[off], e->data, len);
+      while (len > 0 && s_devinfo_line[off + len - 1] == '\0') len--;  // trim a trailing NUL
+      s_devinfo_line[off + len] = '\0';
+    }
+    PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
+  }
+  prv_devinfo_read_next();
+}
+
+static void prv_devinfo_timer(void) {
   if (s_devinfo_read) {
     return;
   }
@@ -1581,40 +1486,35 @@ static void prv_devinfo_timer_cb(struct ble_npl_event *ev) {
   prv_devinfo_read_next();
 }
 
-// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE.
-static int prv_battery_read_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               struct ble_gatt_attr *attr, void *arg) {
-  if (error->status == 0 && attr && attr->om && attr->om->om_len >= 1) {
-    PBL_LOG_INFO("minimed: pump battery %u pct", (unsigned)attr->om->om_data[0]);
-  } else if (error->status != BLE_HS_EDONE) {
-    prv_log_gatt_err("battery read", (uint16_t)error->status);
+static void prv_battery_read_done(const MinimedEvent *e) {
+  if (e->status.ok && e->len >= 1) {
+    PBL_LOG_INFO("minimed: pump battery %u pct", (unsigned)e->data[0]);
+  } else if (e->status.code != 0) {
+    prv_log_gatt_err("battery read", e->status, false);
   }
-  return 0;
 }
 
-// KernelMain heap watch on a fixed interval, independent of the pump poll (which push mode keeps
+// Kernel heap watch on a fixed interval, independent of the pump poll (which push mode keeps
 // deferring). The OOM crash (kernel heap to ~2.7 KB, 2026-09-09) was only visible after the fact;
 // report free/max-free every 30 min so a slow leak shows in the flash log before it kills the
 // watch, without flooding the log.
 #define HEAP_LOG_INTERVAL_SECS (30 * 60)
-static void prv_heap_timer_cb(struct ble_npl_event *ev) {
+static void prv_heap_timer(void) {
   unsigned int used = 0, free_bytes = 0, max_free = 0;
   heap_calc_totals(kernel_heap_get(), &used, &free_bytes, &max_free);
   PBL_LOG_INFO("minimed: heap free=%u max_free=%u", free_bytes, max_free);
-  ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
+  minimed_task_timer_start(TimerHeap, HEAP_LOG_INTERVAL_SECS * 1000);
 }
 
-// Read by UUID over the whole handle range: saves discovering the Battery service, and the GST
-// battery (vendor 128-bit 0x400) can't collide with a 16-bit match.
-static void prv_battery_timer_cb(struct ble_npl_event *ev) {
-  const ble_uuid16_t uuid = BLE_UUID16_INIT(BATTERY_LEVEL_UUID);
-  int rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, &uuid.u, prv_battery_read_cb, NULL);
-  if (rc != 0) {
-    PBL_LOG_INFO("minimed: pump battery read rc=0x%04x", (uint16_t)rc);
+static void prv_battery_timer(void) {
+  MinimedGattStatus status;
+  if (!minimed_transport_read(MinimedChrBattery, TagBatteryRead, &status)) {
+    PBL_LOG_INFO("minimed: pump battery read rc=0x%04x", status.code);
   }
-  ble_npl_callout_reset(&s_battery_co,
-                        ble_npl_time_ms_to_ticks32(BATTERY_READ_INTERVAL_SECS * 1000));
+  minimed_task_timer_start(TimerBattery, BATTERY_READ_INTERVAL_SECS * 1000);
 }
+
+// ---- Sensor-info probe ----
 
 static const char *prv_sensorinfo_step_name(uint8_t step) {
   switch (step) {
@@ -1651,31 +1551,10 @@ static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint1
   }
 }
 
-
-// read_by_uuid fires once per matching attribute, then once more with BLE_HS_EDONE; the next
-// step is chained off EDONE. One GATT procedure at a time per connection, like the devinfo sweep.
-static int prv_sensorinfo_by_uuid_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                     struct ble_gatt_attr *attr, void *arg) {
-  const uint8_t step = (uint8_t)(uintptr_t)arg;
-  if (error->status == BLE_HS_EDONE) {
-    prv_sensorinfo_read(step + 1);
-    return 0;
-  }
-  if (error->status != 0 || !attr || !attr->om || attr->om->om_len < 1) {
-    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x",
-             prv_sensorinfo_step_name(step), (uint16_t)error->status);
-    PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
-    prv_sensorinfo_read(step + 1);
-    return 0;
-  }
-  prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), attr->om->om_data, attr->om->om_len);
-  return 0;
-}
-
-// Chained sweep. Steps 0 and 2 issue read_by_uuid over the whole handle range; step 1 is an
-// indicate-only characteristic, so it subscribes (CCCD) instead of reading and the value logs
-// from the notify dispatcher when the pump pushes it; step 3 needs the handle captured during
-// CGM char discovery (0x2AAA is a SIG 16-bit UUID, so it is targeted by handle).
+// Chained sweep. Steps 0 and 2 read by UUID over the whole handle range; step 1 is an
+// indicate-only characteristic, so it subscribes instead of reading and the value logs from the
+// notify handler when the pump pushes it; step 3 reads 0x2AAA by its discovered handle (a SIG
+// UUID another service could also expose).
 static void prv_sensorinfo_read(uint8_t step) {
   if (step >= SI_STEP_COUNT) {
     s_sensorinfo_done = true;
@@ -1683,450 +1562,265 @@ static void prv_sensorinfo_read(uint8_t step) {
     return;
   }
   s_sensorinfo_step = step;
-  int rc;
+  MinimedGattStatus status;
+  bool started;
   if (step == SI_STEP_SESSION_START) {
-    if (s_h_session_start == 0) {
+    if (!HAVE(MinimedChrCgmSessionStart)) {
       minimed_sake_log("sensor: no sess start chr");
       prv_sensorinfo_read(step + 1);
       return;
     }
-    rc = ble_gattc_read(s_conn, s_h_session_start, prv_sensorinfo_session_start_cb, NULL);
+    started = minimed_transport_read(MinimedChrCgmSessionStart, TagSessionStartRead, &status);
   } else if (step == SI_STEP_EXPIRATION) {
-    if (s_h_sensor_exp == 0) {
+    if (!HAVE(MinimedChrSensorExpiration)) {
       minimed_sake_log("sensor: no sensor exp chr");
       prv_sensorinfo_read(step + 1);
       return;
     }
-    static const uint8_t indicate[] = {0x02, 0x00};
-    rc = ble_gattc_write_flat(s_conn, s_h_sensor_exp + 1, indicate, sizeof(indicate),
-                              prv_sensorinfo_sub_exp_cb, NULL);
+    started = minimed_transport_subscribe(MinimedChrSensorExpiration, true, TagSensorExpSub,
+                                          &status);
   } else {
-    const ble_uuid_t *uuid;
-    const ble_uuid16_t run_time_uuid = BLE_UUID16_INIT(0x2AAB);
-    switch (step) {
-      case SI_STEP_IDD_FEATURES: uuid = &s_idd_features_uuid.u; break;
-      default: uuid = &run_time_uuid.u; break;
-    }
-    rc = ble_gattc_read_by_uuid(s_conn, 0x0001, 0xffff, uuid, prv_sensorinfo_by_uuid_cb,
-                                (void *)(uintptr_t)step);
+    const MinimedChr chr =
+        (step == SI_STEP_IDD_FEATURES) ? MinimedChrIddFeatures : MinimedChrSessionRunTime;
+    started = minimed_transport_read(chr, TagSensorInfoRead, &status);
   }
-  if (rc != 0) {
+  if (!started) {
     snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s rc=0x%04x",
-             prv_sensorinfo_step_name(step), (uint16_t)rc);
+             prv_sensorinfo_step_name(step), status.code);
     minimed_sake_log(s_sensorinfo_line);
     prv_sensorinfo_read(step + 1);  // keep sweeping; failure of one step is not fatal
   }
 }
 
-static int prv_sensorinfo_sub_exp_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                     struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: exp sub err=0x%04x",
-             (uint16_t)error->status);
-    minimed_sake_log(s_sensorinfo_line);
+static void prv_sensorinfo_done(const MinimedEvent *e) {
+  const uint8_t step = s_sensorinfo_step;
+  if (e->tag == TagSensorExpSub) {
+    if (!e->status.ok) {
+      snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: exp sub err=0x%04x",
+               e->status.code);
+      minimed_sake_log(s_sensorinfo_line);
+    }
+    prv_sensorinfo_read(SI_STEP_IDD_FEATURES);
+    return;
   }
-  prv_sensorinfo_read(SI_STEP_IDD_FEATURES);
-  return 0;
-}
-
-// Session Start Time (0x2AAA) is read by discovered handle because it is a SIG UUID that other
-// services could theoretically also expose; read_by_uuid over the full range could hit more
-// than one match.
-static int prv_sensorinfo_session_start_cb(uint16_t conn, const struct ble_gatt_error *error,
-                                           struct ble_gatt_attr *attr, void *arg) {
-  if (error->status == 0 && attr && attr->om && attr->om->om_len >= 1) {
-    prv_sensorinfo_log_value("sess start", attr->om->om_data, attr->om->om_len);
-    prv_sensorinfo_read(SI_STEP_SESSION_START + 1);
-  } else {
-    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: sess start err=0x%04x",
-             (uint16_t)error->status);
+  if (e->status.ok && e->len >= 1) {
+    prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), e->data, e->len);
+  } else if (e->status.code != 0) {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x",
+             prv_sensorinfo_step_name(step), e->status.code);
     PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
-    prv_sensorinfo_read(SI_STEP_COUNT);
+    if (e->tag == TagSessionStartRead) {
+      prv_sensorinfo_read(SI_STEP_COUNT);
+      return;
+    }
   }
-  return 0;
+  prv_sensorinfo_read(step + 1);
 }
 
-static void prv_sensorinfo_timer_cb(struct ble_npl_event *ev) {
+static void prv_sensorinfo_timer(void) {
   if (s_sensorinfo_done) return;
   minimed_sake_log("sensor probe start");
   prv_sensorinfo_read(SI_STEP_RUN_TIME);
 }
 
-static void prv_poll_timer_cb(struct ble_npl_event *ev) {
+static void prv_poll_timer(void) {
   if (s_push_mode) minimed_sake_log("fallback poll");
-  // Layer 4 diagnostic: does the host still believe the pump link is connected? Runs on the same
-  // cadence as the poll. If the pump has gone silent but conn_find still succeeds (and MTU is
-  // sane), the link is alive-in-NimBLE's-view -- the silence is the pump not pushing, not a
-  // dropped link. If conn_find fails, the host knows the link is gone even though no disconnect
-  // event has been swallowed yet.
+  // Layer 4 diagnostic: does the stack still believe the pump link is connected? Runs on the same
+  // cadence as the poll. If the pump has gone silent but the link is still there (and MTU is
+  // sane), the silence is the pump not pushing, not a dropped link. If it is gone, the stack
+  // knows even though no disconnect event has arrived yet.
   {
-    struct ble_gap_conn_desc desc;
+    uint16_t mtu = 0;
     char line[48];
-    if (ble_gap_conn_find(s_conn, &desc) == 0) {
-      snprintf(line, sizeof(line), "lnk %u mtu=%u", s_conn,
-               (unsigned)ble_att_mtu(s_conn));
-      minimed_sake_log(line);
+    if (minimed_transport_link_alive(&mtu)) {
+      snprintf(line, sizeof(line), "lnk mtu=%u", (unsigned)mtu);
     } else {
-      snprintf(line, sizeof(line), "lnk %u GONE", s_conn);
-      minimed_sake_log(line);
+      snprintf(line, sizeof(line), "lnk GONE");
     }
+    minimed_sake_log(line);
   }
   prv_request(prv_full_poll_mask());
   const uint32_t secs = s_push_mode ? FALLBACK_AFTER_SECS : POLL_INTERVAL_SECS;
-  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(secs * 1000));
+  minimed_task_timer_start(TimerPoll, secs * 1000);
 }
 
-// Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char was found
-// (s_h_srcp != 0); a missing/failed IDD discovery leaves BG working, just without IOB.
+// ---- Connection setup: subscriptions, then polling ----
+
+// Begin the continuous CGM poll. IOB rides each poll only if the IDD SRCP char is usable; a
+// missing/failed IDD discovery leaves BG working, just without IOB.
 static void prv_start_polling(void) {
-  minimed_sake_log(s_h_srcp != 0 ? "polling BG + IOB" : "polling BG only");
+  minimed_sake_log(HAVE(MinimedChrIddSrcp) ? "polling BG + IOB" : "polling BG only");
   prv_request(prv_full_poll_mask());
-  ble_npl_callout_reset(&s_poll_co, ble_npl_time_ms_to_ticks32(POLL_INTERVAL_SECS * 1000));
-  ble_npl_callout_reset(&s_battery_co,
-                        ble_npl_time_ms_to_ticks32(BATTERY_FIRST_READ_DELAY_SECS * 1000));
-  ble_npl_callout_reset(&s_devinfo_co,
-                        ble_npl_time_ms_to_ticks32(DEVINFO_READ_DELAY_SECS * 1000));
-  ble_npl_callout_reset(&s_sensorinfo_co,
-                        ble_npl_time_ms_to_ticks32(SENSORINFO_READ_DELAY_SECS * 1000));
+  minimed_task_timer_start(TimerPoll, POLL_INTERVAL_SECS * 1000);
+  minimed_task_timer_start(TimerBattery, BATTERY_FIRST_READ_DELAY_SECS * 1000);
+  minimed_task_timer_start(TimerDevinfo, DEVINFO_READ_DELAY_SECS * 1000);
+  minimed_task_timer_start(TimerSensorInfo, SENSORINFO_READ_DELAY_SECS * 1000);
   // Push subscription, deliberately LAST and deliberately fire-and-forget. Everything that
   // matters (BG, IOB) is already polling by this point, so a failure here -- or no indication
   // ever arriving -- just leaves the 60 s poll running; push mode only engages on the first
-  // actual indication (see the 0x101 branch of minimed_sake_read_handle_notify).
-  if (s_h_status_changed != 0) {
-    static const uint8_t indicate[] = {0x02, 0x00};
-    const int rc = ble_gattc_write_flat(s_conn, s_h_status_changed + 1, indicate, sizeof(indicate),
-                                        NULL, NULL);
+  // actual indication (see the 0x101 branch of prv_handle_notify).
+  if (HAVE(MinimedChrIddStatusChanged)) {
+    MinimedGattStatus status;
+    minimed_transport_subscribe(MinimedChrIddStatusChanged, true, TagNone, &status);
     char line[32];
-    snprintf(line, sizeof(line), "0x101 sub rc=%d", rc);
+    snprintf(line, sizeof(line), "0x101 sub rc=%d", (int)status.code);
     minimed_sake_log(line);
-    PBL_LOG_INFO("minimed: subscribed IDD Status Changed (0x101): rc=%d", rc);
+    PBL_LOG_INFO("minimed: subscribed IDD Status Changed (0x101): rc=%d", (int)status.code);
   } else {
     PBL_LOG_INFO("minimed: no IDD Status Changed (0x101) characteristic found");
   }
 }
 
-static int prv_srcp_write_cb(uint16_t conn, const struct ble_gatt_error *error,
-                             struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    prv_log_gatt_err("SRCP wr", (uint16_t)error->status);
-    // No terminating indication will come for a failed write; skip the exchange now rather
-    // than stalling the serialiser until the op timeout.
-    if (s_op == PEND_TAS) prv_status_publish_if_done(PEND_TAS);
-    if (s_op == PEND_IOB || s_op == PEND_RESET || s_op == PEND_TAS) prv_op_complete();
-  }
-  return 0;
-}
-
 // Annunciation subscriptions (IDD RACP indicate, then History Data notify), chained before
-// polling starts. Any failure zeroes both handles -- no alerts, BG/IOB/status unaffected.
+// polling starts. Any failure drops both -- no alerts, BG/IOB/status unaffected.
 static void prv_annunc_give_up(const char *what, uint16_t code) {
   char line[32];
   snprintf(line, sizeof(line), "%s 0x%04x", what, code);
   minimed_sake_log(line);
-  s_h_idd_racp = 0;
-  s_h_hist = 0;
+  s_have[MinimedChrIddRacp] = false;
+  s_have[MinimedChrIddHistory] = false;
   prv_start_polling();
-}
-
-static int prv_sub_hist_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    prv_annunc_give_up("hist sub err", (uint16_t)error->status);
-    return 0;
-  }
-  prv_start_polling();
-  return 0;
-}
-
-static int prv_sub_idd_racp_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    prv_annunc_give_up("IDD RACP sub err", (uint16_t)error->status);
-    return 0;
-  }
-  static const uint8_t notify[] = {0x01, 0x00};
-  int rc = ble_gattc_write_flat(s_conn, s_h_hist + 1, notify, sizeof(notify), prv_sub_hist_cb,
-                                NULL);
-  if (rc != 0) prv_annunc_give_up("hist sub rc", (uint16_t)rc);
-  return 0;
 }
 
 static void prv_sub_annunc(void) {
-  if (s_h_idd_racp == 0 || s_h_hist == 0) {
-    s_h_idd_racp = 0;
-    s_h_hist = 0;
+  if (!HAVE(MinimedChrIddRacp) || !HAVE(MinimedChrIddHistory)) {
+    s_have[MinimedChrIddRacp] = false;
+    s_have[MinimedChrIddHistory] = false;
     minimed_sake_log("no IDD RACP/hist chr");
     prv_start_polling();
     return;
   }
-  static const uint8_t indicate[] = {0x02, 0x00};
-  int rc = ble_gattc_write_flat(s_conn, s_h_idd_racp + 1, indicate, sizeof(indicate),
-                                prv_sub_idd_racp_cb, NULL);
-  if (rc != 0) prv_annunc_give_up("IDD RACP sub rc", (uint16_t)rc);
+  MinimedGattStatus status;
+  if (!minimed_transport_subscribe(MinimedChrIddRacp, true, TagSubIddRacp, &status)) {
+    prv_annunc_give_up("IDD RACP sub rc", status.code);
+  }
 }
 
-static int prv_sub_srcp_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
+// The IDD part of the setup, once the CGM characteristics are subscribed.
+static void prv_setup_idd(void) {
+  if (!HAVE(MinimedChrIddSrcp)) {
+    minimed_sake_log("no IDD SRCP chr");
+    prv_sub_annunc();  // BG still works without IOB
+    return;
+  }
+  MinimedGattStatus status;
+  if (!minimed_transport_subscribe(MinimedChrIddSrcp, true, TagSubSrcp, &status)) {
     char line[32];
-    snprintf(line, sizeof(line), "SRCP sub err=0x%04x", (uint16_t)error->status);
+    snprintf(line, sizeof(line), "SRCP sub rc=0x%04x", status.code);
     minimed_sake_log(line);
-    s_h_srcp = 0;  // give up on IOB, keep BG
+    s_have[MinimedChrIddSrcp] = false;
+    prv_sub_annunc();
   }
-  prv_sub_annunc();
-  return 0;
 }
 
-static int prv_disc_idd_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               const struct ble_gatt_chr *chr, void *arg) {
-  char line[32];
-  if (error->status == 0 && chr) {
-    // The SRCP char is 128-bit vendor, so match by full UUID (not ble_uuid_u16).
-    if (ble_uuid_cmp(&chr->uuid.u, &s_idd_srcp_uuid.u) == 0) {
-      s_h_srcp = chr->val_handle;
-    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_changed_uuid.u) == 0) {
-      s_h_status_changed = chr->val_handle;  // subscribed after polling starts; see prv_start_polling
-    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_status_uuid.u) == 0) {
-      s_h_idd_status = chr->val_handle;  // encrypted read; drives the watchface status line
-    } else if (ble_uuid_cmp(&chr->uuid.u, &s_idd_hist_uuid.u) == 0) {
-      s_h_hist = chr->val_handle;
-    } else if (chr->uuid.u.type == BLE_UUID_TYPE_16 && ble_uuid_u16(&chr->uuid.u) == RACP_UUID) {
-      // The IDD service has its own RACP (same SIG 0x2A52 as the CGM one, different handle).
-      s_h_idd_racp = chr->val_handle;
-    }
-    return 0;
-  }
-  if (error->status == BLE_HS_EDONE) {
-    if (s_h_srcp == 0) {
-      minimed_sake_log("no IDD SRCP chr");
-      prv_sub_annunc();  // BG still works without IOB
-      return 0;
-    }
-    // Subscribe SRCP indications (CCCD = value handle + 1, same as RACP on this pump).
-    static const uint8_t indicate[] = {0x02, 0x00};
-    int rc = ble_gattc_write_flat(s_conn, s_h_srcp + 1, indicate, sizeof(indicate),
-                                  prv_sub_srcp_cb, NULL);
-    if (rc != 0) {
-      snprintf(line, sizeof(line), "SRCP sub rc=0x%04x", (uint16_t)rc);
-      minimed_sake_log(line);
-      s_h_srcp = 0;
-      prv_sub_annunc();
-    }
-    return 0;
-  }
-  snprintf(line, sizeof(line), "IDD chr disc err=0x%04x", (uint16_t)error->status);
-  minimed_sake_log(line);
-  s_h_srcp = 0;
-  prv_sub_annunc();
-  return 0;
-}
-
-static int prv_disc_idd_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               const struct ble_gatt_svc *service, void *arg) {
-  char line[32];
-  if (error->status == 0 && service) {
-    s_idd_start = service->start_handle;
-    s_idd_end = service->end_handle;
-    return 0;
-  }
-  if (error->status == BLE_HS_EDONE) {
-    if (s_idd_start == 0) {
-      minimed_sake_log("no IDD svc 0x100");
-      prv_start_polling();  // BG still works without IOB
-      return 0;
-    }
-    int rc = ble_gattc_disc_all_chrs(s_conn, s_idd_start, s_idd_end, prv_disc_idd_chr_cb, NULL);
-    if (rc != 0) {
-      snprintf(line, sizeof(line), "IDD chr disc rc=0x%04x", (uint16_t)rc);
-      minimed_sake_log(line);
-      prv_start_polling();
-    }
-    return 0;
-  }
-  snprintf(line, sizeof(line), "IDD svc disc err=0x%04x", (uint16_t)error->status);
-  minimed_sake_log(line);
-  prv_start_polling();
-  return 0;
-}
-
-static int prv_sub_racp_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    char line[32];
-    snprintf(line, sizeof(line), "RACP sub err=0x%04x", (uint16_t)error->status);
-    minimed_sake_log(line);
-    return 0;
-  }
-  // CGM chars subscribed. Extend the setup chain with IDD-service discovery (for IOB); polling
-  // starts once that resolves (or immediately falls back to BG-only if the IDD service is absent).
-  minimed_sake_log("discovering IDD svc...");
-  int rc = ble_gattc_disc_svc_by_uuid(s_conn, &s_idd_svc_uuid.u, prv_disc_idd_svc_cb, NULL);
-  if (rc != 0) {
-    char line[32];
-    snprintf(line, sizeof(line), "IDD svc disc rc=0x%04x", (uint16_t)rc);
-    minimed_sake_log(line);
-    prv_start_polling();  // couldn't even start IDD discovery; keep BG
-  }
-  return 0;
-}
-
-static int prv_sub_meas_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           struct ble_gatt_attr *attr, void *arg) {
-  if (error->status != 0) {
-    char line[32];
-    snprintf(line, sizeof(line), "meas sub err=0x%04x", (uint16_t)error->status);
-    minimed_sake_log(line);
-    return 0;
-  }
-  // Subscribe to RACP indications (CCCD = value handle + 1 for these regular 3-handle chars).
-  static const uint8_t indicate[] = {0x02, 0x00};
-  int rc = ble_gattc_write_flat(s_conn, s_h_racp + 1, indicate, sizeof(indicate),
-                                prv_sub_racp_cb, NULL);
-  if (rc != 0) {
-    char line[32];
-    snprintf(line, sizeof(line), "RACP sub rc=0x%04x", (uint16_t)rc);
-    minimed_sake_log(line);
-  }
-  return 0;
-}
-
-static int prv_read_feature_cb(uint16_t conn, const struct ble_gatt_error *error,
-                               struct ble_gatt_attr *attr, void *arg) {
+// One step of the setup chain finished. Each step is chained off the previous one's response, so
+// e.g. notifications are effective before the first RACP write that would produce them.
+static void prv_setup_done(const MinimedEvent *e) {
   char line[40];
-  if (error->status != 0) {
-    snprintf(line, sizeof(line), "feat read err=0x%04x", (uint16_t)error->status);
-    minimed_sake_log(line);
-    return 0;
-  }
-  uint16_t n = (attr && attr->om) ? attr->om->om_len : 0;
-  const uint8_t *d = (attr && attr->om) ? attr->om->om_data : NULL;
-  snprintf(line, sizeof(line), "CGM feat %u:%02x %02x", n, n > 0 ? d[0] : 0, n > 1 ? d[1] : 0);
-  minimed_sake_log(line);
-
-  if (s_h_measurement == 0 || s_h_racp == 0) {
-    minimed_sake_log("missing meas/RACP chr");
-    return 0;
-  }
-  // Subscribe to CGM Measurement notifications (CCCD = value handle + 1). Chaining the RACP write
-  // behind these subscribe write-responses guarantees notifications are effective first.
-  static const uint8_t notify[] = {0x01, 0x00};
-  int rc = ble_gattc_write_flat(s_conn, s_h_measurement + 1, notify, sizeof(notify),
-                                prv_sub_meas_cb, NULL);
-  if (rc != 0) {
-    snprintf(line, sizeof(line), "meas sub rc=0x%04x", (uint16_t)rc);
-    minimed_sake_log(line);
-  }
-  return 0;
-}
-
-static int prv_disc_chr_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           const struct ble_gatt_chr *chr, void *arg) {
-  char line[40];
-  if (error->status == 0 && chr) {
-    uint16_t u = (chr->uuid.u.type == BLE_UUID_TYPE_16) ? ble_uuid_u16(&chr->uuid.u) : 0;
-    if (u == CGM_MEASUREMENT_UUID) {
-      s_h_measurement = chr->val_handle;
-    } else if (u == CGM_FEATURE_UUID) {
-      s_h_feature = chr->val_handle;
-    } else if (u == RACP_UUID) {
-      s_h_racp = chr->val_handle;
-    } else if (u == CGM_SESSION_START_UUID) {
-      s_h_session_start = chr->val_handle;  // sensor-info probe reads this by handle
-    } else if (ble_uuid_cmp(&chr->uuid.u, &s_sensor_exp_uuid.u) == 0) {
-      s_h_sensor_exp = chr->val_handle;  // indicate-only: subscribed during the sensor-info probe
-    }
-    return 0;
-  }
-  if (error->status == BLE_HS_EDONE) {
-    snprintf(line, sizeof(line), "chrs: m=%u f=%u r=%u ss=%u", s_h_measurement, s_h_feature,
-             s_h_racp, s_h_session_start);
-    minimed_sake_log(line);
-    if (s_h_feature != 0) {
-      int rc = ble_gattc_read(s_conn, s_h_feature, prv_read_feature_cb, NULL);
-      if (rc != 0) {
-        snprintf(line, sizeof(line), "feat read rc=0x%04x", (uint16_t)rc);
+  MinimedGattStatus status;
+  switch (e->tag) {
+    case TagCgmFeatureRead: {
+      if (!e->status.ok) {
+        snprintf(line, sizeof(line), "feat read err=0x%04x", e->status.code);
+        minimed_sake_log(line);
+        return;
+      }
+      snprintf(line, sizeof(line), "CGM feat %u:%02x %02x", e->len, e->len > 0 ? e->data[0] : 0,
+               e->len > 1 ? e->data[1] : 0);
+      minimed_sake_log(line);
+      if (!HAVE(MinimedChrCgmMeasurement) || !HAVE(MinimedChrCgmRacp)) {
+        minimed_sake_log("missing meas/RACP chr");
+        return;
+      }
+      if (!minimed_transport_subscribe(MinimedChrCgmMeasurement, false, TagSubMeasurement,
+                                       &status)) {
+        snprintf(line, sizeof(line), "meas sub rc=0x%04x", status.code);
         minimed_sake_log(line);
       }
-    } else {
-      minimed_sake_log("no CGM feature chr!");
+      return;
     }
-    return 0;
+    case TagSubMeasurement:
+      if (!e->status.ok) {
+        snprintf(line, sizeof(line), "meas sub err=0x%04x", e->status.code);
+        minimed_sake_log(line);
+        return;
+      }
+      if (!minimed_transport_subscribe(MinimedChrCgmRacp, true, TagSubCgmRacp, &status)) {
+        snprintf(line, sizeof(line), "RACP sub rc=0x%04x", status.code);
+        minimed_sake_log(line);
+      }
+      return;
+    case TagSubCgmRacp:
+      if (!e->status.ok) {
+        snprintf(line, sizeof(line), "RACP sub err=0x%04x", e->status.code);
+        minimed_sake_log(line);
+        return;
+      }
+      prv_setup_idd();
+      return;
+    case TagSubSrcp:
+      if (!e->status.ok) {
+        snprintf(line, sizeof(line), "SRCP sub err=0x%04x", e->status.code);
+        minimed_sake_log(line);
+        s_have[MinimedChrIddSrcp] = false;  // give up on IOB, keep BG
+      }
+      prv_sub_annunc();
+      return;
+    case TagSubIddRacp:
+      if (!e->status.ok) {
+        prv_annunc_give_up("IDD RACP sub err", e->status.code);
+        return;
+      }
+      if (!minimed_transport_subscribe(MinimedChrIddHistory, false, TagSubHistory, &status)) {
+        prv_annunc_give_up("hist sub rc", status.code);
+      }
+      return;
+    case TagSubHistory:
+      if (!e->status.ok) {
+        prv_annunc_give_up("hist sub err", e->status.code);
+        return;
+      }
+      prv_start_polling();
+      return;
+    default:
+      return;
   }
-  snprintf(line, sizeof(line), "chr disc err=0x%04x", (uint16_t)error->status);
-  minimed_sake_log(line);
-  return 0;
 }
 
-static int prv_disc_svc_cb(uint16_t conn, const struct ble_gatt_error *error,
-                           const struct ble_gatt_svc *service, void *arg) {
-  char line[32];
-  if (error->status == 0 && service) {
-    s_cgm_start = service->start_handle;
-    s_cgm_end = service->end_handle;
-    return 0;
+// Discovery finished: note what this pump exposes, then start the setup chain with the CGM
+// Feature read.
+static void prv_discovered(void) {
+  for (unsigned i = 0; i < MinimedChrCount; i++) {
+    s_have[i] = minimed_transport_has((MinimedChr)i);
   }
-  if (error->status == BLE_HS_EDONE) {
-    if (s_cgm_start == 0) {
-      minimed_sake_log("no CGM svc 181F!");
-      return 0;
-    }
-    int rc = ble_gattc_disc_all_chrs(s_conn, s_cgm_start, s_cgm_end, prv_disc_chr_cb, NULL);
-    if (rc != 0) {
-      snprintf(line, sizeof(line), "chr disc rc=0x%04x", (uint16_t)rc);
-      minimed_sake_log(line);
-    }
-    return 0;
-  }
-  snprintf(line, sizeof(line), "svc disc err=0x%04x", (uint16_t)error->status);
+  char line[40];
+  snprintf(line, sizeof(line), "chrs: m=%d f=%d r=%d ss=%d i=%d", HAVE(MinimedChrCgmMeasurement),
+           HAVE(MinimedChrCgmFeature), HAVE(MinimedChrCgmRacp), HAVE(MinimedChrCgmSessionStart),
+           HAVE(MinimedChrIddSrcp));
   minimed_sake_log(line);
-  return 0;
-}
-
-// Runs on the BT host task a beat after the handshake, so GATT-client procedures aren't started
-// synchronously inside the SAKE-port write callback that completed the handshake.
-static void prv_read_kickoff(struct ble_npl_event *ev) {
-  minimed_sake_log("discovering CGM svc...");
-  const ble_uuid16_t svc_uuid = BLE_UUID16_INIT(CGM_SERVICE_UUID);
-  int rc = ble_gattc_disc_svc_by_uuid(s_conn, &svc_uuid.u, prv_disc_svc_cb, NULL);
-  if (rc != 0) {
-    char line[32];
-    snprintf(line, sizeof(line), "svc disc rc=0x%04x", (uint16_t)rc);
+  if (!HAVE(MinimedChrCgmFeature)) {
+    minimed_sake_log("no CGM feature chr!");
+    return;
+  }
+  MinimedGattStatus status;
+  if (!minimed_transport_read(MinimedChrCgmFeature, TagCgmFeatureRead, &status)) {
+    snprintf(line, sizeof(line), "feat read rc=0x%04x", status.code);
     minimed_sake_log(line);
   }
 }
 
-void minimed_sake_read_init(void) {
-  minimed_settings_init();
-  ble_npl_callout_init(&s_read_co, nimble_port_get_dflt_eventq(), prv_read_kickoff, NULL);
-  ble_npl_callout_init(&s_poll_co, nimble_port_get_dflt_eventq(), prv_poll_timer_cb, NULL);
-  ble_npl_callout_init(&s_wd_co, nimble_port_get_dflt_eventq(), prv_wd_cb, NULL);
-  ble_npl_callout_init(&s_dispatch_co, nimble_port_get_dflt_eventq(), prv_dispatch_cb, NULL);
-  ble_npl_callout_init(&s_op_timeout_co, nimble_port_get_dflt_eventq(), prv_op_timeout_cb, NULL);
-  ble_npl_callout_init(&s_battery_co, nimble_port_get_dflt_eventq(), prv_battery_timer_cb, NULL);
-  ble_npl_callout_init(&s_heap_co, nimble_port_get_dflt_eventq(), prv_heap_timer_cb, NULL);
-  ble_npl_callout_init(&s_devinfo_co, nimble_port_get_dflt_eventq(), prv_devinfo_timer_cb, NULL);
-  ble_npl_callout_init(&s_sensorinfo_co, nimble_port_get_dflt_eventq(), prv_sensorinfo_timer_cb,
-                       NULL);
-}
+// ---- Link lifecycle ----
 
-void minimed_sake_read_start(uint16_t conn_handle) {
-  ble_npl_callout_stop(&s_poll_co);
-  ble_npl_callout_stop(&s_dispatch_co);
-  ble_npl_callout_stop(&s_op_timeout_co);
-  s_conn = conn_handle;
+static void prv_link_up(void) {
+  minimed_task_timer_stop(TimerPoll);
+  minimed_task_timer_stop(TimerDispatch);
+  minimed_task_timer_stop(TimerOpTimeout);
+  s_link_up = true;
   s_last_pump_traffic = (uint32_t)rtc_get_time();  // fresh baseline; pump just connected
-  ble_npl_callout_reset(&s_wd_co, ble_npl_time_ms_to_ticks32(60 * 1000));
-  ble_npl_callout_reset(&s_heap_co, ble_npl_time_ms_to_ticks32(HEAP_LOG_INTERVAL_SECS * 1000));
-  s_cgm_start = s_cgm_end = 0;
-  s_h_measurement = s_h_feature = s_h_racp = 0;
-  s_h_session_start = 0;
-  s_h_sensor_exp = 0;
+  minimed_task_timer_start(TimerWatchdog, 60 * 1000);
+  minimed_task_timer_start(TimerHeap, HEAP_LOG_INTERVAL_SECS * 1000);
+  memset(s_have, 0, sizeof(s_have));  // re-discovered per connection; a stale one could alias
   s_sensorinfo_done = false;
-  s_idd_start = s_idd_end = s_h_srcp = 0;
-  s_h_status_changed = 0;  // re-discovered per connection; a stale handle could alias a new one
-  s_h_idd_status = 0;
-  s_h_idd_racp = 0;
-  s_h_hist = 0;
   s_rec_len = 0;
   s_srcp_len = 0;
   s_hist_len = 0;
@@ -2158,17 +1852,70 @@ void minimed_sake_read_start(uint16_t conn_handle) {
   // monotonic within a sensor session, so keeping it means the first read after a brief dropout is
   // recognised as the reading we already have, rather than being re-timestamped and re-plotted. A
   // new sensor session restarts the offset, which reads as a new value anyway.
-  ble_npl_callout_reset(&s_read_co, ble_npl_time_ms_to_ticks32(250));
+  // A beat after the handshake, so discovery doesn't start inside the SAKE-port write exchange
+  // that completed it.
+  minimed_task_timer_start(TimerKickoff, 250);
 }
 
-void minimed_sake_read_stop(void) {
-  ble_npl_callout_stop(&s_read_co);
-  ble_npl_callout_stop(&s_poll_co);
-  ble_npl_callout_stop(&s_wd_co);
-  ble_npl_callout_stop(&s_dispatch_co);
-  ble_npl_callout_stop(&s_op_timeout_co);
-  ble_npl_callout_stop(&s_battery_co);
-  ble_npl_callout_stop(&s_heap_co);
-  ble_npl_callout_stop(&s_devinfo_co);
-  ble_npl_callout_stop(&s_sensorinfo_co);
+static void prv_link_down(void) {
+  s_link_up = false;
+  for (unsigned t = 0; t < TimerCount; t++) {
+    minimed_task_timer_stop(t);
+  }
+}
+
+static void prv_timer(uint8_t timer) {
+  if (!s_link_up) return;  // a timer that fired just before the link went down
+  switch (timer) {
+    case TimerKickoff:
+      minimed_sake_log("discovering pump svcs...");
+      minimed_transport_discover();
+      break;
+    case TimerPoll: prv_poll_timer(); break;
+    case TimerWatchdog: prv_wd_timer(); break;
+    case TimerDispatch: prv_dispatch_timer(); break;
+    case TimerOpTimeout: prv_op_timeout_timer(); break;
+    case TimerBattery: prv_battery_timer(); break;
+    case TimerHeap: prv_heap_timer(); break;
+    case TimerDevinfo: prv_devinfo_timer(); break;
+    case TimerSensorInfo: prv_sensorinfo_timer(); break;
+    default: break;
+  }
+}
+
+static void prv_gatt_done(const MinimedEvent *e) {
+  switch (e->tag) {
+    case TagCgmRacpWrite:
+    case TagIddRacpWrite:
+    case TagSrcpWrite:
+      prv_write_done(e);
+      break;
+    case TagIddStatusRead: prv_idd_status_read_done(e); break;
+    case TagDevinfoRead: prv_devinfo_read_done(e); break;
+    case TagBatteryRead: prv_battery_read_done(e); break;
+    case TagSensorInfoRead:
+    case TagSensorExpSub:
+    case TagSessionStartRead:
+      prv_sensorinfo_done(e);
+      break;
+    default: prv_setup_done(e); break;
+  }
+}
+
+void minimed_session_init(void) { minimed_settings_init(); }
+
+void minimed_session_handle_event(const MinimedEvent *e) {
+  switch ((MinimedEventType)e->type) {
+    case MinimedEventLinkUp: prv_link_up(); return;
+    case MinimedEventLinkDown: prv_link_down(); return;
+    case MinimedEventTimer: prv_timer(e->tag); return;
+    default: break;
+  }
+  if (!s_link_up) return;  // a result from a link that is already gone
+  switch ((MinimedEventType)e->type) {
+    case MinimedEventDiscovered: prv_discovered(); break;
+    case MinimedEventNotify: prv_handle_notify((MinimedChr)e->chr, e->data, e->len, e->truncated); break;
+    case MinimedEventGattDone: prv_gatt_done(e); break;
+    default: break;
+  }
 }

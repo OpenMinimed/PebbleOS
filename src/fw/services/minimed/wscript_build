@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen
+# SPDX-FileCopyrightText: 2026 Pal Marci
 # SPDX-License-Identifier: Apache-2.0
 
 # core/ is plain C with no PebbleOS or NimBLE dependency: the protocol parsers, the SAKE crypto

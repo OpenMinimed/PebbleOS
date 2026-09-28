@@ -15,7 +15,9 @@
 #include "nimble/nimble_port.h"
 
 #include "minimed_sake_crypto.h"
-#include "minimed_sake_read.h"
+#include "minimed_task.h"
+#include "minimed_transport.h"
+#include "minimed_transport_nimble.h"
 #include "nimble_type_conversions.h"
 #include "comm/ble/gap_le_advert.h"
 #include "comm/bt_lock.h"
@@ -403,7 +405,7 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
       }
     }
     minimed_sake_report(MinimedSakeStageHandshakeComplete);
-    minimed_sake_read_start(conn_handle);  // begin the post-handshake CGM read
+    minimed_transport_nimble_link_up(conn_handle);  // the session starts its GATT client reads
     // The pump is bonded now: close the pump-pairing window (back to strict LESC for the phone)
     // and re-air the pump advert as FE81.
     minimed_sake_apply_sm_config(false);
@@ -625,7 +627,7 @@ void minimed_sake_apply_sm_config(bool pump_window) {
 
 int minimed_sake_service_init(void) {
   ble_npl_callout_init(&s_notify_co, nimble_port_get_dflt_eventq(), prv_notify_cb, NULL);
-  minimed_sake_read_init();
+  minimed_task_init();
 
   // Re-arm DUAL state after a Bluetooth stack restart that was triggered while in DUAL (the
   // pump-liveness watchdog's recovery, or a manual DUAL-keep restart). s_mode survives the
