@@ -612,8 +612,8 @@ static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local
 // HYPO_ALERT_TREAT_PCT, then not again until it has dropped below (or left the falling-low regime)
 // AND the cooldown has passed, so a score hovering at the threshold cannot buzz every 5 minutes.
 // The threshold is the watchface's default TREAT level (HYPO_TREAT_THRESHOLD_DEFAULT there, the
-// model's validated cut-off); the phone-set threshold only reaches the watchface. Gated on the
-// same "low alerts" setting as the pump's own low alarms.
+// model's validated cut-off); the phone-set threshold only reaches the watchface. Switched on and
+// off by its own setting (SETTINGS_ALERT_HYPO_MODEL, "Alert on TREAT" on the Settings page).
 #define HYPO_ALERT_TREAT_PCT 32
 #define HYPO_ALERT_COOLDOWN_SECS (30 * 60)
 static bool s_hypo_alert_armed = true;
@@ -634,7 +634,7 @@ static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bo
   }
   if (!s_hypo_alert_armed ||
       (s_hypo_alert_last != 0 && now - s_hypo_alert_last < HYPO_ALERT_COOLDOWN_SECS) ||
-      !minimed_settings_alert_enabled(true)) {
+      !minimed_settings_hypo_alert_enabled()) {
     return;
   }
   s_hypo_alert_armed = false;

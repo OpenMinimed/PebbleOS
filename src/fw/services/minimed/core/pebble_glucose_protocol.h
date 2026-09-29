@@ -58,10 +58,11 @@
                                    // keep-last-value rules.
 
 // Alert visibility bitmask for KEY_SETTINGS_ALERTS, watchface -> sender. Configured on the phone
-// (the watchapp's Settings page); the sender falls back to SETTINGS_ALERT_LOW alone until the
-// first announcement carries a value.
+// (the watchapp's Settings page); the sender falls back to SETTINGS_ALERT_LOW and
+// SETTINGS_ALERT_HYPO_MODEL until the first announcement carries a value.
 #define SETTINGS_ALERT_LOW 0x01   // predicted-low, low, and severe-low pump alerts
 #define SETTINGS_ALERT_OTHER 0x02 // every other pump alert (reservoir, battery, sensor, SmartGuard, ...)
+#define SETTINGS_ALERT_HYPO_MODEL 0x04 // the sender's own alert when its hypo model reaches TREAT
 
 // Feature-enable bitmask for KEY_SETTINGS_FEATURES, watchface -> sender. Defaults to
 // SETTINGS_FEATURE_HYPO on (the model's own decision, unchanged from before this key existed)
