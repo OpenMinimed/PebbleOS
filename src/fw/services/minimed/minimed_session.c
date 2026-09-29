@@ -608,6 +608,54 @@ static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local
 // the wearer this was fitted on), or earlier still when minimed_hypo_falling_fast says the reading
 // is about to plunge into that regime faster than it can wait for -- see its own comment for the
 // physiological rate this is anchored on.
+// The hypo model's own popup, like a pump alarm's: once when the treat score first reaches
+// HYPO_ALERT_TREAT_PCT, then not again until it has dropped below (or left the falling-low regime)
+// AND the cooldown has passed, so a score hovering at the threshold cannot buzz every 5 minutes.
+// The threshold is the watchface's default TREAT level (HYPO_TREAT_THRESHOLD_DEFAULT there, the
+// model's validated cut-off); the phone-set threshold only reaches the watchface. Gated on the
+// same "low alerts" setting as the pump's own low alarms.
+#define HYPO_ALERT_TREAT_PCT 32
+#define HYPO_ALERT_COOLDOWN_SECS (30 * 60)
+static bool s_hypo_alert_armed = true;
+static uint32_t s_hypo_alert_last;
+
+// mg/dL -> "N.N" mmol/L, rounded the way the pump displays it (see prv_parse_and_show).
+static void prv_mmol_str(char *out, size_t n, float mgdl) {
+  const int32_t m = (int32_t)(mgdl + 0.5f);
+  const int32_t tenths = (m * 100000 + 90091) / 180182;
+  snprintf(out, n, "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
+}
+
+static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bool early) {
+  const uint32_t now = (uint32_t)rtc_get_time();
+  if (treat_pct < HYPO_ALERT_TREAT_PCT) {
+    s_hypo_alert_armed = true;
+    return;
+  }
+  if (!s_hypo_alert_armed ||
+      (s_hypo_alert_last != 0 && now - s_hypo_alert_last < HYPO_ALERT_COOLDOWN_SECS) ||
+      !minimed_settings_alert_enabled(true)) {
+    return;
+  }
+  s_hypo_alert_armed = false;
+  s_hypo_alert_last = now;
+  char nadir[8], nadir_treated[8];
+  prv_mmol_str(nadir, sizeof(nadir), h->nadir_untreated);
+  prv_mmol_str(nadir_treated, sizeof(nadir_treated), h->nadir_treated);
+  char body[160];
+  snprintf(body, sizeof(body),
+           "%sTreat %ld%%, low chance %d%% (severe %d%%)\n"
+           "Lowest %s in the next hour, %s if treated\n"
+           "~%ld min below 3.9\nNow %s",
+           early ? "Falling fast. " : "", (long)treat_pct, (int)(h->p_low * 100.0f + 0.5f),
+           (int)(h->p_severe * 100.0f + 0.5f), nadir, nadir_treated,
+           (long)(h->mins_untreated + 0.5f), s_last_bg_str[0] != '\0' ? s_last_bg_str : "---");
+  minimed_sake_log("hypo alert (model)");
+  PBL_LOG_INFO("minimed: hypo alert shown: treat=%ld pct%s", (long)treat_pct,
+               early ? " (early fast-fall)" : "");
+  minimed_alert_popup_push("Low predicted (model)", body);
+}
+
 static void prv_hypo_check(const MinimedPredictWindow *win) {
   if (!minimed_settings_hypo_enabled()) {
     return;  // phone-disabled: skip the computation entirely, not just the send/display
@@ -616,6 +664,7 @@ static void prv_hypo_check(const MinimedPredictWindow *win) {
   const bool early = win && !normal && minimed_hypo_falling_fast(win);
   if (!normal && !early) {
     minimed_sake_sender_send_hypo(false, 0, 0);  // out of the falling-low regime: clear any banner
+    s_hypo_alert_armed = true;
     return;
   }
   MinimedHypoPrediction h;
@@ -640,6 +689,7 @@ static void prv_hypo_check(const MinimedPredictWindow *win) {
   minimed_sake_log(line);
   const int32_t pct = (int32_t)(h.treat_pct + 0.5f);
   const int32_t p_low_pct = (int32_t)(h.p_low * 100.0f + 0.5f);
+  prv_hypo_alert(&h, pct, early);
   minimed_sake_sender_send_hypo(true, (uint8_t)(pct < 0 ? 0 : (pct > 100 ? 100 : pct)),
                                 (uint8_t)(p_low_pct < 0 ? 0 : (p_low_pct > 100 ? 100 : p_low_pct)));
 }
