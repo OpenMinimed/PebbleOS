@@ -639,7 +639,7 @@ static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bo
   }
   s_hypo_alert_armed = false;
   s_hypo_alert_last = now;
-  char nadir[8], nadir_treated[8];
+  char nadir[16], nadir_treated[16];
   prv_mmol_str(nadir, sizeof(nadir), h->nadir_untreated);
   prv_mmol_str(nadir_treated, sizeof(nadir_treated), h->nadir_treated);
   char body[160];
