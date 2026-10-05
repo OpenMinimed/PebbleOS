@@ -7,6 +7,7 @@
 //              completes against the pump's real recorded msg1/msg3/msg5.
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "minimed_annunciation.h"
@@ -18,6 +19,7 @@
 #include "minimed_history.h"
 #include "minimed_hypo.h"
 #include "minimed_predict.h"
+#include "minimed_predict_model.h"
 #include "minimed_idd_flags.h"
 #include "minimed_iob.h"
 #include "minimed_status.h"
@@ -1071,44 +1073,74 @@ static void section_announce(void) {
 }
 
 // --- Section 6: 30-minute glucose predictor ---------------------------------
-// The C port against the numpy model on 256 recorded test-split vectors (testvec.bin, written by
-// sugar_predictor/export_c.py), and the state builder against hand-made timelines.
+// The C port against the numpy model on recorded vectors (cheap_testvec.bin, written by
+// sugar_predictor/metabonet/export_cheap_fw.py), and the state builder against hand-made timelines.
+
+// Two blocks, each "int32 count" then count records of one MinimedPredictCheapIn and the expected
+// forecast: random held-out windows with their states as they stood, then a day of consecutive
+// ticks whose states the C carries itself.
+static int read_cheap_record(FILE *f, MinimedPredictCheapIn *in, float *want) {
+  return fread(in, sizeof *in, 1, f) == 1 && fread(want, sizeof *want, 1, f) == 1;
+}
+
+static void check_cheap_vectors(void) {
+  // Recorded from held-out MetaboNet windows and not committed; without the file the check is
+  // skipped. CHEAP_TESTVEC overrides the path (sugar_predictor/firmware/cheap_testvec.bin).
+  const char *path = getenv("CHEAP_TESTVEC");
+  FILE *f = fopen(path ? path : "cheap_testvec.bin", "rb");
+  if (!f) {
+    printf("    [skip] cheap_testvec.bin not present: numpy vector check not run\n");
+    return;
+  }
+  int n = 0, bad = 0, bad_stream = 0, bad_state = 0, ok = fread(&n, sizeof n, 1, f) == 1;
+  const int n_point = n;
+  double worst = 0.0;
+  for (int i = 0; ok && i < n_point; i++) {
+    MinimedPredictCheapIn in;
+    float want;
+    if (!read_cheap_record(f, &in, &want)) { ok = 0; break; }
+    const double e = fabs((double)minimed_predict_cheap(&in) - want);
+    if (e > worst) worst = e;
+    if (e > 0.05) bad++;
+  }
+  check("point vectors read", ok && n_point == 2000);
+  check("C forecast matches numpy on every point vector (worst < 0.05 mg/dL)", ok && bad == 0);
+
+  int n_stream = 0;
+  ok = ok && fread(&n_stream, sizeof n_stream, 1, f) == 1;
+  MinimedPredictCheapIn dev;
+  memset(&dev, 0, sizeof dev);
+  double worst_stream = 0.0;
+  for (int i = 0; ok && i < n_stream; i++) {
+    MinimedPredictCheapIn rec;
+    float want;
+    if (!read_cheap_record(f, &rec, &want)) { ok = 0; break; }
+    if (i == 0) {
+      dev = rec;  // seed the states once
+    } else {
+      for (int k = 0; k < 4; k++) {  // the state the C left must be the one numpy had here
+        const double e = fabs(dev.ema[k] - rec.ema[k]) / (fabs(rec.ema[k]) + 1e-3);
+        if (e > 1e-4) bad_state++;
+      }
+      memcpy(dev.bg, rec.bg, sizeof dev.bg);  // new readings in; dev.ema stays the C's own
+      dev.tod_sin = rec.tod_sin;
+      dev.tod_cos = rec.tod_cos;
+      dev.ins_prev = rec.ins_prev;
+      dev.carb_prev = rec.carb_prev;
+    }
+    const double e = fabs((double)minimed_predict_cheap(&dev) - want);
+    if (e > worst_stream) worst_stream = e;
+    if (e > 0.05) bad_stream++;
+  }
+  fclose(f);
+  check("stream vectors read", ok && n_stream == 288);
+  check("a day of carried states keeps matching numpy", ok && bad_stream == 0 && bad_state == 0);
+  printf("    (point worst %.5f mg/dL, stream worst %.5f mg/dL)\n", worst, worst_stream);
+}
+
 static void section_predict(void) {
   printf("  Section 10: glucose predictor\n");
-  // testvec.bin is recorded from one wearer's data and not committed; without it the vector check
-  // is skipped (regenerate with sugar_predictor/export_c.py and copy it here).
-  FILE *f = fopen("testvec.bin", "rb");
-  if (!f) printf("    [skip] testvec.bin not present: numpy vector check not run\n");
-  if (f) {
-    int n = 0, bad = 0, bad_low = 0;
-    double worst = 0.0;
-    size_t got = fread(&n, sizeof(int), 1, f);
-    for (int i = 0; got == 1 && i < n; i++) {
-      MinimedPredictWindow in;
-      float t[4], want, want_low;
-      int hour;
-      if (fread(in.bg, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
-          fread(in.ins, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
-          fread(in.carb, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
-          fread(t, 4, 4, f) != 4 || fread(&hour, 4, 1, f) != 1 || fread(&want, 4, 1, f) != 1 ||
-          fread(&want_low, 4, 1, f) != 1) {
-        got = 0;
-        break;
-      }
-      in.tod_sin = t[0]; in.tod_cos = t[1]; in.dow_sin = t[2]; in.dow_cos = t[3]; in.hour = hour;
-      MinimedPrediction p;
-      minimed_predict_window(&in, &p);
-      const double e = p.mgdl > want ? p.mgdl - want : want - p.mgdl;
-      const double el = p.low_prob > want_low ? p.low_prob - want_low : want_low - p.low_prob;
-      if (e > worst) worst = e;
-      if (e > 0.05) bad++;
-      if (el > 0.001) bad_low++;
-    }
-    fclose(f);
-    check("256 vectors read", got == 1 && n == 256);
-    check("C prediction matches numpy on every vector (worst < 0.05 mg/dL)", bad == 0 && worst < 0.05);
-    check("C low-glucose probability matches numpy", bad_low == 0);
-  }
+  check_cheap_vectors();
 
   // State builder. 2026-06-26 (a Friday) 10:00:00 local, in a zone 2 h east of UTC.
   const int32_t tz = 2 * 3600;
@@ -1125,8 +1157,8 @@ static void section_predict(void) {
   check("a stale newest reading gives no prediction",
         !minimed_predict_run(&st, now + 20 * 60, tz, &p));
 
-  // Shape checks only: the model is personalised and mean-reverting, so a rise does not simply
-  // continue. A fall toward the low range must raise the low-glucose probability.
+  // Shape checks only: the model is mean-reverting, so a rise does not simply continue. A steep
+  // fall must forecast lower than a rise.
   MinimedPrediction rising, falling;
   MinimedPredictState r, fl;
   minimed_predict_reset(&r);
@@ -1144,8 +1176,8 @@ static void section_predict(void) {
     minimed_predict_add_bg(&lo, now - (uint32_t)i * 300, 200 - (47 - i) * 3);
   }
   MinimedPrediction plo;
-  check("a steep fall toward the low range raises the low probability",
-        minimed_predict_run(&lo, now, tz, &plo) && plo.low_prob > rising.low_prob);
+  check("a steep fall forecasts lower than a rise",
+        minimed_predict_run(&lo, now, tz, &plo) && plo.mgdl < rising.mgdl);
   MinimedPredictState g = r;  // the same rise, with a gap of missing readings
   minimed_predict_reset(&g);
   for (int i = 47; i >= 0; i--) {
@@ -1169,6 +1201,51 @@ static void section_predict(void) {
   check("an earlier bolus and meal change the prediction",
         minimed_predict_run(&b, now, tz, &pb) && pb.mgdl != p0.mgdl);
 
+  // The cells older than the 4 h window, still in the ring, seed the net's decaying sums. Compare
+  // with a plain replay of every ring cell, oldest first, through the model itself.
+  MinimedPredictState ring, ring_no_old;
+  minimed_predict_reset(&ring);
+  minimed_predict_reset(&ring_no_old);
+  for (int k = MINIMED_PREDICT_CELLS - 1; k >= 0; k--) {
+    minimed_predict_add_bg(&ring, now - (uint32_t)k * 300, 120);
+    minimed_predict_add_bg(&ring_no_old, now - (uint32_t)k * 300, 120);
+  }
+  float ins_at[MINIMED_PREDICT_CELLS] = {0}, carb_at[MINIMED_PREDICT_CELLS] = {0};
+  ins_at[55] = 3.0f;   // 4.6 h ago: outside the window, inside the ring
+  ins_at[20] = 1.5f;
+  carb_at[52] = 40.0f;
+  carb_at[9] = 25.0f;
+  for (int k = 0; k < MINIMED_PREDICT_CELLS; k++) {
+    if (ins_at[k] > 0) minimed_predict_add_insulin(&ring, now - (uint32_t)k * 300, ins_at[k]);
+    if (carb_at[k] > 0) minimed_predict_add_carbs(&ring, now - (uint32_t)k * 300, carb_at[k]);
+    if (k < 48 && ins_at[k] > 0) {
+      minimed_predict_add_insulin(&ring_no_old, now - (uint32_t)k * 300, ins_at[k]);
+    }
+    if (k < 48 && carb_at[k] > 0) {
+      minimed_predict_add_carbs(&ring_no_old, now - (uint32_t)k * 300, carb_at[k]);
+    }
+  }
+  MinimedPredictCheapIn ref;
+  memset(&ref, 0, sizeof ref);
+  for (int i = 0; i < MINIMED_PREDICT_CGM_CELLS; i++) ref.bg[i] = 120.0f;
+  const float minutes = (float)((int64_t)(now + (uint32_t)tz) % 86400) / 60.0f;
+  ref.tod_sin = sinf(6.28318530717958647692f * minutes / 1440.0f);
+  ref.tod_cos = cosf(6.28318530717958647692f * minutes / 1440.0f);
+  for (int k = MINIMED_PREDICT_CELLS - 1; k >= 2; k--) {  // every cell that ended before the last
+    ref.ema[0] = ref.ema[0] * ch_ema_decay[0] + ins_at[k];
+    ref.ema[1] = ref.ema[1] * ch_ema_decay[1] + ins_at[k];
+    ref.ema[2] = ref.ema[2] * ch_ema_decay[2] + carb_at[k];
+    ref.ema[3] = ref.ema[3] * ch_ema_decay[3] + carb_at[k];
+  }
+  ref.ins_prev = ins_at[1];
+  ref.carb_prev = carb_at[1];
+  const float want_ring = minimed_predict_cheap(&ref);
+  MinimedPrediction pr, pn;
+  check("the run equals a straight replay of the whole ring",
+        minimed_predict_run(&ring, now, tz, &pr) && fabsf(pr.mgdl - want_ring) < 1e-3f);
+  check("a bolus older than the window still reaches the forecast",
+        minimed_predict_run(&ring_no_old, now, tz, &pn) && pn.mgdl != pr.mgdl);
+
   // An event in a cell newer than anything so far advances the ring and clears what it passes.
   MinimedPredictState w;
   minimed_predict_reset(&w);
@@ -1179,8 +1256,7 @@ static void section_predict(void) {
   minimed_predict_add_bg(&w, now, 90);  // far older than the ring: ignored
   check("a reading older than the ring is ignored", minimed_predict_run(&w, now + 64 * 300, tz, &p));
 
-  // The day-of-week index is Thursday = 0: the epoch (1970-01-01) was a Thursday, and 2026-06-26
-  // was a Friday, so a Friday and the following Thursday must differ while a week apart matches.
+  // The net knows the time of day, not the weekday: the same time a week apart forecasts the same.
   MinimedPredictState d1, d2;
   minimed_predict_reset(&d1);
   minimed_predict_reset(&d2);

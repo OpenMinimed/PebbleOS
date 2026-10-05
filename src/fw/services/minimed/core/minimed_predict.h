@@ -6,14 +6,16 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-//! 30-minute-ahead glucose predictor: a 38-feature, 120-unit int8 network (about 6.4 KB) fitted on
-//! one wearer's year of MiniMed 780G data (sugar_predictor/REPORT.md: 20.5 mg/dL test RMSE against
-//! 24.4 for carrying the current value forward). Pure -- no NimBLE, no firmware dependencies -- so
-//! the host harness in tools/minimed_sake_hosttest can run it.
+//! 30-minute-ahead glucose predictor: sugar_predictor's c20_h32, 20 cheap terms into a 32-unit int8
+//! network (1.5 KB, about 8 K instructions a forecast; 20.2 mg/dL RMSE on MetaboNet's test split
+//! against 25.9 for carrying the current value forward). A population model, not fitted to one
+//! wearer. Pure -- no NimBLE, no firmware dependencies -- so the host harness in
+//! tools/minimed_sake_hosttest can run it.
 //!
-//! The model wants the last 4 hours on a 5-minute grid: CGM, insulin delivered per cell (basal and
-//! bolus) and carbohydrates entered per cell. MinimedPredictState collects those from timestamped
-//! events, in any order, and minimed_predict_run builds the model's input from it.
+//! The net reads the last 13 CGM cells, the clock and four decaying sums of the insulin and carbs
+//! before the newest cell. MinimedPredictState collects CGM, insulin delivered per 5-minute cell
+//! (basal and bolus) and carbohydrates entered per cell from timestamped events, in any order, and
+//! minimed_predict_run builds the model's input from it. The hypo model reads the same 4-hour window.
 
 #define MINIMED_PREDICT_WINDOW 48   //!< cells the model reads (4 h)
 #define MINIMED_PREDICT_CELLS 64    //!< ring size: the window plus room for late events
@@ -53,23 +55,35 @@ void minimed_predict_set_basal(MinimedPredictState *st, uint32_t ts, float u_per
 #define MINIMED_IOB_AIT_SECS (2 * 3600)
 int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now);
 
-//! The model's input as the training set defined it, oldest cell first, cell 47 the reading at t.
-//! bg carries gaps forward. ins/carb cell 47 covers [t, t+5) and is ignored. `dow_*` counts days
-//! from THURSDAY = 0 (days since 1970 mod 7). Public so the host harness can replay the recorded
-//! test vectors; the firmware goes through minimed_predict_run.
+//! The 4-hour window both models read, oldest cell first, cell 47 the reading at t. bg carries
+//! gaps forward. ins/carb cell 47 covers [t, t+5) and is ignored; cell 46 is the newest known.
+//! `ema0` is the net's insulin/carb state at cell 0, from the cells before the window (zero when
+//! there are none). Public so the host harness can build windows by hand; the firmware goes
+//! through minimed_predict_run.
 typedef struct {
   float bg[MINIMED_PREDICT_WINDOW];
   float ins[MINIMED_PREDICT_WINDOW];
   float carb[MINIMED_PREDICT_WINDOW];
   float tod_sin, tod_cos;
-  float dow_sin, dow_cos;
+  float ema0[4];
   int hour;
 } MinimedPredictWindow;
 
+//! The net's own input, laid out like sugar_predictor's cheap_in_t so recorded vectors read straight
+//! into it. `ema` is the state one cell ago in, the state now out: iob60, iob180, cob45, cob120.
+#define MINIMED_PREDICT_CGM_CELLS 13
+typedef struct {
+  float bg[MINIMED_PREDICT_CGM_CELLS];  //!< mg/dL, oldest first, newest = the origin
+  float tod_sin, tod_cos;               //!< 2 pi * minutes since local midnight / 1440
+  float ins_prev, carb_prev;            //!< delivered in the cell that ended at the origin
+  float ema[4];
+} MinimedPredictCheapIn;
+
+//! Forecast 30 minutes ahead of the newest cell, mg/dL, unclamped. Updates in->ema.
+float minimed_predict_cheap(MinimedPredictCheapIn *in);
+
 typedef struct {
   float mgdl;      //!< predicted glucose 30 minutes after `now`, mg/dL
-  float low_prob;  //!< probability of below 70 mg/dL 30 minutes ahead
-  bool low_alarm;  //!< low_prob is at or above the alarm threshold
   // What the model saw, for the log. Set by minimed_predict_run only.
   uint8_t bg_cells;  //!< window cells holding a real reading (of 48)
   int16_t ins_cu;    //!< insulin over the window, hundredths of a unit, newest cell excluded
@@ -79,7 +93,7 @@ typedef struct {
 } MinimedPrediction;
 
 //! Predict from the newest reading. `now` is the wall clock; `gmt_offset_secs` turns it into local
-//! time, which the model's time-of-day and day-of-week features use. False when there is no
+//! time, which the model's time-of-day features use. False when there is no
 //! reading, or the newest is more than 10 minutes older than `now`.
 bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gmt_offset_secs,
                          MinimedPrediction *out);

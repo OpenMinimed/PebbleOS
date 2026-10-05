@@ -705,19 +705,15 @@ static void prv_predict_and_send(void) {
       (uint32_t)(((rtc_get_ticks() - predict_start) * 1000) / RTC_TICKS_HZ);
   if (have_pred) {
     const int32_t pred = (int32_t)(p.mgdl + 0.5f);
-    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), low p=%d/1000 alarm=%d, "
-                 "%lums",
-                 (long)pred, (long)s_reading_mgdl, (long)(pred - s_reading_mgdl),
-                 (int)(p.low_prob * 1000.0f), (int)p.low_alarm, (unsigned long)predict_ms);
+    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), %lums", (long)pred,
+                 (long)s_reading_mgdl, (long)(pred - s_reading_mgdl), (unsigned long)predict_ms);
     PBL_LOG_INFO("minimed: predict inputs bg=%u/48 cells, slope15=%+d.%d mg/dL/min, ins4h=%d.%02dU, "
                  "carb4h=%dg, hour=%u",
                  p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
                  p.ins_cu / 100, p.ins_cu % 100, p.carb_g, p.hour);
     // The watch's log view keeps 31 characters after the time; the rest is cut there.
     char line[64];
-    snprintf(line, sizeof(line), "pred %ld %+ld low%d.%d%%", (long)pred,
-             (long)(pred - s_reading_mgdl), (int)(p.low_prob * 100.0f),
-             (int)(p.low_prob * 1000.0f) % 10);
+    snprintf(line, sizeof(line), "pred %ld %+ld", (long)pred, (long)(pred - s_reading_mgdl));
     minimed_sake_log(line);
     snprintf(line, sizeof(line), "in bg%u s%+d.%d i%d.%dU c%dg h%u", p.bg_cells, p.slope_x10 / 10,
              (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10, p.ins_cu / 100,
