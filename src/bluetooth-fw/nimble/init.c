@@ -55,6 +55,22 @@ typedef enum {
 // with the vendor's ble_hs_enabled_state (Stopped<->OFF, Started<->ON).
 static DriverState s_driver_state = DriverStateStopped;
 
+// NimBLE keeps these GATT totals private (ble_hs_priv.h).
+extern uint16_t ble_hs_max_services;
+extern uint16_t ble_hs_max_attrs;
+extern uint16_t ble_hs_max_client_configs;
+
+// ble_gatts_reset() drops the attributes but not the totals ble_gatts_count_cfg() adds to, and
+// every start counts every service again. Left alone, each restart sizes the next attribute pool
+// one start larger until ble_gatts_start() fails and the host asserts.
+static void prv_gatts_reset(void) {
+  if (ble_gatts_reset() == 0) {
+    ble_hs_max_services = 0;
+    ble_hs_max_attrs = 0;
+    ble_hs_max_client_configs = 0;
+  }
+}
+
 static void prv_sync_cb(void) {
   PBL_LOG_DBG("NimBLE host synchronized");
   xSemaphoreGive(s_host_started);
@@ -161,6 +177,8 @@ bool bt_driver_start(BTDriverConfig *config) {
   minimed_sake_service_init();
 #endif
 
+  PBL_LOG_DBG("NimBLE start: GATT svcs=%u attrs=%u cccds=%u", (unsigned)ble_hs_max_services,
+              (unsigned)ble_hs_max_attrs, (unsigned)ble_hs_max_client_configs);
   ble_hs_sched_start();
   f_rc = xSemaphoreTake(s_host_started, milliseconds_to_ticks(s_bt_stack_start_stop_timeout_ms));
   if (f_rc != pdTRUE) {
@@ -193,7 +211,7 @@ err:
   PBL_ASSERT(f_rc == pdTRUE, "NimBLE host stop timed out after start failure");
 
   s_driver_state = DriverStateStopped;
-  (void)ble_gatts_reset();
+  prv_gatts_reset();
 
   return false;
 }
@@ -208,7 +226,7 @@ void bt_driver_stop(void) {
   PBL_ASSERT(f_rc == pdTRUE, "NimBLE host stop timed out");
   s_driver_state = DriverStateStopped;
 
-  ble_gatts_reset();
+  prv_gatts_reset();
 
   nimble_store_unload();
 }
