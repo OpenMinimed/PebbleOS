@@ -39,3 +39,7 @@ bool minimed_settings_hypo_enabled(void);
 //! Update the feature mask from a watchface's capability announcement (KEY_SETTINGS_FEATURES).
 //! Persists to flash only when the value actually changes.
 void minimed_settings_set_features(uint8_t mask);
+
+//! Persist the set-reminder start time and last notification date (YYYYMMDD).
+void minimed_settings_get_set_reminder(uint32_t *set_started_at, uint32_t *last_notification_day);
+void minimed_settings_set_set_reminder(uint32_t set_started_at, uint32_t last_notification_day);

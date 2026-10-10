@@ -54,6 +54,7 @@ static bool prv_timer_event_is_current(const MinimedEvent *event) {
 }
 
 static void prv_task_main(void *unused) {
+  minimed_session_task_started();
   for (;;) {
     static MinimedEvent s_event; // one task, one event at a time: keep it off the stack
     if (pbl_msgq_get(&s_queue, &s_event, PBL_FOREVER) != 0 ||

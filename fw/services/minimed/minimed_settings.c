@@ -17,6 +17,10 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 #define MINIMED_SETTINGS_MAX_SIZE 256
 static const char s_alerts_key[] = "alerts";
 static const char s_features_key[] = "features";
+static const char s_set_started_key[] = "setStarted";
+static const char s_set_notified_key[] = "setNotified";
+static uint32_t s_set_started_at;
+static uint32_t s_set_last_notification_day;
 
 // Default until the watchface's first announcement carries a real value: low-BG alerts only,
 // matching the maintainer's stated preference (issue #15) rather than the old MINIMED_ALERT_POPUPS
@@ -39,6 +43,10 @@ void minimed_settings_init(void) {
   if (settings_file_get(&fd, s_features_key, sizeof(s_features_key), &v, sizeof(v)) == S_SUCCESS) {
     s_features_mask = v;
   }
+  settings_file_get(&fd, s_set_started_key, sizeof(s_set_started_key), &s_set_started_at,
+                    sizeof(s_set_started_at));
+  settings_file_get(&fd, s_set_notified_key, sizeof(s_set_notified_key),
+                    &s_set_last_notification_day, sizeof(s_set_last_notification_day));
   settings_file_close(&fd);
 }
 
@@ -102,4 +110,35 @@ void minimed_settings_set_features(uint8_t mask) {
   PBL_LOG_INFO("minimed: settings features 0x%02x -> 0x%02x", s_features_mask, mask);
   s_features_mask = mask;
   launcher_task_add_callback(prv_store_features_cb, (void *)(uintptr_t)mask);
+}
+
+static void prv_store_set_reminder_cb(void *unused) {
+  SettingsFile fd;
+  if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
+    PBL_LOG_WRN("minimed: reminder persist open fail");
+    return;
+  }
+  const status_t start_rc = settings_file_set(&fd, s_set_started_key, sizeof(s_set_started_key),
+                                              &s_set_started_at, sizeof(s_set_started_at));
+  const status_t notified_rc =
+      settings_file_set(&fd, s_set_notified_key, sizeof(s_set_notified_key),
+                        &s_set_last_notification_day, sizeof(s_set_last_notification_day));
+  if (start_rc != S_SUCCESS || notified_rc != S_SUCCESS) {
+    PBL_LOG_WRN("minimed: reminder persist set fail");
+  }
+  settings_file_close(&fd);
+}
+
+void minimed_settings_get_set_reminder(uint32_t *set_started_at, uint32_t *last_notification_day) {
+  *set_started_at = s_set_started_at;
+  *last_notification_day = s_set_last_notification_day;
+}
+
+void minimed_settings_set_set_reminder(uint32_t set_started_at, uint32_t last_notification_day) {
+  if (set_started_at == s_set_started_at && last_notification_day == s_set_last_notification_day) {
+    return;
+  }
+  s_set_started_at = set_started_at;
+  s_set_last_notification_day = last_notification_day;
+  launcher_task_add_callback(prv_store_set_reminder_cb, NULL);
 }

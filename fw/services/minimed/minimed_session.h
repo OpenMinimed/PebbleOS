@@ -10,5 +10,8 @@
 //! One-time setup, from minimed_task_init (the caller's task, before the MiniMed task exists).
 void minimed_session_init(void);
 
+//! The MiniMed task is running and its timers exist. MiniMed task only.
+void minimed_session_task_started(void);
+
 //! Handle one event from the transport or a timer. MiniMed task only.
 void minimed_session_handle_event(const MinimedEvent *event);

@@ -17,12 +17,14 @@
 #include "minimed_sake_aes.h"
 #include "minimed_sake_crypto.h"
 #include "minimed_status.h"
+#include "minimed_set_reminder.h"
 #include "pebble_glucose_protocol.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static int g_pass, g_fail;
 
@@ -684,6 +686,52 @@ static void section_idd_flags(void) {
 // --- Section 7: pump status (IDD Status + TAS parse, label mapping, countdowns) ---
 // Ported from the bridge's iterated readStatus/statusForWatch; these tests pin the priority
 // chain and the countdown stamping rules the bridge needed field iteration to get right.
+
+static uint32_t make_local_epoch(int year, int month, int day, int hour, int minute) {
+  struct tm local = {0};
+  local.tm_year = year - 1900;
+  local.tm_mon = month - 1;
+  local.tm_mday = day;
+  local.tm_hour = hour;
+  local.tm_min = minute;
+  local.tm_isdst = -1;
+  return (uint32_t)mktime(&local);
+}
+
+static void section_set_reminder(void) {
+  MinimedSetReminder state;
+  const uint32_t monday_evening = make_local_epoch(2026, 9, 14, 18, 0);
+  minimed_set_reminder_init(&state, 0, 0);
+  check("first reservoir reading establishes a baseline only",
+        !minimed_set_reminder_observe_reservoir(&state, 200000, monday_evening) &&
+            state.set_started_at == 0);
+  check("reservoir decline does not reset set date",
+        !minimed_set_reminder_observe_reservoir(&state, 199000, monday_evening + 60) &&
+            state.set_started_at == 0);
+  check("reservoir increase over 1 IU marks a new set",
+        minimed_set_reminder_observe_reservoir(&state, 250000, monday_evening + 120) &&
+            state.set_started_at == monday_evening + 120);
+
+  const uint32_t wed_morning = make_local_epoch(2026, 9, 16, 7, 0);
+  const uint32_t thu_before = make_local_epoch(2026, 9, 17, 6, 59);
+  const uint32_t thu_morning = make_local_epoch(2026, 9, 17, 7, 0);
+  const uint32_t thu_nine = make_local_epoch(2026, 9, 17, 9, 0);
+  const uint32_t thu_evening = make_local_epoch(2026, 9, 17, 20, 0);
+  check("third calendar day is Thursday, not 72 hours after Monday evening",
+        !minimed_set_reminder_due(&state, wed_morning) &&
+            minimed_set_reminder_due(&state, thu_before) &&
+            minimed_set_reminder_age_days(&state, thu_morning) == 3);
+  check("morning status window is 07:00 inclusive to 09:00 exclusive",
+        minimed_set_reminder_morning_window(&state, thu_morning) &&
+            !minimed_set_reminder_morning_window(&state, thu_nine));
+  check("evening notification is due once at 20:00",
+        minimed_set_reminder_evening_due(&state, thu_evening));
+  minimed_set_reminder_mark_notified(&state, thu_evening);
+  check("evening notification does not repeat on the same day",
+        !minimed_set_reminder_evening_due(&state, thu_evening));
+  check("evening notification repeats the next day while unchanged",
+        minimed_set_reminder_evening_due(&state, make_local_epoch(2026, 9, 18, 20, 0)));
+}
 
 static void section_status(void) {
   printf("--- pump status ---\n");
@@ -1566,6 +1614,7 @@ int main(void) {
   section_backfill();
   section_idd_flags();
   section_status();
+  section_set_reminder();
   section_annunciation();
   section_announce();
   section_predict();

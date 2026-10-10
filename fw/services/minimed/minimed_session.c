@@ -20,6 +20,7 @@
 #include "minimed_sake_sender.h"
 #include "minimed_settings.h"
 #include "minimed_status.h"
+#include "minimed_set_reminder.h"
 #include "minimed_task.h"
 #include "minimed_transport.h"
 #include "pebble_glucose_protocol.h"
@@ -46,6 +47,7 @@ enum {
   TimerDevinfo,
   TimerSensorInfo,
   TimerAnnuncProbe, // start of the Snooze/Confirm probe, then its per-command timeout
+  TimerReminder,    // once a minute, with or without a pump link: set reminders
   TimerCount
 };
 _Static_assert(TimerCount <= MINIMED_TIMER_COUNT, "raise MINIMED_TIMER_COUNT");
@@ -175,6 +177,13 @@ static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts);
 static void prv_predict_reading(int32_t mgdl);
 static void prv_hypo_check(const MinimedPredictWindow *win);
 static void prv_status_publish_if_done(uint8_t completed_op);
+
+#define REMINDER_CHECK_SECS 60
+static MinimedSetReminder s_set_reminder;
+static bool s_watch_status_sent;
+static char s_watch_status[20];
+static uint32_t s_watch_status_start;
+static uint32_t s_watch_status_end;
 static void prv_sensorinfo_read(uint8_t step);
 static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n);
 static void prv_annunc_probe_notify(const uint8_t *data, uint16_t len);
@@ -1333,16 +1342,72 @@ static void prv_wd_timer(void) {
 // always requested as a pair when both chars exist; publish once the pair's other read is no
 // longer queued -- ops are serialised, so "not pending" means "done or never requested". A read
 // that failed leaves its struct invalid, and the mapping just skips its clauses.
+// Send the pump status to the watchface, or a set reminder in its place while the pump has
+// nothing to say. Returns true when what the watchface shows changed.
+static bool prv_send_reminder_status(const char *pump_status, MinimedStatusTimers timers,
+                                     uint32_t now) {
+  const char *display = pump_status;
+  char set_status[20];
+  if (pump_status[0] == '\0' && s_set_reminder.have_reservoir &&
+      minimed_set_reminder_morning_window(&s_set_reminder, now)) {
+    const uint32_t age_days = minimed_set_reminder_age_days(&s_set_reminder, now);
+    if (age_days > 99) {
+      snprintf(set_status, sizeof(set_status), "INF SET 99+ DAYS");
+    } else {
+      snprintf(set_status, sizeof(set_status), "INF SET %lu DAYS OLD", (unsigned long)age_days);
+    }
+    display = set_status;
+    timers = (MinimedStatusTimers){0};
+  }
+  if (s_watch_status_sent && strcmp(s_watch_status, display) == 0 &&
+      s_watch_status_start == timers.start && s_watch_status_end == timers.end) {
+    return false;
+  }
+  strncpy(s_watch_status, display, sizeof(s_watch_status) - 1);
+  s_watch_status[sizeof(s_watch_status) - 1] = '\0';
+  s_watch_status_start = timers.start;
+  s_watch_status_end = timers.end;
+  s_watch_status_sent = true;
+  minimed_sake_sender_send_status(display, timers.start, timers.end);
+  return true;
+}
+
+static void prv_reminder_timer(void) {
+  const uint32_t now = (uint32_t)rtc_get_time();
+  char pump_status[20];
+  if (minimed_status_compose(pump_status, sizeof(pump_status))) {
+    const MinimedStatusTimers timers = minimed_status_get_timers();
+    if (prv_send_reminder_status(pump_status, timers, now)) {
+      minimed_sake_sender_commit();
+    }
+  }
+
+  if (s_set_reminder.have_reservoir && minimed_set_reminder_evening_due(&s_set_reminder, now)) {
+    minimed_alert_popup_push("MiniMed", "Infusion set due", false);
+    minimed_set_reminder_mark_notified(&s_set_reminder, now);
+    minimed_settings_set_set_reminder(s_set_reminder.set_started_at,
+                                      s_set_reminder.last_notification_day);
+    minimed_sake_log_evt("set reminder notification");
+  }
+
+  minimed_task_timer_start(TimerReminder, REMINDER_CHECK_SECS * 1000);
+}
+
 static void prv_status_publish_if_done(uint8_t completed_op) {
   const uint8_t other = (completed_op == PEND_STATUS) ? PEND_TAS : PEND_STATUS;
   if (s_pending & other)
     return;
   const uint32_t now = (uint32_t)rtc_get_time();
+  if (s_idd_st.valid &&
+      minimed_set_reminder_observe_reservoir(&s_set_reminder, s_idd_st.reservoir_mu, now)) {
+    minimed_settings_set_set_reminder(s_set_reminder.set_started_at, 0);
+    minimed_sake_log_evt("set change detected from reservoir increase");
+  }
   minimed_status_update(&s_idd_st, &s_tas, now);
   char label[20];
   if (minimed_status_compose(label, sizeof(label))) {
     const MinimedStatusTimers timers = minimed_status_get_timers();
-    minimed_sake_sender_send_status(label, timers.start, timers.end);
+    prv_send_reminder_status(label, timers, now);
     static char s_logged_label[20];
     static MinimedStatusTimers s_logged_timers;
     if (strcmp(label, s_logged_label) != 0 || timers.start != s_logged_timers.start ||
@@ -2231,11 +2296,17 @@ static void prv_link_up(void) {
 static void prv_link_down(void) {
   s_link_up = false;
   for (unsigned t = 0; t < TimerCount; t++) {
-    minimed_task_timer_stop(t);
+    if (t != TimerReminder) {
+      minimed_task_timer_stop(t);
+    }
   }
 }
 
 static void prv_timer(uint8_t timer) {
+  if (timer == TimerReminder) {
+    prv_reminder_timer();
+    return;
+  }
   if (!s_link_up)
     return; // a timer that fired just before the link went down
   switch (timer) {
@@ -2313,6 +2384,13 @@ static void prv_gatt_done(const MinimedEvent *e) {
 
 void minimed_session_init(void) {
   minimed_settings_init();
+  uint32_t set_started_at, last_notification_day;
+  minimed_settings_get_set_reminder(&set_started_at, &last_notification_day);
+  minimed_set_reminder_init(&s_set_reminder, set_started_at, last_notification_day);
+}
+
+void minimed_session_task_started(void) {
+  minimed_task_timer_start(TimerReminder, REMINDER_CHECK_SECS * 1000);
 }
 
 void minimed_session_handle_event(const MinimedEvent *e) {
