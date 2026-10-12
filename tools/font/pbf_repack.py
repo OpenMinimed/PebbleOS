@@ -14,6 +14,9 @@ import argparse
 import json
 import os
 import struct
+import sys
+
+import pbf_color
 from PIL import Image
 
 # Feature flags
@@ -40,6 +43,15 @@ def image_to_bitmap(img_path, expected_width=None, expected_height=None):
             bitlist.append(1 if pixels[x, y] == 0 else 0)
 
     return bitlist, width, height
+
+
+def image_to_gcolor8(img_path):
+    img = Image.open(img_path).convert("RGBA")
+    return (
+        [pbf_color.rgba_to_gcolor8(*px) for px in img.get_flattened_data()],
+        img.width,
+        img.height,
+    )
 
 
 def bitlist_to_bytes(bitlist):
@@ -95,9 +107,28 @@ def compress_rle4(bitlist):
     return len(rle_units), bytes(result)
 
 
-def build_pbf(manifest, output_path, use_rle4=False):
+def find_color_overlays(overlay_dirs):
+    """Map codepoint -> PNG path over all overlay directories."""
+    overlays = {}
+    for overlay_dir in overlay_dirs or []:
+        for name in os.listdir(overlay_dir):
+            if not (name.startswith("U+") and name.endswith(".png")):
+                continue
+            codepoint = int(name[2:-4], 16)
+            if codepoint in overlays:
+                raise ValueError(f"U+{codepoint:04X} is in more than one overlay")
+            overlays[codepoint] = os.path.join(overlay_dir, name)
+    return overlays
+
+
+def build_pbf(manifest, output_path, use_rle4=False, color_overlay=None):
     """Build a PBF font from a manifest and glyph images."""
     base_dir = os.path.dirname(manifest["_manifest_path"])
+    try:
+        overlays = find_color_overlays(color_overlay)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return False
 
     # Determine format parameters
     version = manifest.get("version", 3)
@@ -109,12 +140,18 @@ def build_pbf(manifest, output_path, use_rle4=False):
     # Feature flags
     use_offset_16 = manifest.get("features", {}).get("offset_16", True)
     use_rle4 = manifest.get("features", {}).get("rle4", False) or use_rle4
+    use_color = manifest.get("features", {}).get("color", False) or bool(color_overlay)
+    if use_color and use_rle4:
+        print("Error: RLE4 cannot be combined with color")
+        return False
 
     features = 0
     if use_offset_16:
         features |= FEATURE_OFFSET_16
     if use_rle4:
         features |= FEATURE_RLE4
+    if use_color:
+        features |= pbf_color.FEATURE_COLOR
 
     # Load and process all glyphs
     glyphs = []
@@ -122,7 +159,24 @@ def build_pbf(manifest, output_path, use_rle4=False):
         codepoint = glyph_info["codepoint"]
         img_path = os.path.join(base_dir, glyph_info["file"])
 
-        if os.path.exists(img_path):
+        if codepoint in overlays:
+            img_path = overlays[codepoint]
+            is_color = True
+        else:
+            is_color = (
+                use_color
+                and glyph_info.get("color", False)
+                and os.path.exists(img_path)
+            )
+        if is_color:
+            colors, width, height = image_to_gcolor8(img_path)
+            if (width, height) != (
+                glyph_info.get("width", width),
+                glyph_info.get("height", height),
+            ):
+                print(f"Error: {img_path} is {width}x{height}, glyph metrics differ")
+                return False
+        elif os.path.exists(img_path):
             bitlist, width, height = image_to_bitmap(img_path)
         else:
             # Empty glyph
@@ -136,7 +190,13 @@ def build_pbf(manifest, output_path, use_rle4=False):
         advance = glyph_info.get("advance", width + 1)
 
         # Build glyph data
-        if use_rle4 and bitlist:
+        if is_color:
+            bitmap_bytes = pbf_color.encode_color(colors, width, height)
+            height_field = height
+        elif use_color:
+            bitmap_bytes = pbf_color.encode_tinted(bitlist, width, height)
+            height_field = height
+        elif use_rle4 and bitlist:
             num_rle_units, bitmap_bytes = compress_rle4(bitlist)
             height_field = num_rle_units
         else:
@@ -195,14 +255,14 @@ def build_pbf(manifest, output_path, use_rle4=False):
         hash_buckets[bucket_id].append(glyph["codepoint"])
 
     # Sort each bucket by codepoint
-    for bucket_id in hash_buckets:
-        hash_buckets[bucket_id].sort()
+    for bucket in hash_buckets.values():
+        bucket.sort()
 
     # Determine offset entry format
     cp_format = "I" if codepoint_bytes == 4 else "H"
     off_format = "H" if use_offset_16 else "I"
     offset_entry_format = "<" + cp_format + off_format
-    offset_entry_size = struct.calcsize(offset_entry_format)
+    struct.calcsize(offset_entry_format)
 
     # Build offset table (ordered by hash bucket)
     offset_table = b""
@@ -261,6 +321,7 @@ def build_pbf(manifest, output_path, use_rle4=False):
     print(f"  Glyphs: {num_glyphs}")
     print(f"  Max height: {max_height}")
     print(f"  RLE4: {use_rle4}")
+    print(f"  Color: {use_color}")
     print(f"  Size: {len(font_data)} bytes")
 
     return True
@@ -273,6 +334,12 @@ def main():
     parser.add_argument("manifest", help="Input font.json manifest file")
     parser.add_argument("-o", "--output", required=True, help="Output PBF file")
     parser.add_argument("--rle4", action="store_true", help="Force RLE4 compression")
+    parser.add_argument(
+        "--color-overlay",
+        action="append",
+        help="directory of U+XXXX.png color glyphs (repeatable); builds a color "
+        "font where the other glyphs are drawn in the text color",
+    )
     args = parser.parse_args()
 
     if not os.path.exists(args.manifest):
@@ -284,9 +351,12 @@ def main():
 
     manifest["_manifest_path"] = args.manifest
 
-    build_pbf(manifest, args.output, use_rle4=args.rle4)
+    if not build_pbf(
+        manifest, args.output, use_rle4=args.rle4, color_overlay=args.color_overlay
+    ):
+        return 1
     return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

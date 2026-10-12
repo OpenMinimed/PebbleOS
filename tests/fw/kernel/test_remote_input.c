@@ -1,33 +1,39 @@
 /* SPDX-FileCopyrightText: 2026 Core Devices LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "kernel/remote_input.h"
-
-#include "applib/event_service_client.h"
-#include "applib/ui/recognizer/swipe.h"
-#include <pbl/drivers/display/display.h>
-#include "kernel/events.h"
-#include "pbl/services/touch/touch.h"
-#include "pbl/util/math.h"
-#include "pbl/util/size.h"
-
 #include <string.h>
 
-#include "clar.h"
+#include <pbl/drivers/display/display.h>
+#include <pbl/services/touch/touch.h>
+#include <pbl/util/math.h>
+#include <pbl/util/size.h>
+
+#include <applib/event_service_client.h>
+#include <applib/ui/recognizer/swipe.h>
+#include <clar.h>
+#include <kernel/events.h>
+#include <kernel/remote_input.h>
 
 // Stubs
 ///////////////////////////////////////////////////////////////////////////////
-#include "stubs_logging.h"
-#include "stubs_mutex.h"
-#include "stubs_passert.h"
-
-#include "fake_pbl_malloc.h"
-#include "fake_new_timer.h"
+#include <fake_new_timer.h>
+#include <fake_pbl_malloc.h>
+#include <stubs_logging.h>
+#include <stubs_mutex.h>
+#include <stubs_passert.h>
 
 #define MAX_RECORDED 32
 
 static PebbleEvent s_events[MAX_RECORDED];
 static int s_event_count;
+
+bool pbl_in_isr(void) {
+  return false;
+}
+
+void event_put_isr(PebbleEvent *event) {
+  cl_fail("remote input reports from a thread");
+}
 
 void event_put(PebbleEvent *event) {
   cl_assert(s_event_count < MAX_RECORDED);
@@ -43,7 +49,7 @@ void event_service_client_subscribe(EventServiceInfo *service_info) {
 
 //! Delivers a comm session open/close event the way the event service would.
 static void prv_put_comm_session_event(bool is_open, bool is_system) {
-  cl_assert(s_comm_session_subscription != NULL);
+  cl_assert(s_comm_session_subscription != nullptr);
   PebbleEvent event = {
     .type = PEBBLE_COMM_SESSION_EVENT,
     .bluetooth.comm_session_event = {
@@ -87,7 +93,7 @@ static int s_ack_length;
 static int s_ack_count;
 
 bool comm_session_send_data(CommSession *session, uint16_t endpoint_id, const uint8_t *data,
-                           size_t length, uint32_t timeout_ms) {
+                            size_t length, uint32_t timeout_ms) {
   cl_assert(length <= sizeof(s_ack));
   memcpy(s_ack, data, length);
   s_ack_length = length;
@@ -181,8 +187,7 @@ void test_remote_input__zero_presses_leaves_no_button_held(void) {
 }
 
 void test_remote_input__rejects_unknown_button(void) {
-  cl_assert_equal_i(RemoteInputResult_Invalid,
-                    remote_input_button_press(NUM_BUTTONS, 1, 20, 0));
+  cl_assert_equal_i(RemoteInputResult_Invalid, remote_input_button_press(NUM_BUTTONS, 1, 20, 0));
   cl_assert_equal_i(0, s_event_count);
 }
 
@@ -190,8 +195,7 @@ void test_remote_input__second_request_is_busy(void) {
   cl_assert_equal_i(RemoteInputResult_Ok, remote_input_button_press(BUTTON_ID_SELECT, 1, 20, 0));
   cl_assert_equal_i(RemoteInputResult_Busy, remote_input_button_press(BUTTON_ID_UP, 1, 20, 0));
   // Swipes share the timer, so they are single-flight against button presses too.
-  cl_assert_equal_i(RemoteInputResult_Busy,
-                    remote_input_swipe(RemoteInputSwipeDirection_Up, 150));
+  cl_assert_equal_i(RemoteInputResult_Busy, remote_input_swipe(RemoteInputSwipeDirection_Up, 150));
 
   prv_run_sequence();
 
@@ -261,8 +265,7 @@ void test_remote_input__held_buttons_block_sequences(void) {
   cl_assert_equal_i(RemoteInputResult_Ok, remote_input_button_set(1 << BUTTON_ID_BACK));
 
   cl_assert_equal_i(RemoteInputResult_Busy, remote_input_button_press(BUTTON_ID_UP, 1, 20, 0));
-  cl_assert_equal_i(RemoteInputResult_Busy,
-                    remote_input_swipe(RemoteInputSwipeDirection_Up, 150));
+  cl_assert_equal_i(RemoteInputResult_Busy, remote_input_swipe(RemoteInputSwipeDirection_Up, 150));
 
   // Releasing the hold lets sequences through again.
   cl_assert_equal_i(RemoteInputResult_Ok, remote_input_button_set(0));
@@ -299,7 +302,7 @@ void test_remote_input__running_sequence_blocks_button_set(void) {
 
 void test_remote_input__endpoint_acks_a_button_set_command(void) {
   const uint8_t msg[] = {0x02, (1 << BUTTON_ID_BACK) | (1 << BUTTON_ID_SELECT)};
-  remote_input_protocol_msg_callback(NULL, msg, sizeof(msg));
+  remote_input_protocol_msg_callback(nullptr, msg, sizeof(msg));
 
   cl_assert_equal_i(1, s_ack_count);
   cl_assert_equal_i(2, s_ack_length);
@@ -413,8 +416,10 @@ void test_remote_input__swipe_aborts_when_injection_is_refused(void) {
 
 void test_remote_input__swipe_stays_on_screen(void) {
   const RemoteInputSwipeDirection directions[] = {
-    RemoteInputSwipeDirection_Up, RemoteInputSwipeDirection_Down,
-    RemoteInputSwipeDirection_Left, RemoteInputSwipeDirection_Right,
+    RemoteInputSwipeDirection_Up,
+    RemoteInputSwipeDirection_Down,
+    RemoteInputSwipeDirection_Left,
+    RemoteInputSwipeDirection_Right,
   };
   for (unsigned d = 0; d < ARRAY_LENGTH(directions); d++) {
     s_touch_count = 0;
@@ -436,7 +441,7 @@ void test_remote_input__rejects_unknown_swipe_direction(void) {
 void test_remote_input__endpoint_acks_a_button_command(void) {
   // command=button, button=down, presses=2, hold=0x0032, gap=0x000a
   const uint8_t msg[] = {0x00, 0x03, 0x02, 0x00, 0x32, 0x00, 0x0a};
-  remote_input_protocol_msg_callback(NULL, msg, sizeof(msg));
+  remote_input_protocol_msg_callback(nullptr, msg, sizeof(msg));
 
   cl_assert_equal_i(1, s_ack_count);
   cl_assert_equal_i(2, s_ack_length);
@@ -451,7 +456,7 @@ void test_remote_input__endpoint_acks_a_button_command(void) {
 void test_remote_input__endpoint_acks_a_swipe_command(void) {
   // command=swipe, direction=left, duration=0 (watch default)
   const uint8_t msg[] = {0x01, 0x02, 0x00, 0x00};
-  remote_input_protocol_msg_callback(NULL, msg, sizeof(msg));
+  remote_input_protocol_msg_callback(nullptr, msg, sizeof(msg));
 
   cl_assert_equal_i(RemoteInputResult_Ok, s_ack[1]);
   prv_run_sequence();
@@ -462,15 +467,15 @@ void test_remote_input__endpoint_acks_a_swipe_command(void) {
 
 void test_remote_input__endpoint_rejects_malformed_messages(void) {
   const uint8_t truncated[] = {0x00, 0x03};
-  remote_input_protocol_msg_callback(NULL, truncated, sizeof(truncated));
+  remote_input_protocol_msg_callback(nullptr, truncated, sizeof(truncated));
   cl_assert_equal_i(RemoteInputResult_Invalid, s_ack[1]);
 
   const uint8_t unknown_command[] = {0x7f, 0x00, 0x00, 0x00};
-  remote_input_protocol_msg_callback(NULL, unknown_command, sizeof(unknown_command));
+  remote_input_protocol_msg_callback(nullptr, unknown_command, sizeof(unknown_command));
   cl_assert_equal_i(0x7f, s_ack[0]);
   cl_assert_equal_i(RemoteInputResult_Invalid, s_ack[1]);
 
-  remote_input_protocol_msg_callback(NULL, unknown_command, 0);
+  remote_input_protocol_msg_callback(nullptr, unknown_command, 0);
   cl_assert_equal_i(RemoteInputResult_Invalid, s_ack[1]);
 
   cl_assert_equal_i(0, s_event_count);

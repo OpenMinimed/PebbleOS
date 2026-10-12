@@ -14,6 +14,15 @@ bundles the ARM GNU toolchain, Pebble QEMU, and other tools:
 curl -LsSf https://github.com/coredevices/PebbleOS-SDK/releases/latest/download/pebbleos-sdk-installer.sh | sh
 ```
 
+The build locates the SDK on its own when a build directory is configured:
+it honours `PEBBLEOS_SDK_ROOT` if set (the SDK's `env.sh` exports it), and
+otherwise picks the newest `pebbleos-sdk-<version>` under your home directory
+or `/opt` that satisfies the version in `SDK_VERSION`. The SDK root and the
+paths of the tools found in it (toolchain, QEMU, sftool, gdb) are cached in
+the build directory, so a build keeps using the SDK it was configured with.
+To use a specific install, pass `-DPEBBLEOS_SDK_ROOT=<dir>` to
+`pbl configure`.
+
 ## System-level dependencies
 
 A series of system-level dependencies are required.
@@ -48,9 +57,11 @@ sudo apt install \
     libgtk-3-dev \
     libncurses-dev \
     librsvg2-bin \
+    libsdl2-dev \
     make \
     nodejs \
     openocd \
+    pkg-config \
     python3-dev \
     python3-venv
 ```
@@ -85,7 +96,9 @@ sudo dnf install \
     ncurses-devel \
     nodejs \
     openocd \
-    python3-devel
+    pkgconf-pkg-config \
+    python3-devel \
+    SDL2-devel
 ```
 
 ::::
@@ -150,3 +163,14 @@ Remember to activate the virtual environment before every time you start working
 ```shell
 pip install -r requirements.txt
 ```
+
+This also installs `pbl`, the developer CLI you drive the build with. With
+the virtual environment active it is on the `PATH` from anywhere inside the
+checkout:
+
+```shell
+pbl configure --board asterix
+pbl build
+```
+
+See {doc}`pbl` for what it can do and how it is put together.

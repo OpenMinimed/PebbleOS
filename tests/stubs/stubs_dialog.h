@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "applib/ui/dialogs/dialog.h"
+#include <applib/ui/dialogs/dialog.h>
 
 void dialog_set_background_color(Dialog *dialog, GColor background_color) {
   return;
@@ -29,7 +29,7 @@ void dialog_set_text_color(Dialog *dialog, GColor text_color) {
   return;
 }
 
-void ddialog_set_vibe(Dialog *dialog, bool vibe_on_show) {
+void dialog_set_vibe(Dialog *dialog, bool vibe_on_show) {
   return;
 }
 
@@ -80,11 +80,11 @@ void dialog_add_status_bar_layer(Dialog *dialog, GRect status_layer_frame) {
 }
 
 GDrawCommandImage *dialog_create_icon(Dialog *dialog) {
-  return NULL;
+  return nullptr;
 }
 
-bool dialog_init_icon_layer(Dialog *dialog, GDrawCommandImage *image,
-                            GPoint origin, bool animated) {
+bool dialog_init_icon_layer(Dialog *dialog, GDrawCommandImage *image, GPoint origin,
+                            bool animated) {
   return false;
 }
 

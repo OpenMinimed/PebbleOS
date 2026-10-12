@@ -1,15 +1,12 @@
-[submodule "src/fw/vendor/CMSIS"]
+[submodule "third_party/cmsis_core/CMSIS"]
 	path = third_party/cmsis_core/CMSIS
 	url = https://github.com/ARM-software/CMSIS_5.git
-[submodule "src/bluetooth-fw/nimble/vendor/mynewt-nimble"]
+[submodule "third_party/nimble/mynewt-nimble"]
 	path = third_party/nimble/mynewt-nimble
 	url = https://github.com/coredevices/mynewt-nimble.git
 [submodule "third_party/hal_nordic/nrfx"]
 	path = third_party/hal_nordic/nrfx
 	url = https://github.com/NordicSemiconductor/nrfx
-[submodule "third_party/freertos/FreeRTOS-Kernel"]
-	path = third_party/freertos/FreeRTOS-Kernel
-	url = https://github.com/coredevices/FreeRTOS-Kernel
 [submodule "third_party/nanopb/nanopb"]
 	path = third_party/nanopb/nanopb
 	url = https://github.com/nanopb/nanopb
@@ -19,9 +16,6 @@
 [submodule "third_party/hal_sifli/SiFli-SDK"]
 	path = third_party/hal_sifli/SiFli-SDK
 	url = https://github.com/coredevices/SiFli-SDK.git
-[submodule "third_party/memfault/memfault-firmware-sdk"]
-	path = third_party/memfault/memfault-firmware-sdk
-	url = https://github.com/memfault/memfault-firmware-sdk.git
 [submodule "third_party/qr_code_generator/QR-Code-generator"]
 	path = third_party/qr_code_generator/QR-Code-generator
 	url = https://github.com/nayuki/QR-Code-generator
@@ -43,3 +37,9 @@
 [submodule "third_party/mbedtls/mbedtls"]
 	path = third_party/mbedtls/mbedtls
 	url = https://github.com/Mbed-TLS/mbedtls.git
+[submodule "third_party/uzlib/uzlib"]
+	path = third_party/uzlib/uzlib
+	url = https://github.com/coredevices/uzlib.git
+[submodule "third_party/upng/upng"]
+	path = third_party/upng/upng
+	url = https://github.com/coredevices/upng.git

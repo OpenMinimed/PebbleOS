@@ -5,9 +5,10 @@ PebbleOS is the operating system running on Pebble smartwatches.
 ## Organization
 
 - `docs`: project documentation
+- `drivers`: hardware drivers
+- `fw`: firmware source
 - `resources`: firmware resources (icons, fonts, etc.)
 - `sdk`: application SDK generation files
-- `src`: firmware source
 - `subsys`: OS subsystems, e.g. logging
 - `tests`: tests
 - `third_party`: third-party code in git submodules, also includes glue code
@@ -15,16 +16,20 @@ PebbleOS is the operating system running on Pebble smartwatches.
   system, tests, etc.
 - `tools/libs`: Python packages used in multiple areas, e.g. log dehashing,
   console, etc.
-- `tools/waf`: scripts used by the waf build system
+- `tools/libs/pbl-cli`: the `pbl` developer CLI
+- `tools/cmake`: generators the CMake builds shell out to
+- `sdk/waftools`: waf plugins bundled into the SDK app developers build with
 
 ## Documentation
 
 Contributor documentation lives in `docs/` (published at
 https://pebbleos-core.readthedocs.io). Prefer pointing to or extending those
 pages over duplicating knowledge here: `docs/development/contributing.md`
-(DCO, commit and AI-usage rules), `docs/development/sdk_export.md` (SDK
-export machinery), `docs/development/qemu.md` (emulator workflow, summarised
-below).
+(DCO, commit and AI-usage rules), `docs/development/pbl.md` (the `pbl`
+CLI, and how to extend it), `docs/development/sdk_export.md` (SDK export
+machinery), `docs/development/qemu.md` (emulator workflow, summarised
+below), `docs/development/integration_tests.md` (pytest suite on QEMU and
+devices).
 
 ## Code style
 
@@ -46,36 +51,53 @@ below).
 
 ## Firmware development
 
-- Configure: `./pbl configure --board BOARD_NAME`
+- Configure: `pbl configure --board BOARD_NAME`
 
-  - Board names can be obtained from `./pbl --help`
+  - Board names can be obtained from `pbl configure --help`
   - `-DCONFIG_RELEASE=y` enables release mode
   - `-DCONFIG_MFG=y` enables manufacturing mode
   - `--variant=normal|prf` selects build variant (default: normal)
 
-- Build firmware: `./pbl build`
-- Run tests: `./pbl test`
+- Build firmware: `pbl build`
+- Run tests: `pbl test`
+
+## Submodules in agent workspaces
+
+The submodules are large. In disposable or isolated agent workspaces, do not
+initialize every submodule recursively. Initialize only the submodule needed
+for the current build or task, using a shallow clone:
+
+```
+git submodule update --init --depth 1 -- path/to/submodule
+```
+
+Add `--recursive` only when that specific submodule requires its own nested
+submodules. If a task needs submodule history, deepen only that submodule.
+Workspace providers should reuse local Git object stores and copy-on-write
+checkouts when available; agents must not symlink a writable submodule checkout
+from another workspace because that breaks workspace isolation.
 
 ## Emulator (QEMU)
 
 `docs/development/qemu.md` is the full workflow. In short:
 
 ```sh
-./pbl configure --board qemu_emery   # or qemu_flint / qemu_gabbro; qemu_emery = Pebble Time 2
-./pbl build
-./pbl qemu                           # --keep-flash-image keeps installed apps
-./pbl console                        # serial prompt (TCP localhost:12345)
-./pbl screenshot                     # -> build/screenshot.png; read it to check UI changes
+pbl configure --board qemu_emery   # or qemu_flint / qemu_gabbro; qemu_emery = Pebble Time 2
+pbl build
+pbl qemu                           # --keep-flash-image keeps installed apps
+pbl console                        # serial prompt (TCP localhost:12345)
+pbl screenshot                     # -> build/screenshot.png; read it to check UI changes
 ```
 
 - Drive the UI through the socket monitor (`build/qemu-mon.sock`) with `sendkey` (left = back,
   right = select, up, down), not the interactive QEMU window.
-- Touch boards: `./pbl touch X Y` taps, `./pbl swipe X1 Y1 X2 Y2 [--steps N --duration S]`
+- Touch boards: `pbl touch X Y` taps, `pbl swipe X1 Y1 X2 Y2 [--steps N --duration S]`
   swipes. Screen-pixel coordinates; single touch only.
-- UART1 output goes to `uart1.log` in the repository root; `./pbl debug` attaches gdb.
-- QEMU has no Bluetooth. With `CONFIG_MINIMED_SAKE` the QEMU build starts the MiniMed task
-  against a stand-in link (`src/bluetooth-fw/qemu/minimed_fake_pump.c`) that only proves the task
-  plumbing boots and survives; the real pump link needs a watch. See "Emulator smoke test" below.
+- UART1 output goes to `uart1.log` in the repository root; `pbl debug` attaches gdb.
+- QEMU has no Bluetooth: NimBLE runs against a fake controller that never forms a link. With
+  `CONFIG_MINIMED_SAKE` the QEMU build starts the MiniMed task against a stand-in link
+  (`subsys/bluetooth/minimed_fake_pump.c`) that only proves the task plumbing boots and survives;
+  the real pump link needs a watch. See "Emulator smoke test" below.
 
 ## Adding a new SDK function
 
@@ -124,26 +146,28 @@ in mind.
 
 ### Code map
 
-- `src/fw/services/minimed/core/`: plain C, libc only. SAKE crypto, the pump protocol parsers
+- `fw/services/minimed/core/`: plain C, libc only. SAKE crypto, the pump protocol parsers
   (CGM, IDD status, history, annunciations, IOB), the graph, the 30-minute predictor and the hypo
   model, and `pebble_glucose_protocol.h`. No PebbleOS or NimBLE includes are allowed here: this is
   what the watchapp or a standalone library reuses.
-- `src/fw/services/minimed/`: the firmware service.
-  - `minimed_task.c`: the dedicated `PebbleTask_Minimed` (priority 1, watched by the task
-    watchdog), its event queue and timers.
+- `fw/services/minimed/`: the firmware service.
+  - `minimed_task.c`: the dedicated `PebbleTask_Minimed` (priority 1, deliberately not under the
+    task watchdog), its event queue and timers.
   - `minimed_session.c`: the pump session (exchange serialiser, setup chain, backfill, models,
     alerts). Event-driven; never calls NimBLE.
   - `minimed_transport.h`: GATT client ops on named characteristics, results posted as events.
     Mirrors the SDK's `ble_client_*` API on purpose.
   - `minimed_sake_sender.c`: the watchface sink (loopback CommSession, one push per completed op).
   - `minimed_settings.c`: user settings set from the watchface's Clay page.
-- `src/bluetooth-fw/nimble/`: only what needs NimBLE. `minimed_transport_nimble.c` (the
-  transport), `minimed_sake_service.c` (SAKE GATT server, handshake, advertising payload, pairing
-  window), hooks in `advert.c`, `init.c`, `nimble_store.c`.
-- `src/fw/popups/minimed_*` and `src/fw/apps/system/minimed_sake_app.c`: mode toggle, on-watch
-  log, alert popups.
-- Enabled by `CONFIG_MINIMED_SAKE` (`src/bluetooth-fw/Kconfig`); everything above is compiled out
-  without it.
+- `subsys/bluetooth/`: only what needs NimBLE. `minimed_transport_nimble.c` (the transport),
+  `minimed_sake_service.c` (SAKE GATT server, handshake, advertising payload, pairing window),
+  hooks in `advert.c`, `init.c`, `nimble_store.c`. On radio-less boards (`CONFIG_BT_HCI_FAKE`,
+  i.e. QEMU) `minimed_fake_pump.c` replaces the transport and the cipher.
+- `fw/popups/minimed_*` and `fw/apps/system/minimed_sake_app.c`: mode toggle, on-watch log, alert
+  popups.
+- Enabled by `CONFIG_MINIMED_SAKE` (`subsys/bluetooth/Kconfig`); everything above is compiled out
+  without it. The NimBLE security settings it needs (legacy pairing, two connections) are Kconfig
+  defaults in `subsys/bluetooth/Kconfig.defconfig`.
 - Deeper notes: `TESTING.md` (build, flash and test procedures), `CONNECTIVITY.md`, `WATCHFACE.md`,
   `BATTERY.md`, `PROGRESS.md`, `VERSIONS.md` (history).
 
@@ -152,31 +176,34 @@ in mind.
 ```sh
 ./minimed-build.sh <desc> --pt2          # Pebble Time 2 (obelix): _slot0.pbz + _slot1.pbz
 ./minimed-build.sh <desc>                # Pebble 2 Duo (asterix)
-./minimed-build.sh <desc> --pt2 --configure   # after Kconfig or app registry changes
 ```
 
 - Needs a committed tree (the build identity is the commit; `--allow-dirty` overrides).
-- Runs in Docker (`ghcr.io/coredevices/pebbleos-docker:v6` for PT2). Outputs
-  `build/minimed-<board>-<git describe>-<desc>[_slotN].pbz`, archives the matching
-  `build/elfs/...elf` per slot and `build/...loghash.json`. Keep those: coredumps and flash logs
+- Runs `pbl configure/build/bundle` in Docker (`pebbleos-minimed:v10`, built on first use from the
+  CI image), in one build directory per board and slot (`build-pt2-slot0`, `build-pt2-slot1`,
+  `build-asterix`). Outputs `build/minimed-<board>-<git describe>-<desc>[_slotN].pbz`, archives
+  the matching `build/elfs/...elf` per slot and `build/...loghash.json`. Keep those: coredumps and flash logs
   from that build can only be decoded with them.
 - PT2 firmware must be a release build from a release-form tag, one bundle per slot; the script
   handles it. `TESTING.md` explains why every shortcut (repacking, manifest edits) fails.
-- Quick compile check without bundling: run `./waf build` in the same Docker image against the
-  existing configure cache (see `build_slot` in `minimed-build.sh`).
-- Host tests for `core/` (no watch, no ARM toolchain): `make -C tools/minimed_sake_hosttest`.
+- Quick compile check without bundling: `just build [build-asterix|build-pt2-slot0]` runs
+  `pbl build` in the same image against a directory `minimed-build.sh` already configured.
+- Host tests for `core/` (no watch, no ARM toolchain): `make -C tools/minimed_sake_hosttest run`.
   They must pass before any firmware build.
+- Unit tests of the firmware (host build): `pbl test` in the image (add `--no-images` to skip the
+  slow image fixtures; the rendering suites then fail, which is expected).
 - Docker image with everything preinstalled (pip requirements, SDL2 for QEMU, toolchain and
-  QEMU on `PATH`): `docker build -t pebbleos-minimed:local -f tools/minimed/Dockerfile .` Use it
-  in place of the CI image for local builds and emulator runs.
+  QEMU on `PATH`): `docker build -t pebbleos-minimed:v10 -f tools/minimed/Dockerfile .` Use it
+  in place of the CI image for local builds and emulator runs. Run it with
+  `-u "$(id -u):$(id -g)" -e HOME=/tmp/home` so build outputs stay yours.
 
 ### Emulator smoke test
 
 Run `tools/minimed/qemu_smoke_test.sh [seconds]` before flashing any change to the MiniMed task,
-session or transport. It builds `qemu_emery` with MiniMed enabled, boots it headless, lets the
-stand-in pump link come up, then fails on any assert, fault, watchdog or reboot in the serial
-logs (`build/qemu_uart*.log`, screenshot in `build/qemu_shot.ppm`). It reconfigures `build/`;
-the next `minimed-build.sh` run switches back. The MiniMed task must never be able to take the
+session or transport. It builds `qemu_emery` with MiniMed enabled into `build-qemu/`, boots it
+headless, lets the stand-in pump link come up, then fails on any assert, fault, watchdog or reboot
+in the serial logs (`build-qemu/qemu_uart*.log`, screenshot in `build-qemu/qemu_shot.ppm`). The
+MiniMed task must never be able to take the
 watch down: it is deliberately not under the task watchdog, and its init degrades to "pump link
 off" instead of asserting.
 
@@ -217,7 +244,7 @@ again; a refused connection on port 9000 means that.
 ### Watchface (separate repo)
 
 The companion watchface is `pebble-glucose-watchface` (`pebble build`, SDK 4.33). Its
-`src/c/protocol.h` must stay byte-identical to `src/fw/services/minimed/core/
+`src/c/protocol.h` must stay byte-identical to `fw/services/minimed/core/
 pebble_glucose_protocol.h`. The protocol spec lives in mortenfyhn/pebble-glucose-protocol
 (`PROTOCOL.md` is the source; headers are generated from it). New protocol keys and capability
 bits use experimental numbers (keys >= 1000), outside the reserved ranges.

@@ -1,75 +1,75 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "applib/graphics/framebuffer.h"
-#include "applib/graphics/graphics.h"
-#include "applib/ui/app_window_stack.h"
-#include "applib/ui/content_indicator.h"
-#include "applib/ui/content_indicator_private.h"
-#include "applib/ui/dialogs/simple_dialog.h"
-#include "applib/ui/text_layer.h"
-#include "applib/ui/window_private.h"
-#include "resource/resource.h"
-#include "resource/resource_ids.auto.h"
-#include "pbl/services/timeline/timeline_resources.h"
-#include "shell/system_theme.h"
-#include "util/buffer.h"
-#include "util/graphics.h"
-#include "pbl/util/hash.h"
-#include "pbl/util/math.h"
-#include "pbl/util/size.h"
-
-#include "clar.h"
-
 #include <stdio.h>
+
+#include <pbl/services/timeline/timeline_resources.h>
+#include <pbl/util/buffer.h>
+#include <pbl/util/hash.h>
+#include <pbl/util/math.h>
+#include <pbl/util/size.h>
+
+#include <applib/graphics/framebuffer.h>
+#include <applib/graphics/graphics.h>
+#include <applib/graphics/raw_image.h>
+#include <applib/ui/app_window_stack.h>
+#include <applib/ui/content_indicator.h>
+#include <applib/ui/content_indicator_private.h>
+#include <applib/ui/dialogs/simple_dialog.h>
+#include <applib/ui/text_layer.h>
+#include <applib/ui/window_private.h>
+#include <clar.h>
+#include <resource/resource.h>
+#include <resource/resource_ids.auto.h>
+#include <shell/prefs.h>
+#include <shell/system_theme.h>
 
 // Fakes
 /////////////////////
 
-#include "fake_content_indicator.h"
-#include "fake_pbl_std.h"
-#include "fake_spi_flash.h"
-#include "fixtures/load_test_resources.h"
+#include <fake_content_indicator.h>
+#include <fake_pbl_std.h>
+#include <fake_spi_flash.h>
+#include <fixtures/load_test_resources.h>
 
 // Stubs
 /////////////////////
 
-#include "stubs_analytics.h"
-#include "stubs_animation_timing.h"
-#include "stubs_app_install_manager.h"
-#include "stubs_app_state.h"
-#include "stubs_app_timer.h"
-#include "stubs_bootbits.h"
-#include "stubs_click.h"
-#include "stubs_i18n.h"
-#include "stubs_layer.h"
-#include "stubs_logging.h"
-#include "stubs_memory_layout.h"
-#include "stubs_mutex.h"
-#include "stubs_passert.h"
-#include "stubs_pbl_malloc.h"
-#include "stubs_pebble_process_info.h"
-#include "stubs_pebble_tasks.h"
-#include "stubs_prompt.h"
-#include "stubs_serial.h"
-#include "stubs_sleep.h"
-#include "stubs_status_bar_layer.h"
-#include "stubs_syscalls.h"
-#include "stubs_system_theme.h"
-#include "stubs_task_watchdog.h"
-#include "stubs_window_manager.h"
-#include "stubs_window_stack.h"
+#include <stubs_analytics.h>
+#include <stubs_animation_timing.h>
+#include <stubs_app_install_manager.h>
+#include <stubs_app_state.h>
+#include <stubs_app_timer.h>
+#include <stubs_bootbits.h>
+#include <stubs_click.h>
+#include <stubs_i18n.h>
+#include <stubs_layer.h>
+#include <stubs_logging.h>
+#include <stubs_memory_layout.h>
+#include <stubs_mutex.h>
+#include <stubs_passert.h>
+#include <stubs_pbl_malloc.h>
+#include <stubs_pebble_process_info.h>
+#include <stubs_pebble_tasks.h>
+#include <stubs_serial.h>
+#include <stubs_sleep.h>
+#include <stubs_status_bar_layer.h>
+#include <stubs_syscalls.h>
+#include <stubs_system_theme.h>
+#include <stubs_task_wdt.h>
+#include <stubs_window_manager.h>
+#include <stubs_window_stack.h>
 
 // Helper Functions
 /////////////////////
 
-#include "fw/graphics/test_graphics.h"
-#include "fw/graphics/util.h"
+#include <fw/graphics/test_graphics.h>
+#include <fw/graphics/util.h>
 
 // Included LAST: this drags in pebble_compat.h, whose function-like macros
 // (SDK->firmware name remaps) would otherwise rewrite the stub headers above.
 // Undo the libc remaps the harness itself needs.
-#include "apps/system/weather/weather_app_layout.h"
+#include <apps/system/weather/weather_app_layout.h>
 #undef malloc
 #undef calloc
 #undef free
@@ -83,7 +83,7 @@
 ////////////////////////////////////
 
 static GContext s_ctx;
-static FrameBuffer *fb = NULL;
+static FrameBuffer *fb = nullptr;
 
 KinoReel *kino_reel_morph_square_create(KinoReel *from_reel, bool take_ownership) {
   return from_reel;
@@ -93,9 +93,23 @@ GContext *graphics_context_get_current_context(void) {
   return &s_ctx;
 }
 
+static UnitsDistance s_units_distance;
+static UnitsWind s_units_wind;
+
+UnitsDistance shell_prefs_get_units_distance(void) {
+  return s_units_distance;
+}
+
+UnitsWind shell_prefs_get_units_wind(void) {
+  return s_units_wind;
+}
+
 void test_weather_app_layout__initialize(void) {
+  s_units_distance = UnitsDistance_Miles;
+  s_units_wind = UnitsWind_Mph;
+
   fb = malloc(sizeof(FrameBuffer));
-  framebuffer_init(fb, &(GSize) {DISP_COLS, DISP_ROWS});
+  framebuffer_init(fb, &(GSize){DISP_COLS, DISP_ROWS});
 
   const GContextInitializationMode context_init_mode = GContextInitializationMode_System;
   graphics_context_init(&s_ctx, fb, context_init_mode);
@@ -109,7 +123,8 @@ void test_weather_app_layout__initialize(void) {
   fake_spi_flash_init(0, 0x1000000);
   pfs_init(false);
   pfs_format(true /* write erase headers */);
-  load_resource_fixture_in_flash(RESOURCES_FIXTURE_PATH, SYSTEM_RESOURCES_FIXTURE_NAME, false /* is_next */);
+  load_resource_fixture_in_flash(RESOURCES_FIXTURE_PATH, SYSTEM_RESOURCES_FIXTURE_NAME,
+                                 false /* is_next */);
 
   resource_init();
 
@@ -398,7 +413,7 @@ void test_weather_app_layout__render_no_next_forecast(void) {
     .current_weather_phrase = "Sunny",
   };
 
-  prv_create_layout_and_render(&today, NULL);
+  prv_create_layout_and_render(&today, nullptr);
   cl_check(gbitmap_pbi_eq(&s_ctx.dest_bitmap, TEST_PBI_FILE));
 }
 

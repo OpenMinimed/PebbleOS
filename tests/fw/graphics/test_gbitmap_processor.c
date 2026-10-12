@@ -1,20 +1,19 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
-
-#include "applib/graphics/framebuffer.h"
+#include <applib/graphics/framebuffer.h>
+#include <clar.h>
 
 // Stubs
 ///////////////////////
 
-#include "stubs_app_state.h"
-#include "stubs_graphics_circle.h"
-#include "stubs_graphics_line.h"
-#include "stubs_graphics_private.h"
-#include "stubs_logging.h"
-#include "stubs_passert.h"
-#include "stubs_process_manager.h"
+#include <stubs_app_state.h>
+#include <stubs_graphics_circle.h>
+#include <stubs_graphics_line.h>
+#include <stubs_graphics_private.h>
+#include <stubs_logging.h>
+#include <stubs_passert.h>
+#include <stubs_process_manager.h>
 
 const GDrawRawImplementation g_default_draw_implementation;
 
@@ -47,19 +46,19 @@ GContext *graphics_context_get_current_context(void) {
   return &s_ctx;
 }
 
-void bitblt_bitmap_into_bitmap_tiled(GBitmap* dest_bitmap, const GBitmap *src_bitmap,
+void bitblt_bitmap_into_bitmap_tiled(GBitmap *dest_bitmap, const GBitmap *src_bitmap,
                                      GRect dest_rect, GPoint src_origin_offset,
                                      GCompOp compositing_mode, GColor8 tint_color) {
   s_bitblt_bitmap_into_bitmap_tiled_calls.call_count++;
   s_bitblt_bitmap_into_bitmap_tiled_calls.last_call =
-    (MockBitbltBitmapIntoBitmapTiledCallRecording) {
-    .dest_bitmap = dest_bitmap,
-    .src_bitmap = src_bitmap,
-    .dest_rect = dest_rect,
-    .src_origin_offset = src_origin_offset,
-    .compositing_mode = compositing_mode,
-    .tint_color = tint_color,
-  };
+      (MockBitbltBitmapIntoBitmapTiledCallRecording){
+        .dest_bitmap = dest_bitmap,
+        .src_bitmap = src_bitmap,
+        .dest_rect = dest_rect,
+        .src_origin_offset = src_origin_offset,
+        .compositing_mode = compositing_mode,
+        .tint_color = tint_color,
+      };
 }
 
 // Helpers
@@ -76,10 +75,10 @@ static void cl_assert_equal_rect(const GRect a, const GRect b) {
 ///////////////////////
 
 void test_gbitmap_processor__initialize(void) {
-  s_fb = (FrameBuffer) {};
-  framebuffer_init(&s_fb, &(GSize) {DISP_COLS, DISP_ROWS});
+  s_fb = (FrameBuffer){};
+  framebuffer_init(&s_fb, &(GSize){DISP_COLS, DISP_ROWS});
   graphics_context_init(&s_ctx, &s_fb, GContextInitializationMode_App);
-  s_bitblt_bitmap_into_bitmap_tiled_calls = (MockBitbltBitmapIntoBitmapTiledCallRecordings) {};
+  s_bitblt_bitmap_into_bitmap_tiled_calls = (MockBitbltBitmapIntoBitmapTiledCallRecordings){};
 }
 
 void test_gbitmap_processor__cleanup(void) {
@@ -91,28 +90,28 @@ void test_gbitmap_processor__cleanup(void) {
 #define EXPECTED_RECT_IN_PRE_FUNCTION (GRect(4, 3, 2, 1))
 
 void test_gbitmap_processor__null_arguments(void) {
-  GBitmap bitmap = {0};
+  GBitmap bitmap = {};
   const GRect rect = EXPECTED_RECT_IN_PRE_FUNCTION;
 
   // Passing NULL for the processor shouldn't cause any problems
-  graphics_draw_bitmap_in_rect_processed(&s_ctx, &bitmap, &rect, NULL);
+  graphics_draw_bitmap_in_rect_processed(&s_ctx, &bitmap, &rect, nullptr);
   // And it should try to draw the bitmap
   cl_assert_equal_i(s_bitblt_bitmap_into_bitmap_tiled_calls.call_count, 1);
 
   // Passing a processor with NULL functions shouldn't cause any problems
-  GBitmapProcessor processor = {0};
+  GBitmapProcessor processor = {};
   graphics_draw_bitmap_in_rect_processed(&s_ctx, &bitmap, &rect, &processor);
   // And it should once again try to draw the bitmap
   cl_assert_equal_i(s_bitblt_bitmap_into_bitmap_tiled_calls.call_count, 2);
 }
 
 #define EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION (GCompOpSet)
-#define EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION (GColorShockingPink)
+#define EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION       (GColorShockingPink)
 
 #define COMPOSITING_MODE_TO_SPECIFY_IN_PRE_FUNCTION (GCompOpTint)
-#define TINT_COLOR_TO_SPECIFY_IN_PRE_FUNCTION (GColorTiffanyBlue)
-#define RECT_TO_SPECIFY_IN_PRE_FUNCTION (GRect(-50, -50, 100, 100))
-#define BITMAP_TO_SPECIFY_IN_PRE_FUNCTION ((GBitmap *)1234)
+#define TINT_COLOR_TO_SPECIFY_IN_PRE_FUNCTION       (GColorTiffanyBlue)
+#define RECT_TO_SPECIFY_IN_PRE_FUNCTION             (GRect(-50, -50, 100, 100))
+#define BITMAP_TO_SPECIFY_IN_PRE_FUNCTION           ((GBitmap *)1234)
 
 #define EXPECTED_CLIPPED_RECT_AFTER_DRAWING_BITMAP (GRect(0, 0, 50, 50))
 
@@ -126,14 +125,14 @@ static void prv_pre_and_post_functions__pre(GBitmapProcessor *processor, GContex
                                             const GBitmap **bitmap_to_use,
                                             GRect *global_grect_to_use) {
   PreAndPostFunctionsTestProcessor *processor_with_data =
-    (PreAndPostFunctionsTestProcessor *)processor;
+      (PreAndPostFunctionsTestProcessor *)processor;
 
   // Record the existing compositing mode and tint color and check that they are what we expect
   cl_assert(ctx->draw_state.compositing_mode ==
-              EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION);
+            EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION);
   processor_with_data->previous_compositing_mode = ctx->draw_state.compositing_mode;
-  cl_assert(gcolor_equal(ctx->draw_state.tint_color,
-                         EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION));
+  cl_assert(
+      gcolor_equal(ctx->draw_state.tint_color, EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION));
   processor_with_data->previous_tint_color = ctx->draw_state.tint_color;
 
   // Set the compositing mode and tint color to different values
@@ -154,7 +153,7 @@ static void prv_pre_and_post_functions__post(GBitmapProcessor *processor, GConte
                                              const GBitmap *bitmap_used,
                                              const GRect *global_clipped_grect_used) {
   PreAndPostFunctionsTestProcessor *processor_with_data =
-    (PreAndPostFunctionsTestProcessor *)processor;
+      (PreAndPostFunctionsTestProcessor *)processor;
 
   // Check that the changes made to the GContext in .pre are still present
   cl_assert(ctx->draw_state.compositing_mode == COMPOSITING_MODE_TO_SPECIFY_IN_PRE_FUNCTION);
@@ -172,14 +171,14 @@ static void prv_pre_and_post_functions__post(GBitmapProcessor *processor, GConte
 }
 
 void test_gbitmap_processor__pre_and_post_functions(void) {
-  GBitmap bitmap = {0};
+  GBitmap bitmap = {};
   const GRect rect = EXPECTED_RECT_IN_PRE_FUNCTION;
 
   // Set the compositing mode and tint color to known values
   s_ctx.draw_state.compositing_mode = EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION;
   s_ctx.draw_state.tint_color = EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION;
 
-  PreAndPostFunctionsTestProcessor processor = (PreAndPostFunctionsTestProcessor) {
+  PreAndPostFunctionsTestProcessor processor = (PreAndPostFunctionsTestProcessor){
     .processor.pre = prv_pre_and_post_functions__pre,
     .processor.post = prv_pre_and_post_functions__post,
   };
@@ -190,7 +189,7 @@ void test_gbitmap_processor__pre_and_post_functions(void) {
 
   // Check that the modifications made in the .pre function propagated to the bitmap drawing
   cl_assert(s_bitblt_bitmap_into_bitmap_tiled_calls.last_call.compositing_mode ==
-              COMPOSITING_MODE_TO_SPECIFY_IN_PRE_FUNCTION);
+            COMPOSITING_MODE_TO_SPECIFY_IN_PRE_FUNCTION);
   cl_assert(gcolor_equal(s_bitblt_bitmap_into_bitmap_tiled_calls.last_call.tint_color,
                          TINT_COLOR_TO_SPECIFY_IN_PRE_FUNCTION));
   cl_assert_equal_rect(s_bitblt_bitmap_into_bitmap_tiled_calls.last_call.dest_rect,
@@ -200,9 +199,9 @@ void test_gbitmap_processor__pre_and_post_functions(void) {
 
   // Check that the modifications made to the GContext in the .pre function were reversed in .post
   cl_assert(s_ctx.draw_state.compositing_mode ==
-              EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION);
-  cl_assert(gcolor_equal(s_ctx.draw_state.tint_color,
-                         EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION));
+            EXPECTED_COMPOSITING_MODE_BEFORE_AND_AFTER_PRE_FUNCTION);
+  cl_assert(
+      gcolor_equal(s_ctx.draw_state.tint_color, EXPECTED_TINT_COLOR_BEFORE_AND_AFTER_PRE_FUNCTION));
 
   // Note that additional checks are performed in the .pre and .post functions
 }
@@ -214,10 +213,10 @@ typedef struct PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProc
 } PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor;
 
 static void post_function_called_even_if_pre_function_causes_nothing_to_be_drawn__post(
-  GBitmapProcessor *processor, GContext *ctx, const GBitmap *bitmap_used,
-  const GRect *global_clipped_grect_used) {
+    GBitmapProcessor *processor, GContext *ctx, const GBitmap *bitmap_used,
+    const GRect *global_clipped_grect_used) {
   PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *processor_with_data =
-    (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
+      (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
 
   // Check that the rectangle here is empty to verify that nothing was drawn
   cl_assert_equal_rect(*global_clipped_grect_used, GRectZero);
@@ -232,15 +231,16 @@ static void post_function_called_even_if_pre_function_causes_nothing_to_be_drawn
 //! Helper function for testing that the .post function is called even if the .pre function
 //! causes no bitmap to be drawn
 static void prv_post_function_called_even_if_pre_function_causes_nothing_to_be_drawn_test(
-  GBitmapProcessorPreFunc pre_func) {
-  GBitmap bitmap = {0};
+    GBitmapProcessorPreFunc pre_func) {
+  GBitmap bitmap = {};
   const GRect rect = EXPECTED_RECT_IN_PRE_FUNCTION;
 
   PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor processor =
-    (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor) {
-      .processor.pre = pre_func,
-      .processor.post = post_function_called_even_if_pre_function_causes_nothing_to_be_drawn__post,
-    };
+      (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor){
+        .processor.pre = pre_func,
+        .processor.post =
+            post_function_called_even_if_pre_function_causes_nothing_to_be_drawn__post,
+      };
   graphics_draw_bitmap_in_rect_processed(&s_ctx, &bitmap, &rect, &processor.processor);
 
   // Check that the bitmap was not drawn
@@ -252,13 +252,13 @@ static void prv_post_function_called_even_if_pre_function_causes_nothing_to_be_d
 }
 
 static void post_function_called_even_if_pre_function_specifies_null_bitmap__pre(
-  GBitmapProcessor *processor, GContext *ctx, const GBitmap **bitmap_to_use,
-  GRect *global_grect_to_use) {
+    GBitmapProcessor *processor, GContext *ctx, const GBitmap **bitmap_to_use,
+    GRect *global_grect_to_use) {
   PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *processor_with_data =
-    (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
+      (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
 
   // Change the bitmap to use to NULL to cause nothing to be drawn
-  *bitmap_to_use = NULL;
+  *bitmap_to_use = nullptr;
 
   // We'll expect the bitmap we set there to be the bitmap passed into .post
   processor_with_data->expected_bitmap_in_post = *bitmap_to_use;
@@ -266,14 +266,14 @@ static void post_function_called_even_if_pre_function_specifies_null_bitmap__pre
 
 void test_gbitmap_processor__post_function_called_even_if_pre_function_specifies_null_bitmap(void) {
   prv_post_function_called_even_if_pre_function_causes_nothing_to_be_drawn_test(
-    post_function_called_even_if_pre_function_specifies_null_bitmap__pre);
+      post_function_called_even_if_pre_function_specifies_null_bitmap__pre);
 };
 
 static void post_function_called_even_if_pre_function_specifies_empty_rect__pre(
-  GBitmapProcessor *processor, GContext *ctx, const GBitmap **bitmap_to_use,
-  GRect *global_grect_to_use) {
+    GBitmapProcessor *processor, GContext *ctx, const GBitmap **bitmap_to_use,
+    GRect *global_grect_to_use) {
   PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *processor_with_data =
-    (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
+      (PostFunctionCalledEvenIfPreFunctionCausesNothingToBeDrawnTestProcessor *)processor;
 
   // Change the rectangle to be empty to cause nothing to be drawn
   *global_grect_to_use = GRectZero;
@@ -285,5 +285,5 @@ static void post_function_called_even_if_pre_function_specifies_empty_rect__pre(
 
 void test_gbitmap_processor__post_function_called_even_if_pre_function_specifies_empty_rect(void) {
   prv_post_function_called_even_if_pre_function_causes_nothing_to_be_drawn_test(
-    post_function_called_even_if_pre_function_specifies_empty_rect__pre);
+      post_function_called_even_if_pre_function_specifies_empty_rect__pre);
 };

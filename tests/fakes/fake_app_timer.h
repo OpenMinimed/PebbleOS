@@ -3,16 +3,17 @@
 
 #pragma once
 
-#include "applib/app_timer.h"
+#include <string.h>
+
 #include <pbl/logging/logging.h>
 
-#include <string.h>
+#include <applib/app_timer.h>
 
 typedef struct FakeAppTimer {
   uint32_t timeout_ms;
   bool repeating;
   AppTimerCallback callback;
-  void* callback_data;
+  void *callback_data;
   struct FakeAppTimer *next;
   uint32_t timer_id;
 } FakeAppTimer;
@@ -21,16 +22,16 @@ static FakeAppTimer *s_fake_app_timer_head;
 static uint32_t s_fake_app_timer_next_id;
 
 static FakeAppTimer *prv_find_fake_app_timer_by_timer_id(uint32_t timer_id) {
-  for (FakeAppTimer *node = s_fake_app_timer_head; node != NULL; node = node->next) {
+  for (FakeAppTimer *node = s_fake_app_timer_head; node != nullptr; node = node->next) {
     if (node->timer_id == timer_id) {
       return node;
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 void fake_app_timer_init(void) {
-  s_fake_app_timer_head = NULL;
+  s_fake_app_timer_head = nullptr;
   s_fake_app_timer_next_id = 0;
 }
 
@@ -53,12 +54,12 @@ uint32_t fake_app_timer_get_timeout(AppTimer *timer) {
 }
 
 bool fake_app_timer_is_scheduled(AppTimer *timer) {
-  return (prv_find_fake_app_timer_by_timer_id((uintptr_t)timer) != NULL);
+  return (prv_find_fake_app_timer_by_timer_id((uintptr_t)timer) != nullptr);
 }
 
-AppTimer* app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, void* callback_data) {
+AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, void *callback_data) {
   FakeAppTimer *fake_timer = malloc(sizeof(FakeAppTimer));
-  *fake_timer = (FakeAppTimer) {
+  *fake_timer = (FakeAppTimer){
     .timeout_ms = timeout_ms,
     .callback = callback,
     .callback_data = callback_data,
@@ -70,12 +71,10 @@ AppTimer* app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, voi
   return (AppTimer *)(uintptr_t)fake_timer->timer_id;
 }
 
-AppTimer* app_timer_register_repeatable(uint32_t timeout_ms,
-                                        AppTimerCallback callback,
-                                        void* callback_data,
-                                        bool repeating) {
+AppTimer *app_timer_register_repeatable(uint32_t timeout_ms, AppTimerCallback callback,
+                                        void *callback_data, bool repeating) {
   FakeAppTimer *fake_timer = malloc(sizeof(FakeAppTimer));
-  *fake_timer = (FakeAppTimer) {
+  *fake_timer = (FakeAppTimer){
     .timeout_ms = timeout_ms,
     .repeating = repeating,
     .callback = callback,
@@ -104,8 +103,7 @@ static void prv_unlink_and_free_timer(FakeAppTimer *timer) {
     s_fake_app_timer_head = timer->next;
   } else {
     // Not the head, find the previous one:
-    while (prev_timer && prev_timer != timer &&
-	   prev_timer->next && prev_timer->next != timer) {
+    while (prev_timer && prev_timer != timer && prev_timer->next && prev_timer->next != timer) {
       prev_timer = prev_timer->next;
     }
     if (!prev_timer) {
@@ -143,7 +141,6 @@ void *app_timer_get_data(AppTimer *timer) {
   if (fake_timer) {
     return fake_timer->callback_data;
   } else {
-    return NULL;
+    return nullptr;
   }
 }
-

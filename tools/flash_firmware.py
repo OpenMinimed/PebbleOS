@@ -47,7 +47,8 @@ def run_slot_from_logs(phone):
                  phone, "--dict", dict_path, "-o", out],
                 check=False, capture_output=True, text=True)
             try:
-                text = open(out, errors="replace").read()
+                with open(out, errors="replace") as f:
+                    text = f.read()
             except OSError:
                 print((res.stdout + res.stderr).strip())
                 return None
@@ -85,25 +86,25 @@ def main():
             print("Could not read the running slot from the watch log; pass --slot N.")
             return 1
         slot = 1 - running
-        print("Watch runs slot {}: flashing slot {}.".format(running, slot))
+        print(f"Watch runs slot {running}: flashing slot {slot}.")
 
     if not path.endswith(".pbz"):
-        path = "{}_slot{}.pbz".format(path, slot)
+        path = f"{path}_slot{slot}.pbz"
     elif not named:
         pass
     elif int(named.group(1)) != slot:
-        path = re.sub(r"_slot[01]\.pbz$", "_slot{}.pbz".format(slot), path)
-        print("File name says slot {}, switching to {}".format(named.group(1), path))
+        path = re.sub(r"_slot[01]\.pbz$", f"_slot{slot}.pbz", path)
+        print(f"File name says slot {named.group(1)}, switching to {path}")
     if not os.path.exists(path):
-        print("No such file: {}".format(path))
+        print(f"No such file: {path}")
         return 1
 
-    print("Flashing {} to slot {} ...".format(path, slot))
+    print(f"Flashing {path} to slot {slot} ...")
     cmd = ["pebble", "fw", "--phone", args.phone, "install", "--slot", str(slot), path]
     if args.dry_run:
         print("Dry run: " + " ".join(cmd))
         return 0
-    return subprocess.run(cmd).returncode
+    return subprocess.run(cmd, check=False).returncode
 
 
 if __name__ == "__main__":

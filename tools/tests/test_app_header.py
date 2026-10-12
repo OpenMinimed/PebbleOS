@@ -9,8 +9,9 @@ import unittest
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 sys.path.insert(0, root_dir)
 
-from app_header import PebbleAppHeader
 from uuid import UUID
+
+from app_header import PebbleAppHeader
 
 V1_APP_HEADER = (
     b"\x50\x42\x4c\x41\x50\x50\x00\x00\x08\x01\x03\x01\x03\x00"
@@ -36,6 +37,9 @@ V2_APP_HEADER = (
     b"\xb8\x78\x99\x91\x62\x89\xcd\x1e\x07\x60\x88\xcf\xce\x4a"
     b"\xd0\x52\xc8\x0d"
 )
+
+# V2_APP_HEADER as struct version 0x10.0x01, with load_size_hi = 0x01 and virtual_size_hi = 0x02
+V3_APP_HEADER = V2_APP_HEADER[:9] + b"\x01" + V2_APP_HEADER[10:] + b"\x01\x02"
 
 
 class TestAppHeader(unittest.TestCase):
@@ -83,6 +87,17 @@ class TestAppHeader(unittest.TestCase):
         self.assertEqual(h.resource_timestamp, 1389382350)
         self.assertEqual(h.virtual_size, 3528)
 
+    def test_deserialize_v3_header(self):
+        h = PebbleAppHeader(V3_APP_HEADER)
+        self.assertEqual(h.struct_version_major, PebbleAppHeader.V3_STRUCT_VERSION[0])
+        self.assertEqual(h.struct_version_minor, PebbleAppHeader.V3_STRUCT_VERSION[1])
+        self.assertEqual(h.app_size, 3233)
+        self.assertEqual(h.virtual_size, 3528)
+        self.assertEqual(h.load_size_hi, 0x01)
+        self.assertEqual(h.virtual_size_hi, 0x02)
+        self.assertEqual(h.app_size_total, 0x10000 + 3233)
+        self.assertEqual(h.virtual_size_total, 0x20000 + 3528)
+
     def test_deserialize_serialize_v1(self):
         h = PebbleAppHeader(V1_APP_HEADER)
         bytes = h.serialize()
@@ -92,6 +107,11 @@ class TestAppHeader(unittest.TestCase):
         h = PebbleAppHeader(V2_APP_HEADER)
         bytes = h.serialize()
         self.assertEqual(bytes, V2_APP_HEADER)
+
+    def test_deserialize_serialize_v3(self):
+        h = PebbleAppHeader(V3_APP_HEADER)
+        bytes = h.serialize()
+        self.assertEqual(bytes, V3_APP_HEADER)
 
 
 if __name__ == "__main__":

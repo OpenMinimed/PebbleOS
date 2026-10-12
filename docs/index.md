@@ -85,13 +85,18 @@ Look things up: protocol specifications, podcasts, developer documents and more!
 :hidden:
 :caption: 🛠️ Development
 development/getting_started.md
+development/pbl.md
 development/options.md
 development/building_fw.md
+development/build_system.md
 development/testing.md
+development/integration_tests.md
 development/qemu.md
+development/native.md
 development/debugging.md
 development/moddable.md
 development/sdk_export.md
+development/sbom.md
 development/contributing.md
 ```
 

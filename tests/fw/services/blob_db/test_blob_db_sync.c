@@ -1,28 +1,27 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
+#include <clar.h>
 
 // Fakes
 /////////////
-#include "fake_system_task.h"
-#include "fake_regular_timer.h"
-#include "fake_blobdb.h"
+#include <fake_blobdb.h>
+#include <fake_pbl_malloc.h>
+#include <fake_regular_timer.h>
+#include <fake_system_task.h>
 
 // Stubs
 /////////////
-#include "stubs_pbl_malloc.h"
-#include "stubs_logging.h"
-#include "stubs_passert.h"
-#include "stubs_session.h"
+#include <stubs_logging.h>
+#include <stubs_passert.h>
+#include <stubs_session.h>
 
 // FW Includes
 ///////////////
-#include "pbl/services/blob_db/api.h"
-#include "pbl/services/blob_db/util.h"
-#include "pbl/services/blob_db/sync.h"
-#include "pbl/util/size.h"
-
+#include <pbl/services/blob_db/api.h>
+#include <pbl/services/blob_db/sync.h>
+#include <pbl/services/blob_db/util.h>
+#include <pbl/util/size.h>
 
 // Writebacks counter
 ////////////////////////
@@ -46,16 +45,10 @@ static void prv_generate_responses_from_phone(void) {
   }
 }
 
-
-
-BlobDBToken blob_db_endpoint_send_writeback(BlobDBId db_id,
-                                            time_t last_updated,
-                                            const void *key,
-                                            int key_len,
-                                            const void *val,
-                                            int val_len) {
+BlobDBToken blob_db_endpoint_send_writeback(BlobDBId db_id, time_t last_updated, const void *key,
+                                            int key_len, const void *val, int val_len) {
   BlobDBSyncSession *session = blob_db_sync_get_session_for_id(db_id);
-  cl_assert(session != NULL);
+  cl_assert(session != nullptr);
   if (s_num_until_timeout != 0 && s_num_writebacks >= s_num_until_timeout) {
     // Don't respond - simulates timeout (message lost/no response from phone)
   } else {
@@ -65,12 +58,8 @@ BlobDBToken blob_db_endpoint_send_writeback(BlobDBId db_id,
   return 12345;
 }
 
-BlobDBToken blob_db_endpoint_send_write(BlobDBId db_id,
-                                        time_t last_updated,
-                                        const void *key,
-                                        int key_len,
-                                        const void *val,
-                                        int val_len) {
+BlobDBToken blob_db_endpoint_send_write(BlobDBId db_id, time_t last_updated, const void *key,
+                                        int key_len, const void *val, int val_len) {
   return 0;
 }
 
@@ -94,25 +83,22 @@ void test_blob_db_sync__no_dirty(void) {
   uint8_t num_ids;
   blob_db_get_dirty_dbs(ids, &num_ids);
   cl_assert_equal_i(num_ids, 0);
-  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) == NULL);
+  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) == nullptr);
 
   // insert one
   char *key = "key";
   char *value = "value";
-  cl_assert_equal_i(S_SUCCESS, blob_db_insert(BlobDBIdTest,
-                                              (uint8_t *)key,
-                                              strlen(key),
-                                              (uint8_t *)value,
-                                              strlen(value)));
+  cl_assert_equal_i(S_SUCCESS, blob_db_insert(BlobDBIdTest, (uint8_t *)key, strlen(key),
+                                              (uint8_t *)value, strlen(value)));
   blob_db_get_dirty_dbs(ids, &num_ids);
   cl_assert_equal_i(num_ids, 1);
-  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) != NULL);
+  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) != nullptr);
 
   // mark it synced
   cl_assert_equal_i(S_SUCCESS, blob_db_mark_synced(BlobDBIdTest, (uint8_t *)key, strlen(key)));
   blob_db_get_dirty_dbs(ids, &num_ids);
   cl_assert_equal_i(num_ids, 0);
-  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) == NULL);
+  cl_assert(blob_db_get_dirty_list(BlobDBIdTest) == nullptr);
 }
 
 static bool prv_list_key_comparator(ListNode *cur_node, void *data) {
@@ -127,12 +113,12 @@ void test_blob_db_sync__dirty_list(void) {
   blob_db_get_dirty_dbs(ids, &num_ids);
   cl_assert_equal_i(num_ids, 0);
   BlobDBDirtyItem *dirty_list = blob_db_get_dirty_list(BlobDBIdTest);
-  cl_assert(dirty_list == NULL);
+  cl_assert(dirty_list == nullptr);
   blob_db_util_free_dirty_list(dirty_list);
 
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   // insert all keys
@@ -147,7 +133,7 @@ void test_blob_db_sync__dirty_list(void) {
   cl_assert_equal_i(list_count(&dirty_list->node), ARRAY_LENGTH(keys));
 
   for (int i = 0; i < ARRAY_LENGTH(keys); ++i) {
-    cl_assert(list_find(&dirty_list->node, prv_list_key_comparator, keys[i]) != NULL);
+    cl_assert(list_find(&dirty_list->node, prv_list_key_comparator, keys[i]) != nullptr);
   }
 
   blob_db_util_free_dirty_list(dirty_list);
@@ -158,16 +144,16 @@ void test_blob_db_sync__dirty_list(void) {
     dirty_list = blob_db_get_dirty_list(BlobDBIdTest);
     cl_assert_equal_i(list_count(&dirty_list->node), ARRAY_LENGTH(keys) - synced_idx);
     for (int i = synced_idx; i < ARRAY_LENGTH(keys); ++i) {
-      cl_assert(list_find(&dirty_list->node, prv_list_key_comparator, keys[i]) != NULL);
+      cl_assert(list_find(&dirty_list->node, prv_list_key_comparator, keys[i]) != nullptr);
     }
     blob_db_util_free_dirty_list(dirty_list);
   }
 }
 
 void test_blob_db_sync__sync_all(void) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   // insert all keys
@@ -182,9 +168,9 @@ void test_blob_db_sync__sync_all(void) {
 }
 
 void test_blob_db_sync__sync_oom(void) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   // insert all keys
@@ -197,11 +183,11 @@ void test_blob_db_sync__sync_oom(void) {
   // We have built the dirty list, add more entries.
   // This mimics us performing writes while the sync is ongoing or not having enough memory to
   // build the initial list
-  char *extra_keys[] = { "keyA", "keyB" };
-  char *extra_values[] = { "valA", "valB" };
+  char *extra_keys[] = {"keyA", "keyB"};
+  char *extra_values[] = {"valA", "valB"};
   for (int i = 0; i < ARRAY_LENGTH(extra_keys); ++i) {
-    blob_db_insert(BlobDBIdTest, (uint8_t *)extra_keys[i], key_len,
-                   (uint8_t *)extra_values[i], value_len);
+    blob_db_insert(BlobDBIdTest, (uint8_t *)extra_keys[i], key_len, (uint8_t *)extra_values[i],
+                   value_len);
   }
 
   prv_generate_responses_from_phone();
@@ -210,9 +196,9 @@ void test_blob_db_sync__sync_oom(void) {
 }
 
 void test_blob_db_sync__sync_some(void) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   // insert all keys, mark some as synced
@@ -231,9 +217,9 @@ void test_blob_db_sync__sync_some(void) {
 }
 
 void test_blob_db_sync__timeout_and_retry(void) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   // insert all keys, mark some as synced
@@ -249,7 +235,7 @@ void test_blob_db_sync__timeout_and_retry(void) {
 
   // Cancel the timed-out session so we can start a fresh sync
   BlobDBSyncSession *session = blob_db_sync_get_session_for_id(BlobDBIdTest);
-  cl_assert(session != NULL);
+  cl_assert(session != nullptr);
   blob_db_sync_cancel(session);
 
   s_num_until_timeout = 0;
@@ -259,9 +245,9 @@ void test_blob_db_sync__timeout_and_retry(void) {
 }
 
 void test_blob_db_sync__sync_while_syncing(void) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   for (int i = 0; i < ARRAY_LENGTH(keys); ++i) {
@@ -271,16 +257,18 @@ void test_blob_db_sync__sync_while_syncing(void) {
   cl_assert(blob_db_sync_db(BlobDBIdTest) == S_SUCCESS);
 
   // We should throw an error if we get a sync while a db sync in in progress
+  int net_allocs = fake_pbl_malloc_num_net_allocs();
   cl_assert(blob_db_sync_db(BlobDBIdTest) == E_BUSY);
+  cl_assert_equal_i(fake_pbl_malloc_num_net_allocs(), net_allocs);
 
   // Generate some responses so the sync session gets cleaned up
   prv_generate_responses_from_phone();
 }
 
 static BlobDBSyncSession *prv_start_sync_with_two_keys(void) {
-  char *keys[] = { "key1", "key2" };
+  char *keys[] = {"key1", "key2"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2" };
+  char *values[] = {"val1", "val2"};
   int value_len = strlen(values[0]);
 
   for (int i = 0; i < ARRAY_LENGTH(keys); ++i) {
@@ -289,7 +277,7 @@ static BlobDBSyncSession *prv_start_sync_with_two_keys(void) {
 
   cl_assert(blob_db_sync_db(BlobDBIdTest) == S_SUCCESS);
   BlobDBSyncSession *session = blob_db_sync_get_session_for_id(BlobDBIdTest);
-  cl_assert(session != NULL);
+  cl_assert(session != nullptr);
   return session;
 }
 
@@ -306,14 +294,14 @@ void test_blob_db_sync__stale_timeout_callback_after_cancel(void) {
   cl_assert_equal_i(fake_system_task_count_callbacks(), 1);
 
   blob_db_sync_cancel(session);
-  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == NULL);
+  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == nullptr);
 
   s_num_writebacks = 0;
   fake_system_task_callbacks_invoke_pending();
 
   // The stale callback must not resurrect the session or send anything.
   cl_assert_equal_i(s_num_writebacks, 0);
-  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == NULL);
+  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == nullptr);
 }
 
 void test_blob_db_sync__stale_abandon_callback_after_cancel(void) {
@@ -335,7 +323,7 @@ void test_blob_db_sync__stale_abandon_callback_after_cancel(void) {
   // Session goes away before the abandon callback runs; it must not free twice.
   blob_db_sync_cancel(session);
   fake_system_task_callbacks_invoke_pending();
-  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == NULL);
+  cl_assert(blob_db_sync_get_session_for_id(BlobDBIdTest) == nullptr);
 }
 
 // A stale id must never resolve to a *different* session that happened to reuse
@@ -361,9 +349,9 @@ void test_blob_db_sync__stale_callback_does_not_match_new_session(void) {
 }
 
 static void prv_fill_stop_return_session(BlobDBId id) {
-  char *keys[] = { "key1", "key2", "key3", "key4", "key5" };
+  char *keys[] = {"key1", "key2", "key3", "key4", "key5"};
   int key_len = strlen(keys[0]);
-  char *values[] = { "val1", "val2", "val3", "val4", "val5" };
+  char *values[] = {"val1", "val2", "val3", "val4", "val5"};
   int value_len = strlen(values[0]);
 
   fake_blob_db_set_id(id);
@@ -410,4 +398,3 @@ void test_blob_db_sync__find_session(void) {
   fake_blob_db_set_id(BlobDBIdTest);
   blob_db_init_dbs();
 }
-

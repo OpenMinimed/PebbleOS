@@ -5,12 +5,12 @@
 # run otherwise installs by hand -- the Python requirements, and SDL2, without which the bundled
 # qemu-pebble does not start. Build it from the repository root:
 #
-#   docker build -t pebbleos-minimed:local -f tools/minimed/Dockerfile .
+#   docker build -t pebbleos-minimed:v10 -f tools/minimed/Dockerfile .
 #
-# then use it wherever ghcr.io/coredevices/pebbleos-docker:v6 is used, e.g.
+# then use it wherever ghcr.io/coredevices/pebbleos-docker:v10 is used, e.g.
 # tools/minimed/qemu_smoke_test.sh.
 
-FROM ghcr.io/coredevices/pebbleos-docker:v6
+FROM ghcr.io/coredevices/pebbleos-docker:v10
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libsdl2-2.0-0 \

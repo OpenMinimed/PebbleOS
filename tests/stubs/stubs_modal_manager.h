@@ -3,36 +3,38 @@
 
 #pragma once
 
-#include "applib/ui/window_stack_private.h"
-#include "kernel/ui/modals/modal_manager.h"
-#include "pbl/util/attributes.h"
+#include <pbl/kernel/compiler.h>
 
-WindowStack *WEAK modal_manager_get_window_stack(ModalPriority priority) {
-  return NULL;
+#include <applib/ui/window_stack_private.h>
+#include <kernel/ui/modals/modal_manager.h>
+
+WindowStack *PBL_WEAK modal_manager_get_window_stack(ModalPriority priority) {
+  return nullptr;
 }
 
-Window *WEAK modal_manager_get_top_window(void) {
-  return NULL;
+Window *PBL_WEAK modal_manager_get_top_window(void) {
+  return nullptr;
 }
 
-ClickManager *WEAK modal_manager_get_click_manager(void) {
-  return NULL;
+ClickManager *PBL_WEAK modal_manager_get_click_manager(void) {
+  return nullptr;
 }
 
-void WEAK modal_manager_pop_all(void) {
+void PBL_WEAK modal_manager_pop_all(void) {
   return;
 }
 
-bool WEAK modal_manager_get_enabled(void) {
+bool PBL_WEAK modal_manager_get_enabled(void) {
   return true;
 }
 
-void WEAK modal_manager_set_enabled(bool enabled) {
+void PBL_WEAK modal_manager_set_enabled(bool enabled) {
   return;
 }
 
-ModalProperty WEAK modal_manager_get_properties(void) {
+ModalProperty PBL_WEAK modal_manager_get_properties(void) {
   return ModalPropertyDefault;
 }
 
-void modal_window_push(Window *window, ModalPriority priority, bool animated) { }
+void modal_window_push(Window *window, ModalPriority priority, bool animated) {
+}

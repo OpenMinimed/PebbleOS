@@ -1,4 +1,5 @@
 build
+build-*
 xcode
 
 .ycm*
@@ -30,7 +31,6 @@ TAGS
 *.swo
 *.swn
 
-.waf*
 .lock*
 
 *.pyc
@@ -38,6 +38,7 @@ TAGS
 
 qemu_serial.txt
 uart*.log
+.openocd.log
 
 serial_dump.txt
 
@@ -57,7 +58,6 @@ compile_commands.json
 loghash_dict.pickle
 analyze_mcu_flash_usage_treemap.jsonp
 **/.idea
-**/CMakeLists.txt
 
 .env
 
@@ -66,7 +66,6 @@ analyze_mcu_flash_usage_treemap.jsonp
 .cache/
 *.egg-info
 
-waflib.zip
 *~
 
 docs/_build
@@ -79,7 +78,7 @@ artifacts/
 .direnv
 
 # Personal compile-time overrides -- see TESTING.md.
-src/bluetooth-fw/nimble/minimed_local_overrides.h
+subsys/bluetooth/minimed_local_overrides.h
 tools/minimed_sake_hosttest/history.hex
 tools/minimed_sake_hosttest/replay
 tools/minimed_sake_hosttest/test_sake

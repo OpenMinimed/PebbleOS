@@ -1,25 +1,25 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
+#include <pbl/services/activity/activity.h>
+#include <pbl/services/activity/activity_calculators.h>
+#include <pbl/services/activity/workout_service.h>
+#include <pbl/services/hrm/hrm_manager.h>
+#include <pbl/services/time.h>
+#include <pbl/util/units.h>
 
-#include "pbl/services/activity/activity.h"
-#include "pbl/services/activity/activity_calculators.h"
-#include "pbl/services/activity/workout_service.h"
-#include "pbl/services/hrm/hrm_manager.h"
-#include "process_management/app_install_types.h"
-#include "util/time/time.h"
-#include "util/units.h"
+#include <clar.h>
+#include <drivers/hrm.h>
+#include <process_management/app_install_types.h>
 
 // ---------------------------------------------------------------------------------------
-#include "stubs_activity_insights.h"
-#include "stubs_evented_timer.h"
-#include "stubs_logging.h"
-#include "stubs_pbl_malloc.h"
-#include "stubs_regular_timer.h"
-
-#include "fake_rtc.h"
-#include "fake_mutex.h"
+#include <fake_mutex.h>
+#include <fake_rtc.h>
+#include <stubs_activity_insights.h>
+#include <stubs_evented_timer.h>
+#include <stubs_logging.h>
+#include <stubs_pbl_malloc.h>
+#include <stubs_regular_timer.h>
 
 extern void prv_abandon_workout_timer_callback(void *data);
 extern void prv_abandoned_notification_timer_callback(void *data);
@@ -36,8 +36,10 @@ static ActivitySession s_saved_session;
 void activity_sessions_prv_add_activity_session(ActivitySession *session) {
   s_saved_session = *session;
 }
-void activity_sessions_prv_delete_activity_session(ActivitySession *session) {}
-void activity_algorithm_enable_activity_tracking(bool enable) {}
+void activity_sessions_prv_delete_activity_session(ActivitySession *session) {
+}
+void activity_algorithm_enable_activity_tracking(bool enable) {
+}
 
 bool activity_get_sessions(uint32_t *session_entries, ActivitySession *sessions) {
   return false;
@@ -75,6 +77,11 @@ uint8_t activity_prefs_heart_get_zone3_threshold(void) {
   return 172;
 }
 
+static HRMonitoringInterval s_hrm_measurement_interval;
+HRMonitoringInterval activity_prefs_get_hrm_measurement_interval(void) {
+  return s_hrm_measurement_interval;
+}
+
 AppInstallId app_get_app_id(void) {
   return 0;
 }
@@ -102,8 +109,18 @@ bool sys_hrm_manager_set_update_interval(HRMSessionRef session, uint32_t update_
   return true;
 }
 
+void hrm_manager_set_activity_scene(HRMActivityScene scene) {
+  (void)scene;
+}
+
+bool sys_hrm_manager_set_features(HRMSessionRef session, HRMFeature features) {
+  (void)session;
+  (void)features;
+  return true;
+}
+
 uint32_t time_get_uptime_seconds(void) {
-  return SECONDS_PER_DAY + rtc_get_time();
+  return PBL_SEC_PER_DAY + rtc_get_time();
 }
 
 static uint32_t s_total_step_count;
@@ -153,7 +170,15 @@ static void prv_put_bpm_event(int bpm, HRMQuality quality) {
 
 static void prv_inc_time(int seconds) {
   fake_rtc_increment_time(seconds);
-  prv_workout_timer_cb(NULL);
+  prv_workout_timer_cb(nullptr);
+}
+
+static void prv_assert_current_hr(int expected_bpm, HRZone expected_zone) {
+  int32_t bpm;
+  HRZone hr_zone;
+  cl_assert(workout_service_get_current_workout_info(nullptr, nullptr, nullptr, &bpm, &hr_zone));
+  cl_assert_equal_i(bpm, expected_bpm);
+  cl_assert_equal_i(hr_zone, expected_zone);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -166,6 +191,7 @@ void test_workout_service__initialize(void) {
   s_total_step_count = 5000;
   s_hrm_expiration = 0;
   s_hrm_subscribed = false;
+  s_hrm_measurement_interval = HRMonitoringInterval_10Min;
   s_abandoned_workout_notification_sent = false;
 
   const bool assert_all_unlocked = true;
@@ -189,8 +215,8 @@ void test_workout_service__basic(void) {
   int32_t steps, duration_s, distance_m, bpm;
   HRZone hr_zone;
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 0);
   cl_assert_equal_i(duration_s, 0);
   cl_assert_equal_i(distance_m, 0);
@@ -198,44 +224,44 @@ void test_workout_service__basic(void) {
   cl_assert_equal_i(hr_zone, 0);
 
   // Get some step info
-  prv_inc_time(5 * SECONDS_PER_MINUTE);
+  prv_inc_time(5 * PBL_SEC_PER_MIN);
   prv_inc_steps_and_put_event(900 /* 180 steps per min * 5 mins */);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 900);
   cl_assert_equal_i(5900, s_total_step_count);
   cl_assert_equal_i(distance_m, 1201 /* 1.2km in 5 mins is reasonable */);
-  cl_assert_equal_i(duration_s, 5 * SECONDS_PER_MINUTE);
+  cl_assert_equal_i(duration_s, 5 * PBL_SEC_PER_MIN);
 
   // Get some HR info
   prv_put_bpm_event(100, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 100);
   cl_assert_equal_i(hr_zone, 0);
 
   // Get some more step info
-  prv_inc_time(5 * SECONDS_PER_MINUTE);
+  prv_inc_time(5 * PBL_SEC_PER_MIN);
   prv_inc_steps_and_put_event(900 /* 180 steps per min * 5 mins */);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 1800);
   cl_assert_equal_i(6800, s_total_step_count);
   cl_assert_equal_i(distance_m, 2402 /* 2.4km in 10 mins is reasonable */);
-  cl_assert_equal_i(duration_s, 10 * SECONDS_PER_MINUTE);
+  cl_assert_equal_i(duration_s, 10 * PBL_SEC_PER_MIN);
 
   // Get some more HR info
   prv_inc_time(10);
   prv_put_bpm_event(180, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 180);
   cl_assert_equal_i(hr_zone, 3);
-  cl_assert_equal_i(duration_s, 10 * SECONDS_PER_MINUTE + 10);
+  cl_assert_equal_i(duration_s, 10 * PBL_SEC_PER_MIN + 10);
 
   cl_assert(workout_service_stop_workout());
-  cl_assert(!workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                      &bpm, &hr_zone));
+  cl_assert(
+      !workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -264,8 +290,8 @@ void test_workout_service__takeover_activity_session(void) {
 
   cl_assert(workout_service_takeover_activity_session(&session));
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 2000);
   cl_assert_equal_i(duration_s, 600);
   cl_assert_equal_i(distance_m, 1600);
@@ -280,14 +306,15 @@ void test_workout_service__takeover_activity_session(void) {
 
   // Grab the new distance and active_kcalories
   int32_t new_active_kcalories, new_distance_m;
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &new_distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &new_distance_m, &bpm,
+                                                     &hr_zone));
 
   // Compute our own version of active_kcalories
   const int32_t distance_delta_m = (new_distance_m - distance_m);
-  const int32_t calculated_active_kcalories
-      = ROUND(activity_private_compute_active_calories(distance_delta_m * MM_PER_METER, 600 * MS_PER_SECOND),
-              ACTIVITY_CALORIES_PER_KCAL);
+  const int32_t calculated_active_kcalories =
+      ROUND(activity_private_compute_active_calories(distance_delta_m * PBL_MM_PER_M,
+                                                     600 * PBL_MSEC_PER_SEC),
+            ACTIVITY_CALORIES_PER_KCAL);
 
   // Make sure that the new_active_kcalories has increased
   workout_service_get_active_kcalories(&new_active_kcalories);
@@ -321,8 +348,8 @@ void test_workout_service__pause_resume(void) {
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(100, HRMQuality_Good);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 10);
   cl_assert_equal_i(duration_s, 10);
   cl_assert_equal_i(bpm, 100);
@@ -333,8 +360,8 @@ void test_workout_service__pause_resume(void) {
   prv_inc_time(10);
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(110, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 10);
   cl_assert_equal_i(duration_s, 10);
   cl_assert_equal_i(bpm, 110);
@@ -343,8 +370,8 @@ void test_workout_service__pause_resume(void) {
   prv_inc_time(10);
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(190, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 10);
   cl_assert_equal_i(duration_s, 10);
   cl_assert_equal_i(bpm, 190);
@@ -354,16 +381,16 @@ void test_workout_service__pause_resume(void) {
   prv_inc_time(10);
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(80, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 20);
   cl_assert_equal_i(duration_s, 20);
   cl_assert_equal_i(bpm, 80);
 
   cl_assert(workout_service_pause_workout(true));
   cl_assert(workout_service_pause_workout(true));
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 20);
   cl_assert_equal_i(duration_s, 20);
   cl_assert_equal_i(bpm, 80);
@@ -372,8 +399,8 @@ void test_workout_service__pause_resume(void) {
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(117, HRMQuality_Good);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 20);
   cl_assert_equal_i(duration_s, 20);
   cl_assert_equal_i(bpm, 117);
@@ -385,8 +412,8 @@ void test_workout_service__pause_resume(void) {
   prv_inc_steps_and_put_event(10);
   prv_put_bpm_event(113, HRMQuality_Good);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 30);
   cl_assert_equal_i(duration_s, 30);
   cl_assert_equal_i(bpm, 113);
@@ -402,22 +429,22 @@ void test_workout_service__expire_hr_reading(void) {
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
   prv_put_bpm_event(100, HRMQuality_Good);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 100);
 
   // Time forward X seconds
   prv_inc_time(30);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 100);
 
   // Time forward X seconds
   prv_inc_time(30);
 
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   // HR Reading has expired. Should return 0
   cl_assert_equal_i(bpm, 0);
 
@@ -433,24 +460,162 @@ void test_workout_service__receive_offwrist_reading(void) {
 
   // Put a good quality reading. Verify it was accepted.
   prv_put_bpm_event(100, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 100);
 
   // Put an OffWrist reading. Verify we received it.
   prv_put_bpm_event(50, HRMQuality_OffWrist);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 0);
   cl_assert_equal_i(hr_zone, HRZone_Zone0);
 
   // Put a good quality reading. Verify it was accepted.
   prv_put_bpm_event(100, HRMQuality_Good);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(bpm, 100);
 
   cl_assert(workout_service_stop_workout());
+}
+
+// ---------------------------------------------------------------------------------------
+void test_workout_service__reject_low_quality_hr(void) {
+  int32_t avg_hr;
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+
+  prv_put_bpm_event(120, HRMQuality_Worst);
+  prv_put_bpm_event(110, HRMQuality_Poor);
+  prv_assert_current_hr(0, HRZone_Zone0);
+  cl_assert(workout_service_get_avg_hr(&avg_hr));
+  cl_assert_equal_i(avg_hr, 0);
+
+  prv_put_bpm_event(168, HRMQuality_Good);
+  prv_put_bpm_event(120, HRMQuality_Worst);
+  prv_put_bpm_event(110, HRMQuality_Poor);
+  prv_assert_current_hr(168, HRZone_Zone2);
+  cl_assert(workout_service_get_avg_hr(&avg_hr));
+  cl_assert_equal_i(avg_hr, 168);
+}
+
+// ---------------------------------------------------------------------------------------
+void test_workout_service__low_quality_hr_does_not_extend_expiry(void) {
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+  prv_put_bpm_event(168, HRMQuality_Good);
+
+  for (int i = 0; i < 3; i++) {
+    prv_inc_time(15);
+    prv_put_bpm_event(120, HRMQuality_Worst);
+    prv_put_bpm_event(110, HRMQuality_Poor);
+    prv_assert_current_hr(168, HRZone_Zone2);
+  }
+  prv_inc_time(14);
+  prv_put_bpm_event(120, HRMQuality_Worst);
+  prv_assert_current_hr(168, HRZone_Zone2);
+
+  prv_inc_time(1);
+  prv_assert_current_hr(0, HRZone_Zone0);
+  prv_put_bpm_event(110, HRMQuality_Poor);
+  prv_assert_current_hr(0, HRZone_Zone0);
+}
+
+// ---------------------------------------------------------------------------------------
+void test_workout_service__acceptable_hr_median_and_good_recovery(void) {
+  int32_t avg_hr;
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+
+  prv_put_bpm_event(160, HRMQuality_Acceptable);
+  prv_assert_current_hr(160, HRZone_Zone2);
+  prv_put_bpm_event(180, HRMQuality_Acceptable);
+  prv_assert_current_hr(180, HRZone_Zone3);
+  prv_put_bpm_event(100, HRMQuality_Poor);
+  prv_assert_current_hr(180, HRZone_Zone3);
+  prv_put_bpm_event(170, HRMQuality_Acceptable);
+  prv_assert_current_hr(170, HRZone_Zone2);
+  prv_put_bpm_event(80, HRMQuality_Worst);
+  prv_assert_current_hr(170, HRZone_Zone2);
+  prv_put_bpm_event(150, HRMQuality_Acceptable);
+  prv_assert_current_hr(170, HRZone_Zone2);
+  prv_put_bpm_event(140, HRMQuality_Acceptable);
+  prv_assert_current_hr(150, HRZone_Zone1);
+
+  // The average uses accepted raw samples, rather than the displayed medians.
+  cl_assert(workout_service_get_avg_hr(&avg_hr));
+  cl_assert_equal_i(avg_hr, 160);
+
+  prv_put_bpm_event(200, HRMQuality_Good);
+  prv_assert_current_hr(200, HRZone_Zone3);
+  prv_put_bpm_event(130, HRMQuality_Acceptable);
+  prv_assert_current_hr(130, HRZone_Zone1);
+}
+
+// ---------------------------------------------------------------------------------------
+void test_workout_service__hr_resets_clear_median(void) {
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+  prv_put_bpm_event(140, HRMQuality_Acceptable);
+  prv_put_bpm_event(160, HRMQuality_Acceptable);
+  prv_put_bpm_event(150, HRMQuality_Acceptable);
+  prv_assert_current_hr(150, HRZone_Zone1);
+
+  prv_put_bpm_event(0, HRMQuality_OffWrist);
+  prv_assert_current_hr(0, HRZone_Zone0);
+  prv_put_bpm_event(100, HRMQuality_Acceptable);
+  prv_assert_current_hr(100, HRZone_Zone0);
+  prv_put_bpm_event(120, HRMQuality_Acceptable);
+  prv_assert_current_hr(120, HRZone_Zone0);
+
+  prv_inc_time(60);
+  prv_assert_current_hr(0, HRZone_Zone0);
+  prv_put_bpm_event(80, HRMQuality_Acceptable);
+  prv_assert_current_hr(80, HRZone_Zone0);
+
+  workout_service_set_hrm_paused(true);
+  prv_assert_current_hr(0, HRZone_Zone0);
+  workout_service_set_hrm_paused(false);
+  prv_put_bpm_event(60, HRMQuality_Acceptable);
+  prv_assert_current_hr(60, HRZone_Zone0);
+}
+
+// ---------------------------------------------------------------------------------------
+void test_workout_service__hr_quality_and_paused_statistics(void) {
+  int32_t avg_hr;
+  int32_t hr_zone_time_s[HRZoneCount];
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+  prv_put_bpm_event(140, HRMQuality_Good);
+  prv_inc_time(10);
+  prv_put_bpm_event(140, HRMQuality_Good);
+
+  cl_assert(workout_service_pause_workout(true));
+  prv_inc_time(10);
+  prv_put_bpm_event(160, HRMQuality_Acceptable);
+  prv_assert_current_hr(160, HRZone_Zone2);
+  prv_put_bpm_event(100, HRMQuality_Worst);
+  prv_put_bpm_event(180, HRMQuality_Poor);
+  prv_assert_current_hr(160, HRZone_Zone2);
+  prv_inc_time(10);
+  prv_put_bpm_event(180, HRMQuality_Good);
+  prv_assert_current_hr(180, HRZone_Zone3);
+
+  cl_assert(workout_service_get_avg_hr(&avg_hr));
+  cl_assert_equal_i(avg_hr, 140);
+  cl_assert(workout_service_get_current_workout_hr_zone_time(hr_zone_time_s));
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone1], 10);
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone2], 0);
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone3], 0);
+
+  cl_assert(workout_service_pause_workout(false));
+  prv_inc_time(10);
+  prv_put_bpm_event(160, HRMQuality_Acceptable);
+  prv_put_bpm_event(100, HRMQuality_Worst);
+  prv_put_bpm_event(200, HRMQuality_Poor);
+  prv_assert_current_hr(160, HRZone_Zone2);
+  cl_assert(workout_service_get_avg_hr(&avg_hr));
+  cl_assert_equal_i(avg_hr, 147);
+  cl_assert(workout_service_get_current_workout_hr_zone_time(hr_zone_time_s));
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone1], 10);
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone2], 10);
+  cl_assert_equal_i(hr_zone_time_s[HRZone_Zone3], 0);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -462,14 +627,14 @@ void test_workout_service__working_out_past_midnight(void) {
 
   // Start with only 10 steps and make sure it updates.
   prv_inc_steps_and_put_event(10);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 10);
 
   // Increment a lot so we can make sure that the wrap around of midnight works.
   prv_inc_steps_and_put_event(1000);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 1010);
 
   // Pretend we wrap around midnight. Midnight will reset the step count.
@@ -477,8 +642,8 @@ void test_workout_service__working_out_past_midnight(void) {
 
   // Put some steps and make sure we don't delete or freak out, and append the new step count.
   prv_inc_steps_and_put_event(50);
-  cl_assert(workout_service_get_current_workout_info(&steps, &duration_s, &distance_m,
-                                                     &bpm, &hr_zone));
+  cl_assert(
+      workout_service_get_current_workout_info(&steps, &duration_s, &distance_m, &bpm, &hr_zone));
   cl_assert_equal_i(steps, 1060);
 }
 
@@ -486,7 +651,7 @@ void test_workout_service__working_out_past_midnight(void) {
 // Open the app and close the app. Make sure the HR monitor turns off instantly
 void test_workout_service__app_open_close_no_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app, confirm that we are now subscribed with no end in sight
   workout_service_frontend_opened();
@@ -503,7 +668,7 @@ void test_workout_service__app_open_close_no_workout(void) {
 // WORKOUT_ACTIVE_HR_SUBSCRIPTION_TS_EXPIRE
 void test_workout_service__app_open_close_active_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app, confirm that we are now subscribed with no end in sight
   workout_service_frontend_opened();
@@ -514,7 +679,7 @@ void test_workout_service__app_open_close_active_workout(void) {
 
   workout_service_frontend_closed();
   cl_assert_equal_b(s_hrm_subscribed, true);
-  cl_assert_equal_i(s_hrm_expiration, SECONDS_PER_HOUR);
+  cl_assert_equal_i(s_hrm_expiration, PBL_SEC_PER_HOUR);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -522,14 +687,14 @@ void test_workout_service__app_open_close_active_workout(void) {
 // since workout wasn't valid (too short)
 void test_workout_service__app_open_close_ended_invalid_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app, confirm that we are now subscribed with no end in sight
   workout_service_frontend_opened();
   cl_assert_equal_b(s_hrm_subscribed, true);
   cl_assert_equal_i(s_hrm_expiration, 0);
 
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
   // Workout of 30 seconds duration. Should be invalid, not keep HR on after leaving
   prv_inc_time(30);
@@ -545,24 +710,72 @@ void test_workout_service__app_open_close_ended_invalid_workout(void) {
 // Make sure the HR stays on for WORKOUT_ENDED_HR_SUBSCRIPTION_TS_EXPIRE - 120s
 void test_workout_service__app_open_close_valid_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app, confirm that we are now subscribed with no end in sight
   workout_service_frontend_opened();
   cl_assert_equal_b(s_hrm_subscribed, true);
   cl_assert_equal_i(s_hrm_expiration, 0);
 
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
   // Workout of 120 seconds duration. Should be valid
-  prv_inc_time(2 * SECONDS_PER_MINUTE);
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_stop_workout());
 
-  prv_inc_time(2 * SECONDS_PER_MINUTE);
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
 
   workout_service_frontend_closed();
   cl_assert_equal_b(s_hrm_subscribed, true);
-  cl_assert_equal_i(s_hrm_expiration, 8 * SECONDS_PER_MINUTE);
+  cl_assert_equal_i(s_hrm_expiration, 8 * PBL_SEC_PER_MIN);
+}
+
+// ---------------------------------------------------------------------------------------
+// Same as above, but with background HR monitoring disabled. The user expects the sensor to run
+// only during an activity, so closing the app after a workout must turn it off immediately rather
+// than running the post-workout recovery window.
+void test_workout_service__app_open_close_valid_workout_hrm_disabled(void) {
+  s_hrm_measurement_interval = HRMonitoringInterval_Disabled;
+
+  // Put some time into the clock
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
+
+  // Open the app, confirm that we are now subscribed with no end in sight
+  workout_service_frontend_opened();
+  cl_assert_equal_b(s_hrm_subscribed, true);
+  cl_assert_equal_i(s_hrm_expiration, 0);
+
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+  // Workout of 120 seconds duration. Should be valid
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
+  cl_assert(workout_service_stop_workout());
+
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
+
+  workout_service_frontend_closed();
+  cl_assert_equal_b(s_hrm_subscribed, false);
+  cl_assert_equal_i(s_hrm_expiration, 0);
+}
+
+// ---------------------------------------------------------------------------------------
+// With background HR monitoring disabled, closing the app while a workout is still running must
+// still keep the sensor on -- an ongoing workout is exactly the "during an activity" case.
+void test_workout_service__app_open_close_active_workout_hrm_disabled(void) {
+  s_hrm_measurement_interval = HRMonitoringInterval_Disabled;
+
+  // Put some time into the clock
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
+
+  workout_service_frontend_opened();
+  cl_assert_equal_b(s_hrm_subscribed, true);
+  cl_assert_equal_i(s_hrm_expiration, 0);
+
+  cl_assert(workout_service_start_workout(ActivitySessionType_Run));
+
+  workout_service_frontend_closed();
+  cl_assert_equal_b(s_hrm_subscribed, true);
+  cl_assert_equal_i(s_hrm_expiration, PBL_SEC_PER_HOUR);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -570,21 +783,21 @@ void test_workout_service__app_open_close_valid_workout(void) {
 // Make sure the HR turns off right after we leave the app.
 void test_workout_service__app_open_wait_close_valid_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app, confirm that we are now subscribed with no end in sight
   workout_service_frontend_opened();
   cl_assert_equal_b(s_hrm_subscribed, true);
   cl_assert_equal_i(s_hrm_expiration, 0);
 
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
   // Workout of 120 seconds duration. Should be valid
-  prv_inc_time(2 * SECONDS_PER_MINUTE);
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_stop_workout());
 
   // Wait 20 minutes. By this time, as soon as we leave the app, we should turn off the HR device.
-  prv_inc_time(20 * SECONDS_PER_MINUTE);
+  prv_inc_time(20 * PBL_SEC_PER_MIN);
 
   workout_service_frontend_closed();
   cl_assert_equal_b(s_hrm_subscribed, false);
@@ -596,19 +809,19 @@ void test_workout_service__app_open_wait_close_valid_workout(void) {
 // subscription so sampling drops back to the user's preferred rate within a bounded time, even
 // if the user lingers on the summary screen or the app exit path is otherwise delayed.
 void test_workout_service__stop_workout_starts_recovery_timer(void) {
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   workout_service_frontend_opened();
   cl_assert_equal_b(s_hrm_subscribed, true);
   cl_assert_equal_i(s_hrm_expiration, 0);
 
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
-  prv_inc_time(2 * SECONDS_PER_MINUTE);
+  prv_inc_time(2 * PBL_SEC_PER_MIN);
   cl_assert(workout_service_stop_workout());
 
   // The 1-second subscription should now have a 10-minute expiration so it doesn't run forever.
   cl_assert_equal_b(s_hrm_subscribed, true);
-  cl_assert_equal_i(s_hrm_expiration, 10 * SECONDS_PER_MINUTE);
+  cl_assert_equal_i(s_hrm_expiration, 10 * PBL_SEC_PER_MIN);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -705,7 +918,7 @@ void test_workout_service__heart_rate_zone_time(void) {
   cl_assert_equal_i(hr_zone_time_s[HRZone_Zone2], 20);
   cl_assert_equal_i(hr_zone_time_s[HRZone_Zone3], 20);
 
-  cl_assert(!workout_service_get_current_workout_hr_zone_time(NULL));
+  cl_assert(!workout_service_get_current_workout_hr_zone_time(nullptr));
   cl_assert(workout_service_stop_workout());
   cl_assert(!workout_service_get_current_workout_hr_zone_time(hr_zone_time_s));
 }
@@ -748,31 +961,31 @@ void test_workout_service__avg_hr(void) {
 // 60 min - Make sure the workout was ended.
 void test_workout_service__abandon_workout(void) {
   // Put some time into the clock
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Open the app and wait a minute
   workout_service_frontend_opened();
-  prv_inc_time(1 * SECONDS_PER_MINUTE);
+  prv_inc_time(1 * PBL_SEC_PER_MIN);
 
   // Start workout and workout for 5 minutes
   cl_assert(workout_service_start_workout(ActivitySessionType_Run));
-  prv_inc_time(5 * SECONDS_PER_MINUTE);
+  prv_inc_time(5 * PBL_SEC_PER_MIN);
 
   // Close app and wait 30 minutes
   workout_service_frontend_closed();
-  prv_inc_time(30 * SECONDS_PER_MINUTE);
+  prv_inc_time(30 * PBL_SEC_PER_MIN);
 
   // Make sure notification is not sent yet and the workout is still ongoing
   cl_assert_equal_b(s_abandoned_workout_notification_sent, false);
   cl_assert_equal_b(workout_service_is_workout_ongoing(), true);
 
   // Wait 25 minutes, call evented timer callback and make sure the notification is sent
-  prv_inc_time(25 * SECONDS_PER_MINUTE);
-  prv_abandoned_notification_timer_callback(NULL);
+  prv_inc_time(25 * PBL_SEC_PER_MIN);
+  prv_abandoned_notification_timer_callback(nullptr);
   cl_assert_equal_b(s_abandoned_workout_notification_sent, true);
 
   // Wait 5 minutes, call evented timer callback and make sure the workout was ended
-  prv_inc_time(5 * SECONDS_PER_MINUTE);
-  prv_abandon_workout_timer_callback(NULL);
+  prv_inc_time(5 * PBL_SEC_PER_MIN);
+  prv_abandon_workout_timer_callback(nullptr);
   cl_assert_equal_b(workout_service_is_workout_ongoing(), false);
 }

@@ -1,20 +1,19 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "apps/system/workout/utils.h"
+#include <pbl/services/activity/activity.h>
 
-#include "clar.h"
-
-#include "pbl/services/activity/activity.h"
+#include <apps/system/workout/utils.h>
+#include <clar.h>
 
 // ---------------------------------------------------------------------------------------
-#include "stubs_attribute.h"
-#include "stubs_i18n.h"
-#include "stubs_notifications.h"
-#include "stubs_passert.h"
-#include "stubs_pbl_malloc.h"
-#include "stubs_rtc.h"
-#include "stubs_timeline_item.h"
+#include <stubs_attribute.h>
+#include <stubs_i18n.h>
+#include <stubs_notifications.h>
+#include <stubs_passert.h>
+#include <stubs_pbl_malloc.h>
+#include <stubs_rtc.h>
+#include <stubs_timeline_item.h>
 
 // Stubs
 ///////////////////////////////////////////////////////////
@@ -55,7 +54,7 @@ void test_workout_utils__find_ongoing_activity_session(void) {
   bool found_session;
 
   // Check if it can handle NULL session
-  found_session = workout_utils_find_ongoing_activity_session(NULL);
+  found_session = workout_utils_find_ongoing_activity_session(nullptr);
   cl_assert_equal_b(found_session, false);
 
   // Make sure there are no sessions

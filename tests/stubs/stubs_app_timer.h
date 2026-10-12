@@ -3,17 +3,15 @@
 
 #pragma once
 
-#include "applib/app_timer.h"
+#include <applib/app_timer.h>
 
-AppTimer* app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, void* callback_data) {
-  return NULL;
+AppTimer *app_timer_register(uint32_t timeout_ms, AppTimerCallback callback, void *callback_data) {
+  return nullptr;
 }
 
-AppTimer* app_timer_register_repeatable(uint32_t timeout_ms,
-                                        AppTimerCallback callback,
-                                        void* callback_data,
-                                        bool repeating) {
-  return NULL;
+AppTimer *app_timer_register_repeatable(uint32_t timeout_ms, AppTimerCallback callback,
+                                        void *callback_data, bool repeating) {
+  return nullptr;
 }
 
 bool app_timer_reschedule(AppTimer *timer, uint32_t new_timeout_ms) {

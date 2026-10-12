@@ -1,26 +1,26 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
-
-#include "pbl/services/timezone_database.h"
-#include "pbl/services/clock.h"
-
 #include "../timezone_fixture.auto.h"
 
-#include "stubs_logging.h"
-#include "stubs_passert.h"
-
 #include <string.h>
+
+#include <pbl/services/clock.h>
+#include <pbl/services/time.h>
+#include <pbl/services/timezone_database.h>
+
+#include <clar.h>
+#include <stubs_logging.h>
+#include <stubs_passert.h>
 
 //! Find a region ID for the given region name.
 //! @return a valid, matching region ID, or -1 if no region was found
 int timezone_database_find_region_by_name(const char *region_name, int region_name_length);
 
-#include "resource/resource.h"
+#include <resource/resource.h>
 size_t resource_load_byte_range_system(ResAppNum app_num, uint32_t resource_id,
                                        uint32_t start_offset, uint8_t *data, size_t num_bytes) {
-  memcpy(data, ((uint8_t*) s_timezone_database) + start_offset, num_bytes);
+  memcpy(data, ((uint8_t *)s_timezone_database) + start_offset, num_bytes);
   return num_bytes;
 }
 
@@ -30,13 +30,12 @@ void test_timezone_database__get_region_count(void) {
   // Note this test will break every time we update the timezone database and that's ok. Just
   // make sure the new number is sane and update the expected number. The count is derived from
   // the number of Zone entries in resources/normal/base/tzdata/timezones_olson.txt after the
-  // generator's filtering (build_zoneinfo_list); it dropped to 308 as the bundled tzdata has been
-  // updated since the original 336.
-  cl_assert_equal_i(timezone_database_get_region_count(), 308);
+  // generator's filtering (build_zoneinfo_list).
+  cl_assert_equal_i(timezone_database_get_region_count(), 309);
 }
 
 void test_timezone_database__find_region_by_name_simple(void) {
-  // Unforunately we don't really care what the resulting region ids are, we should
+  // Unfortunately we don't really care what the resulting region ids are, we should
   // just make sure the ones that exist are there and they're unique from each other.
 
   const int america_new_york_region = FIND_REGION("America/New_York");
@@ -88,12 +87,14 @@ void test_timezone_database__load_dst_rule_los_angeles(void) {
 
   TimezoneInfo tz_info;
   bool result = timezone_database_load_region_info(america_los_angeles_region, &tz_info);
+  cl_assert(result);
   cl_assert_equal_s("P*T", tz_info.tm_zone);
   cl_assert_equal_i(-8 * 60 * 60, tz_info.tm_gmtoff);
 
   TimezoneDSTRule start;
   TimezoneDSTRule end;
   result = timezone_database_load_dst_rule(tz_info.dst_id, &start, &end);
+  cl_assert(result);
 
   cl_assert_equal_i(start.ds_label, 'D');
   cl_assert_equal_i(start.month, 2);

@@ -2,17 +2,17 @@
  * glucose predictor, and scores the 30-minute predictions against the readings that followed.
  * The pump clock is used as if it were local time (its Reference Times carry no zone), which is
  * also what the model was trained on. */
+#include "minimed_history.h"
+#include "minimed_predict.h"
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "minimed_history.h"
-#include "minimed_predict.h"
-
-#define FLOOR_MGDL 50
+#define FLOOR_MGDL   50
 #define CEILING_MGDL 400
-#define MAX_PRED 40000
+#define MAX_PRED     40000
 
 static int hexval(int c) {
   return c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1);
@@ -30,7 +30,10 @@ int main(int argc, char **argv) {
   double biob_sum = 0;
   int32_t biob_max = 0;
   FILE *f = fopen(argc > 1 ? argv[1] : "history.hex", "r");
-  if (!f) { perror("history.hex"); return 2; }
+  if (!f) {
+    perror("history.hex");
+    return 2;
+  }
   static MinimedPredictState st;
   MinimedHistClock clk = {0};
   minimed_predict_reset(&st);
@@ -46,9 +49,11 @@ int main(int argc, char **argv) {
     }
     recs++;
     MinimedHistEvent ev;
-    if (!minimed_history_decode(&clk, rec, (uint16_t)n, FLOOR_MGDL, CEILING_MGDL, &ev)) continue;
+    if (!minimed_history_decode(&clk, rec, (uint16_t)n, FLOOR_MGDL, CEILING_MGDL, &ev))
+      continue;
     switch (ev.kind) {
-      case MinimedHistEventRef: break;
+      case MinimedHistEventRef:
+        break;
       case MinimedHistEventMicro:
         minimed_predict_add_micro(&st, ev.secs, ev.value);
         insulin_total += ev.value;
@@ -68,12 +73,14 @@ int main(int argc, char **argv) {
         carbs++;
         break;
       case MinimedHistEventSg: {
-        if (ev.mgdl < 0) break;
+        if (ev.mgdl < 0)
+          break;
         sgs++;
         minimed_predict_add_bg(&st, ev.secs, ev.mgdl);
         const int32_t biob = minimed_predict_basal_iob_mu(&st, ev.secs);
         biob_sum += biob;
-        if (biob > biob_max) biob_max = biob;
+        if (biob > biob_max)
+          biob_max = biob;
         MinimedPrediction p;
         if (g_npred < MAX_PRED && minimed_predict_run(&st, ev.secs, 0, &p)) {
           g_pred[g_npred++] = (Pred){ev.secs, 0.0f, (float)ev.mgdl, p.mgdl};
@@ -90,9 +97,12 @@ int main(int argc, char **argv) {
   int j = 0;
   for (int i = 0; i < g_npred; i++) {
     const uint32_t want = g_pred[i].secs + 1800;
-    while (j < g_npred && g_pred[j].secs + 60 < want) j++;
-    if (j >= g_npred) break;
-    if (g_pred[j].secs > want + 60 || g_pred[j].secs + 60 < want) continue;
+    while (j < g_npred && g_pred[j].secs + 60 < want)
+      j++;
+    if (j >= g_npred)
+      break;
+    if (g_pred[j].secs > want + 60 || g_pred[j].secs + 60 < want)
+      continue;
     const double truth = g_pred[j].now_bg;
     const double e = g_pred[i].pred - truth, b = g_pred[i].now_bg - truth;
     se += e * e;
@@ -100,8 +110,8 @@ int main(int argc, char **argv) {
     ae += fabs(e);
     n++;
   }
-  printf("%ld records: %ld samples, %ld insulin events (%.1f U), %ld meals, %ld rate changes\n", recs,
-         sgs, ins, insulin_total, carbs, rates);
+  printf("%ld records: %ld samples, %ld insulin events (%.1f U), %ld meals, %ld rate changes\n",
+         recs, sgs, ins, insulin_total, carbs, rates);
   printf("basal IOB at each sample: mean %.2f U, max %.2f U\n",
          sgs ? biob_sum / (double)sgs / 1000.0 : 0.0, biob_max / 1000.0);
   printf("%ld scored predictions: model RMSE %.2f MAE %.2f, persistence RMSE %.2f mg/dL\n", n,

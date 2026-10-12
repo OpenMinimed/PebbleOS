@@ -4,17 +4,20 @@
 #   ./minimed-build.sh <desc>              build + share to the phone (default board: asterix)
 #   ./minimed-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
 #   ./minimed-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
-#   ./minimed-build.sh --configure <desc>  force a waf configure (after Kconfig/registry changes)
 #   ./minimed-build.sh <desc> --allow-dirty  bypass the clean-tree check below
 #
 # Build artifacts (the .pbz/.elf/.loghash.json filenames) are named after `git describe --dirty
 # --always`, not a version counter: the tree must be committed before building (--allow-dirty
 # bypasses this) so a build's identity always matches something in git history. Separately, the
-# bare short commit hash (TINTIN_METADATA.version_short, see src/fw/system/version.c) is what the
+# bare short commit hash (TINTIN_METADATA.version_short, see fw/system/version.c) is what the
 # boot log and the MiniMed app top line show at runtime -- no build-script flag needed for that
 # part, it's baked in at configure time regardless of how the build was invoked. The two will
 # usually share the same hash suffix, but describe's shape can vary (see TESTING.md); the runtime
 # one is the unconditional source of truth for "what commit is this watch actually running".
+#
+# The firmware is built with CMake (`pbl configure/build/bundle`) inside the pebbleos-minimed
+# image (tools/minimed/Dockerfile, built on first use), one build directory per board and slot:
+# build-pt2-slot0, build-pt2-slot1, build-asterix. Only the finished artifacts land in build/.
 #
 # Two boards, two recipes. They differ in more than the --board flag, hence the profile block
 # below rather than one parametrised path:
@@ -22,6 +25,9 @@
 # asterix (Pebble 2 Duo, nRF52840) -- the default, Morten's watch:
 #   - Single bundle. asterix has one firmware slot, so there is no slot dance.
 #   - Non-release build against the locally built image.
+#   - Does not fit since the v4.41.0 rebase: stock v4.41.0 already fills 97% of the 992 KB flash
+#     region and the pump link adds ~59 KB, so the link fails with the region overflowed by ~31 KB
+#     until something is cut (see TESTING.md).
 #
 # obelix@pvt (Pebble Time 2, SiFli SF32LB52) -- palmarci's watch, --pt2:
 # (see PROGRESS.md "PT2 port" for the full post-mortem)
@@ -34,25 +40,23 @@
 #     accepts. Do NOT dual-slot repack: the earlier repack baked the SAME slot0-linked image into
 #     both slots, and the mislinked slot1 copy black-screened.
 #   - Release band (0x01) with a release-form version, so it boots over the current stock
-#     (4.36.2). A plain annotated git tag like v4.36.9 gives the app a parseable versionTag.
+#     (4.36.2). A plain annotated git tag like v4.41.9 gives the app a parseable versionTag.
 #     Dev band (0x80) is NOT used: a dev-form git describe breaks the app's manifest parse.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 profile=asterix
-do_configure=0
 push=1
 allow_dirty=0
 desc=""
 usage() {
   echo "Build MiniMed Pebble firmware, save the ELF/dict, and push it to the phone."
   echo
-  echo "usage: $0 <desc> [--pt2] [--configure] [--no-push] [--allow-dirty]"
+  echo "usage: $0 <desc> [--pt2] [--no-push] [--allow-dirty]"
 }
 for arg in "$@"; do
   case "$arg" in
     -h|--help)          usage; exit 0 ;;
-    --configure)        do_configure=1 ;;
     --no-push)          push=0 ;;
     --pt2|--obelix)     profile=obelix ;;
     --asterix)          profile=asterix ;;
@@ -69,32 +73,35 @@ if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+IMAGE=pebbleos-minimed:v10
 if [ "$profile" = obelix ]; then
-  IMAGE=ghcr.io/coredevices/pebbleos-docker:v6  # official CI image, not the local commit
   BOARD=obelix@pvt                              # PT2 / Pebble Time 2 (SiFli), production revision
-  DOCKER_USER=()                                # the CI image needs root to pip install
-  PIP_CMD='pip install -U pip >/dev/null 2>&1; pip install -r requirements.txt >/dev/null 2>&1;'
   CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE=y"
   SLOTS=(0 1)
   NEED_TAG=1
   VERIFY_BAND=1
 else
-  IMAGE=pebbleos-build:local
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
-  DOCKER_USER=(-u "$(id -u):$(id -g)")
-  PIP_CMD=''
   CORE_CFG="-DCONFIG_MINIMED_SAKE=y"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
 fi
-BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (BOARD_NORMALIZED strips @revision)
-RELEASE_TAG=${RELEASE_TAG:-v4.36.9}              # release-form tag stamped into the bundle
+BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (the bundle name has no @revision)
+RELEASE_TAG=${RELEASE_TAG:-v4.41.9}              # release-form tag stamped into the bundle
+
+# BOARD_SHORT keeps the build/ listing unambiguous when the same desc is built for both watches.
+[ "$profile" = obelix ] && BOARD_SHORT=pt2 || BOARD_SHORT=asterix
 
 # Identity BEFORE the release-tag dance below: once HEAD carries that tag, git describe collapses
 # to just the tag name (no hash, no commit count), which is the whole identity.
 DESCRIBE=$(git describe --dirty --always)
 echo ">> board $BOARD (image $IMAGE)"
+
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo ">> building $IMAGE (once)..."
+  docker build -t "$IMAGE" -f tools/minimed/Dockerfile .
+fi
 
 if [ "$NEED_TAG" = 1 ]; then
   # Ensure a release-form annotated tag exists on HEAD so `git describe` in the build resolves to
@@ -104,38 +111,19 @@ if [ "$NEED_TAG" = 1 ]; then
   git describe --dirty
 fi
 
-# Fast path: keep the existing build/c4che configure (incremental) unless one is missing
-# or the board/config changed. Re-configure only on --configure or first run.
-if [ -d build/c4che ] && ! grep -q "BOARD = '${BOARD%@*}'" build/c4che/_cache.py 2>/dev/null; then
-  do_configure=1
-fi
-[ -d build/c4che ] || do_configure=1
-
-# BOARD_SHORT keeps the build/ listing unambiguous when the same desc is built for both watches.
-[ "$profile" = obelix ] && BOARD_SHORT=pt2 || BOARD_SHORT=asterix
-
 # Build one image. With an argument it is a slot number (obelix); without, the board's single slot.
+# Always reconfigures: it is quick, and it keeps the cache from drifting away from CORE_CFG.
 build_slot() {
   local slot=${1:-}
-  local cfg=""
-  # Configure if forced, or if the existing cache lacks the MiniMed config, targets a different slot,
-  # or (obelix) is not a release build. Guards against stale caches from a plain configure.
-  if [ "$do_configure" = 1 ] || ! grep -qE '^CONFIG_MINIMED_SAKE = (1|True)$' build/c4che/_cache.py 2>/dev/null; then
-    cfg="true"
-  fi
-  if [ -n "$slot" ] && ! grep -q "FIRMWARE_SLOT = $slot" build/c4che/_cache.py 2>/dev/null; then
-    cfg="true"
-  fi
-  if [ "$VERIFY_BAND" = 1 ] && ! grep -qE "CONFIG_RELEASE\s*=\s*(1|True)" build/c4che/_cache.py 2>/dev/null; then
-    cfg="true"
-  fi
-  echo ">> building ${slot:+slot$slot }($DESCRIBE-$desc)${cfg:+ [configure]}..."
-  docker run --rm "${DOCKER_USER[@]}" -e HOME=/tmp \
+  local dir="build-${BOARD_SHORT}${slot:+-slot$slot}"
+  echo ">> building ${slot:+slot$slot }($DESCRIBE-$desc) in $dir..." >&2
+  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp/home \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
+      mkdir -p \$HOME
       git config --global --add safe.directory /pebbleos
-      $PIP_CMD
-      export PATH=/opt/pebbleos-sdk/arm-none-eabi/bin:\$PATH
-      ${cfg:+./waf configure --board $BOARD ${slot:+-DCONFIG_FIRMWARE_SLOT=$slot} $CORE_CFG && }./waf build && ./waf bundle"
+      pbl configure -b $dir --board $BOARD ${slot:+-DCONFIG_FIRMWARE_SLOT=$slot} $CORE_CFG &&
+        pbl build -b $dir && pbl bundle -b $dir" >&2
+  echo "$dir"
 }
 
 # Only obelix boots via the Pebble app's release-band check; asterix takes whatever we build.
@@ -161,22 +149,23 @@ print(f'{(prio>>56)&0xff:02x} {(prio>>48)&0xff} {(prio>>40)&0xff} {(prio>>32)&0x
   fi
 }
 
-# Archive the linked ELF right after each slot's build. The firmware ELF is overwritten by the next
-# build (and the two slots link at different addresses), so a later coredump cannot be resolved
-# against it. Keep a per-build, per-slot copy with full debug info for readcore.py/addr2line.
+# Archive the linked ELF right after each slot's build. The two slots link at different addresses
+# and a later build replaces the ELF, so a later coredump cannot be resolved against it. Keep a
+# per-build, per-slot copy with full debug info for analyze_coredump.py/addr2line.
 archive_elf() {
-  local slot=${1:-}
+  local dir=$1 slot=${2:-}
   local elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
   mkdir -p build/elfs
-  cp build/pebbleos.elf "$elf"
+  cp "$dir/pebbleos.elf" "$elf"
   echo ">> archived: $elf"
 }
 
+mkdir -p build
 outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
-  build_slot
-  archive_elf
-  fresh=$(ls -t build/normal_"${BOARD_NORM}"_*.pbz | head -1)
+  dir=$(build_slot)
+  archive_elf "$dir"
+  fresh=$(ls -t "$dir"/normal_"${BOARD_NORM}"_*.pbz | head -1)
   out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
@@ -184,9 +173,9 @@ if [ ${#SLOTS[@]} -eq 0 ]; then
   outs+=("$out")
 else
   for slot in "${SLOTS[@]}"; do
-    build_slot "$slot"
-    archive_elf "$slot"
-    fresh=$(ls -t build/normal_"${BOARD_NORM}"_*slot"${slot}".pbz | head -1)
+    dir=$(build_slot "$slot")
+    archive_elf "$dir" "$slot"
+    fresh=$(ls -t "$dir"/normal_"${BOARD_NORM}"_*slot"${slot}".pbz | head -1)
     out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
@@ -197,8 +186,8 @@ fi
 # Keep this build's loghash dictionary next to the .pbz. PBL_LOG lines are stored hashed and the
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
-if [ -f build/pebbleos_loghash_dict.json ]; then
-  cp build/pebbleos_loghash_dict.json "build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
+if [ -f "$dir/pebbleos_loghash_dict.json" ]; then
+  cp "$dir/pebbleos_loghash_dict.json" "build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then

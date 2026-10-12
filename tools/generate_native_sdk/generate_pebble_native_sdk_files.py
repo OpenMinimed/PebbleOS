@@ -3,24 +3,22 @@
 # SPDX-License-Identifier: Apache-2.0
 
 
-from __future__ import with_statement
-from __future__ import print_function
 
-import os
-import os.path as path
-import shutil
 import argparse
+import os
+import re
+import shutil
 from functools import cmp_to_key
+from os import path
 
+import exports
+from extract_comments import extract_comments
+from extract_symbol_info import extract_symbol_info
 from generate_app_header import make_app_header
+from generate_app_sdk_version_header import generate_app_sdk_version_header
 from generate_app_shim import make_app_shim_lib
 from generate_fw_shim import make_fw_shims
 from generate_json_api_description import make_json_api_description
-from generate_app_sdk_version_header import generate_app_sdk_version_header
-
-from extract_symbol_info import extract_symbol_info
-from extract_comments import extract_comments
-import exports
 
 # When this file is called by waf using `python generate_pebble_native_sdk_files.py ...`, we
 # need to append the parent directory to the system PATH because relative imports won't work
@@ -33,6 +31,82 @@ except ImportError:
 SRC_DIR = "src"
 INCLUDE_DIR = "include"
 LIB_DIR = "lib"
+
+COMPILER_INCLUDE_RE = re.compile(
+    r'^#include [<"]pbl/kernel/compiler\.h[>"]\n', re.MULTILINE
+)
+
+
+def _compiler_macros(pbl_root_dir):
+    """Map each pbl/kernel/compiler.h macro to its GCC spelling.
+
+    Only macros that are plain aliases are supported: an object-like macro
+    becomes its definition, a function-like one is renamed to the builtin it
+    forwards its arguments to.
+    """
+    include_dir = path.join(pbl_root_dir, "include", "pbl", "kernel")
+    with open(path.join(include_dir, "compiler.h")) as f:
+        frontend = f.read()
+    with open(path.join(include_dir, "compiler", "gcc.h")) as f:
+        backend = f.read()
+
+    impls = {}
+    for m in re.finditer(
+        r"^#define (\w+_IMPL)(\(([^)]*)\))?[ \t]+(.+)$", backend, re.MULTILINE
+    ):
+        impls[m.group(1)] = (m.group(3), m.group(4).strip())
+
+    macros = {}
+    for m in re.finditer(
+        r"^#define (PBL_\w+)(\(([^)]*)\))? (PBL_\w+_IMPL)\b", frontend, re.MULTILINE
+    ):
+        name, params, impl = m.group(1), m.group(3), m.group(4)
+        impl_params, body = impls[impl]
+        if params is None:
+            macros[name] = body
+            continue
+        call = re.fullmatch(r"(\w+)\((.*)\)", body)
+        args = [a.strip() for a in (impl_params or "").split(",")]
+        if call and [a.strip() for a in call.group(2).split(",")] == args:
+            macros[name] = call.group(1)
+        else:
+            macros[name] = None
+    return macros
+
+
+def expand_compiler_macros(pbl_root_dir, sdk_include_dir):
+    """Rewrite the compiler.h macros SDK headers use into GCC spellings.
+
+    Exported declarations are copied verbatim from the firmware, which builds
+    with a newer C standard than apps do, so the SDK does not ship
+    pbl/kernel/compiler.h.
+    """
+    # SDKs generated before this shipped the headers themselves.
+    shutil.rmtree(path.join(sdk_include_dir, "pbl"), ignore_errors=True)
+
+    macros = _compiler_macros(pbl_root_dir)
+    token_re = re.compile(
+        r"\b(" + "|".join(sorted(macros, key=len, reverse=True)) + r")\b"
+    )
+
+    def replace(m):
+        expansion = macros[m.group(1)]
+        if expansion is None:
+            raise RuntimeError(f"{m.group(1)} cannot be expanded for the SDK")
+        return expansion
+
+    for root, _, files in os.walk(sdk_include_dir):
+        for name in files:
+            if not name.endswith(".h"):
+                continue
+            header = path.join(root, name)
+            with open(header) as f:
+                text = f.read()
+            new = token_re.sub(replace, COMPILER_INCLUDE_RE.sub("", text))
+            if new != text:
+                with open(header, "w") as f:
+                    f.write(new)
+
 
 PEBBLE_APP_H_TEXT = """\
 #include "pebble_fonts.h"
@@ -52,13 +126,14 @@ PEBBLE_APP_H_TEXT = """\
 
 def generate_shim_files(
     shim_def_path,
-    pbl_src_dir,
-    pbl_output_src_dir,
+    pbl_root_dir,
+    pbl_output_dir,
     sdk_include_dir,
     sdk_lib_dir,
     platform_name,
     internal_sdk_build=False,
     build_shim_lib=True,
+    autoconf=None,
 ):
     if internal_sdk_build:
         try:
@@ -69,7 +144,7 @@ def generate_shim_files(
     try:
         platform_info = pebble_platforms.get(platform_name)
     except KeyError:
-        raise Exception("Unsupported platform: %s" % platform_name)
+        raise RuntimeError(f"Unsupported platform: {platform_name}")
 
     frozen_revision = platform_info.get("FROZEN_AT_REVISION")
     files, exports_tree = exports.parse_export_file(
@@ -77,13 +152,7 @@ def generate_shim_files(
         internal_sdk_build,
         frozen_revision=frozen_revision,
     )
-    root_dir = os.path.dirname(pbl_src_dir)
-    files = [
-        os.path.join(pbl_src_dir, f)
-        if os.path.exists(os.path.join(pbl_src_dir, f))
-        else os.path.join(root_dir, f)
-        for f in files
-    ]
+    files = [os.path.join(pbl_root_dir, f) for f in files]
 
     functions = []
     stubbed_functions = []
@@ -111,24 +180,18 @@ def generate_shim_files(
         include_groups=True,
     )
 
-    compiler_flags = ["-D{}".format(d) for d in platform_info["DEFINES"]]
+    compiler_flags = [f"-D{d}" for d in platform_info["DEFINES"]]
 
-    freertos_port_name = "ARM_CM3" if platform_name == "aplite" else "ARM_CM4F"
-    compiler_flags.extend(
-        [
-            "-I{}/../third_party/freertos/FreeRTOS-Kernel/FreeRTOS/Source/{}".format(
-                pbl_src_dir, p
-            )
-            for p in ["include", "portable/GCC/{}".format(freertos_port_name)]
-        ]
-    )
+    compiler_flags.append(f"-I{pbl_root_dir}/kernel/arch/arm/include")
+    if autoconf:
+        compiler_flags.extend(["-imacros", autoconf])
 
     extract_symbol_info(
         files,
         functions,
         types,
         defines,
-        pbl_output_src_dir,
+        pbl_output_dir,
         internal_sdk_build=internal_sdk_build,
         compiler_flags=compiler_flags,
     )
@@ -137,10 +200,9 @@ def generate_shim_files(
     # Make sure we found all the exported items
     def check_complete(e):
         if not e.complete():
-            raise Exception(
-                """Missing export: %s %s.
+            raise RuntimeError(
+                f"""Missing export: {e} {e.__dict__!s}.
 Hint: Add appropriate headers to the \"files\" array in exported_symbols.json"""
-                % (e, str(e.__dict__))
             )
 
     exports.walk_tree(exports_tree, check_complete)
@@ -165,9 +227,8 @@ Hint: Add appropriate headers to the \"files\" array in exported_symbols.json"""
     # On platforms with Moddable XS support, ship xsffi.h alongside the SDK so
     # apps that use the FFI bindings can include it directly.
     if platform_info.get("HAS_MODDABLE_XS"):
-        repo_root = path.dirname(pbl_src_dir)
         xsffi_src = path.join(
-            repo_root,
+            pbl_root_dir,
             "third_party",
             "moddable",
             "moddable",
@@ -193,10 +254,10 @@ Hint: Add appropriate headers to the \"files\" array in exported_symbols.json"""
         make_app_shim_lib(sorted_functions, sdk_lib_dir)
 
     # Build pebble.auto.c to build into our firmware
-    make_fw_shims(sorted_functions, pbl_output_src_dir)
+    make_fw_shims(sorted_functions, pbl_output_dir)
 
     # Build .json API description, used as input for static analysis tools:
-    make_json_api_description(sorted_functions, pbl_output_src_dir)
+    make_json_api_description(sorted_functions, pbl_output_dir)
 
     for filename, version_functions in (
         ("pebble_sdk_version.h", (f for f in all_functions if not f.worker_only)),
@@ -220,51 +281,55 @@ if __name__ == "__main__":
         required=True,
     )
     parser.add_argument("config")
-    parser.add_argument("src_dir")
+    parser.add_argument("root_dir")
     parser.add_argument("output_dir")
     parser.add_argument("platform_name")
     parser.add_argument(
         "--internal-sdk-build", action="store_true", help="build internal SDK"
     )
+    parser.add_argument("--autoconf", help="Kconfig autoconf.h to predefine while parsing")
 
     options = parser.parse_args()
 
     shim_config = path.normpath(path.abspath(options.config))
-    pbl_src_dir = path.normpath(path.abspath(options.src_dir))
-    pbl_output_src_dir = path.normpath(path.abspath(options.output_dir))
+    pbl_root_dir = path.normpath(path.abspath(options.root_dir))
+    pbl_output_dir = path.normpath(path.abspath(options.output_dir))
 
     sdk_include_dir = path.join(path.abspath(options.sdk_dir), INCLUDE_DIR)
     sdk_lib_dir = path.join(path.abspath(options.sdk_dir), LIB_DIR)
 
-    if not path.isdir(pbl_src_dir):
-        raise RuntimeError("'%s' does not exist" % pbl_src_dir)
+    if not path.isdir(pbl_root_dir):
+        raise RuntimeError(f"'{pbl_root_dir}' does not exist")
 
     for d in (sdk_include_dir, sdk_lib_dir):
         if not path.isdir(d):
             os.makedirs(d)
 
     shutil.copy(
-        path.join(pbl_src_dir, "fw", "process_management", "pebble_process_info.h"),
+        path.join(pbl_root_dir, "fw", "process_management", "pebble_process_info.h"),
         path.join(sdk_include_dir, "pebble_process_info.h"),
     )
 
     shutil.copy(
-        path.join(pbl_src_dir, "fw/applib/graphics", "gcolor_definitions.h"),
+        path.join(pbl_root_dir, "fw/applib/graphics", "gcolor_definitions.h"),
         path.join(sdk_include_dir, "gcolor_definitions.h"),
     )
 
     # Copy unsupported function warnings header to SDK
     shutil.copy(
-        path.join(pbl_src_dir, "fw", "applib", "pebble_warn_unsupported_functions.h"),
+        path.join(pbl_root_dir, "fw", "applib", "pebble_warn_unsupported_functions.h"),
         path.join(sdk_include_dir, "pebble_warn_unsupported_functions.h"),
     )
 
     generate_shim_files(
         shim_config,
-        pbl_src_dir,
-        pbl_output_src_dir,
+        pbl_root_dir,
+        pbl_output_dir,
         sdk_include_dir,
         sdk_lib_dir,
         options.platform_name,
         internal_sdk_build=options.internal_sdk_build,
+        autoconf=options.autoconf,
     )
+
+    expand_compiler_macros(pbl_root_dir, sdk_include_dir)

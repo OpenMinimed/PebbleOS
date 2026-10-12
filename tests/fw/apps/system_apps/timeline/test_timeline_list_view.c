@@ -1,12 +1,17 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "apps/system/timeline/timeline.h"
-#include "resource/resource.h"
-#include "resource/resource_ids.auto.h"
-#include "pbl/services/timeline/timeline_resources.h"
-
 #include "test_timeline_app_includes.h"
+
+#include <pbl/services/timeline/timeline_resources.h>
+#include <pbl/util/math.h>
+#include <pbl/util/units.h>
+
+#include <apps/system/timeline/timeline.h>
+#include <fake_settings_file.h>
+#include <fixtures/screen_grid.h>
+#include <resource/resource.h>
+#include <resource/resource_ids.auto.h>
 
 // Setup and Teardown
 ////////////////////////////////////
@@ -21,11 +26,12 @@ void test_timeline_list_view__initialize(void) {
   fake_app_state_init();
   load_system_resources_fixture();
 
-  s_data = (TimelineTestData) {};
-  rtc_set_time(3 * SECONDS_PER_DAY);
+  s_data = (TimelineTestData){};
+  rtc_set_time(3 * PBL_SEC_PER_DAY);
 }
 
 void test_timeline_list_view__cleanup(void) {
+  system_theme_set_content_size(PreferredContentSizeDefault);
 }
 
 // Helpers
@@ -46,9 +52,9 @@ typedef struct ListViewConfig {
   bool day_separator;
 } ListViewConfig;
 
-static void prv_add_timeline_item(const TimelineItemConfig *config, bool past) {
+static void prv_add_timeline_item(const TimelineItemConfig *config, bool past, uint8_t pin_index) {
   PBL_ASSERTN(config);
-  TimelineItem *item = NULL;
+  TimelineItem *item = nullptr;
   const time_t now = rtc_get_time();
   const time_t timestamp = now + ((past ? -1 : 1) * config->relative_timestamp);
   if (config) {
@@ -59,12 +65,13 @@ static void prv_add_timeline_item(const TimelineItemConfig *config, bool past) {
       attribute_list_add_cstring(&list, AttributeIdSubtitle, config->subtitle);
     }
     attribute_list_add_uint32(&list, AttributeIdIconPin, config->icon);
-    item = timeline_item_create_with_attributes(timestamp, config->duration,
-                                                TimelineItemTypePin, LayoutIdGeneric,
-                                                &list, NULL);
+    item = timeline_item_create_with_attributes(timestamp, config->duration, TimelineItemTypePin,
+                                                LayoutIdGeneric, &list, nullptr);
     attribute_list_destroy_list(&list);
     PBL_ASSERTN(item);
     item->header.all_day = config->all_day;
+    // Use distinct keys in the fake settings store, which cannot handle CRC8 collisions.
+    item->header.id = (Uuid){.byte15 = pin_index + 1};
   }
   if (item) {
     pin_db_insert_item(item);
@@ -72,16 +79,60 @@ static void prv_add_timeline_item(const TimelineItemConfig *config, bool past) {
   }
 }
 
+#if PBL_ROUND
+static void prv_assert_title_centered(Window *window, TimelineLayout *layout) {
+  GTextNodeContainer *container = (GTextNodeContainer *)layout->view_node;
+  GTextNode *time_node = container->nodes[0];
+  GTextNodeText *other_text[3];
+  size_t num_other_text = 0;
+  if (time_node->type == GTextNodeType_Horizontal) {
+    GTextNodeContainer *time_container = (GTextNodeContainer *)time_node;
+    for (size_t i = 0; i < time_container->num_nodes; i++) {
+      other_text[num_other_text++] = (GTextNodeText *)time_container->nodes[i];
+    }
+  } else {
+    other_text[num_other_text++] = (GTextNodeText *)time_node;
+  }
+  if (container->num_nodes > 2) {
+    other_text[num_other_text++] = (GTextNodeText *)container->nodes[2];
+  }
+  GColor colors[3];
+  for (size_t i = 0; i < num_other_text; i++) {
+    colors[i] = other_text[i]->color;
+    other_text[i]->color = GColorWhite;
+  }
+  window_render(window, fake_graphics_context_get_context());
+  const GBitmap *bitmap = &fake_graphics_context_get_context()->dest_bitmap;
+  int16_t top = DISP_ROWS;
+  int16_t bottom = 0;
+  const int16_t right = DISP_COLS - timeline_layer_get_ideal_sidebar_width() - 15;
+  for (int16_t y = DISP_ROWS / 4; y < 3 * DISP_ROWS / 4; y++) {
+    const GBitmapDataRowInfo row = gbitmap_get_data_row_info(bitmap, y);
+    for (int16_t x = row.min_x; x < MIN(row.max_x + 1, right); x++) {
+      if (row.data[x] == GColorBlackARGB8) {
+        top = MIN(top, y);
+        bottom = MAX(bottom, y);
+      }
+    }
+  }
+  cl_assert(top <= bottom);
+  cl_assert(ABS(top + bottom - DISP_ROWS) <= 4);
+  for (size_t i = 0; i < num_other_text; i++) {
+    other_text[i]->color = colors[i];
+  }
+}
+#endif
+
 static void prv_create_list_view_and_render(ListViewConfig *config) {
   pin_db_init();
 
   for (int i = 0; i < (int)ARRAY_LENGTH(config->pins); i++) {
     if (config->pins[i]) {
-      prv_add_timeline_item(config->pins[i], config->past);
+      prv_add_timeline_item(config->pins[i], config->past, i);
     }
   }
 
-  s_data.model = (TimelineModel) {};
+  s_data.model = (TimelineModel){};
   s_data.model.direction = config->past ? TimelineIterDirectionPast : TimelineIterDirectionFuture;
   timeline_model_init(rtc_get_time(), &s_data.model);
 
@@ -97,6 +148,12 @@ static void prv_create_list_view_and_render(ListViewConfig *config) {
   timeline_layer_set_sidebar_width(&timeline_layer, timeline_layer_get_ideal_sidebar_width());
   layer_add_child(&window.layer, &timeline_layer.layer);
   timeline_layer_reset(&timeline_layer);
+
+#if PBL_ROUND
+  GRect icon_frame;
+  timeline_layer_get_icon_frame(&timeline_layer, TIMELINE_LAYER_FIRST_VISIBLE_LAYOUT, &icon_frame);
+  cl_assert_equal_i(icon_frame.origin.y + icon_frame.size.h / 2, DISP_ROWS / 2);
+#endif
 
   if (config->day_separator) {
     // Simulate showing the day separator
@@ -114,44 +171,68 @@ static void prv_create_list_view_and_render(ListViewConfig *config) {
   }
 
   window_set_on_screen(&window, true, true);
+
+#if PBL_ROUND
+  if (!config->day_separator) {
+    prv_assert_title_centered(&window, timeline_layer_get_current_layout(&timeline_layer));
+  }
+#endif
   window_render(&window, fake_graphics_context_get_context());
 
   timeline_layer_deinit(&timeline_layer);
   timeline_model_deinit();
   pin_db_flush();
+  fake_settings_file_reset();
+}
+
+// Content size grids
+//////////////////////
+
+//! Renders once per content size and checks the screens side by side, from Small
+static void prv_check_for_each_size(void (*render)(void), const char *pbi_file) {
+  ScreenGrid grid;
+  screen_grid_init(&grid, 1);
+  for (PreferredContentSize size = grid.first_size; size <= grid.last_size; size++) {
+    system_theme_set_content_size(size);
+    s_data = (TimelineTestData){};
+    render();
+    screen_grid_add(&grid, fake_graphics_context_get_context(), size, 0);
+  }
+
+  screen_grid_check(&grid, pbi_file);
 }
 
 // Tests
 //////////////////////
 
 static void prv_create_and_render_title_and_subtitle(bool past, uint16_t first_duration_m) {
-  prv_create_list_view_and_render(&(ListViewConfig) {
-    .pins = {
-      &(TimelineItemConfig) {
-        .relative_timestamp = (11 * SECONDS_PER_HOUR) + (30 * SECONDS_PER_MINUTE),
-        .duration = first_duration_m,
-        .title = "Jon Byrd birthday party",
-        .subtitle = "Kaboom, Redwood City",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }, &(TimelineItemConfig) {
-        .relative_timestamp = 12 * SECONDS_PER_HOUR,
-        .duration = MINUTES_PER_HOUR,
-        .title = "Design Review Meeting",
-        .subtitle = "Batavia, Palo Alto",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }
-    },
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins =
+        {&(TimelineItemConfig){
+           .relative_timestamp = (11 * PBL_SEC_PER_HOUR) + (30 * PBL_SEC_PER_MIN),
+           .duration = first_duration_m,
+           .title = "Jon Byrd birthday party",
+           .subtitle = "Kaboom, Redwood City",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         },
+         &(TimelineItemConfig){
+           .relative_timestamp = 12 * PBL_SEC_PER_HOUR,
+           .duration = PBL_MIN_PER_HOUR,
+           .title = "Design Review Meeting",
+           .subtitle = "Batavia, Palo Alto",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         }},
     .past = past,
   });
 }
 
 void test_timeline_list_view__title_and_subtitle_overlap_future(void) {
-  prv_create_and_render_title_and_subtitle(false /* past */, MINUTES_PER_HOUR);
+  prv_create_and_render_title_and_subtitle(false /* past */, PBL_MIN_PER_HOUR);
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
 }
 
 void test_timeline_list_view__title_and_subtitle_back_to_back_future(void) {
-  prv_create_and_render_title_and_subtitle(false /* past */, MINUTES_PER_HOUR / 2);
+  prv_create_and_render_title_and_subtitle(false /* past */, PBL_MIN_PER_HOUR / 2);
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
 }
 
@@ -166,29 +247,34 @@ void test_timeline_list_view__title_and_subtitle_free_time_past(void) {
 }
 
 void prv_create_and_render_pin_and_dot(bool past) {
-  prv_create_list_view_and_render(&(ListViewConfig) {
-    .pins = {
-      &(TimelineItemConfig) {
-        .relative_timestamp = (11 * SECONDS_PER_HOUR) + (30 * SECONDS_PER_MINUTE),
-        .duration = MINUTES_PER_HOUR,
-        .title = "Jon Byrd birthday party",
-        .subtitle = "Kaboom, Redwood City",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }, &(TimelineItemConfig) {
-        .relative_timestamp = SECONDS_PER_DAY + SECONDS_PER_HOUR,
-        .duration = MINUTES_PER_HOUR,
-        .title = "Design Review Meeting",
-        .subtitle = "Batavia, Palo Alto",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }
-    },
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins =
+        {&(TimelineItemConfig){
+           // In the future, 10:00 PM, the widest time in the time font
+           .relative_timestamp =
+               past ? (11 * PBL_SEC_PER_HOUR) + (30 * PBL_SEC_PER_MIN) : 22 * PBL_SEC_PER_HOUR,
+           .duration = PBL_MIN_PER_HOUR,
+           .title = "Jon Byrd birthday party",
+           .subtitle = "Kaboom, Redwood City",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         },
+         &(TimelineItemConfig){
+           .relative_timestamp = PBL_SEC_PER_DAY + PBL_SEC_PER_HOUR,
+           .duration = PBL_MIN_PER_HOUR,
+           .title = "Design Review Meeting",
+           .subtitle = "Batavia, Palo Alto",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         }},
     .past = past,
   });
 }
 
-void test_timeline_list_view__pin_and_dot_future(void) {
+static void prv_render_pin_and_dot_future(void) {
   prv_create_and_render_pin_and_dot(false /* past */);
-  FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
+}
+
+void test_timeline_list_view__content_sizes_pin_and_dot_future(void) {
+  prv_check_for_each_size(prv_render_pin_and_dot_future, TEST_PBI_FILE);
 }
 
 void test_timeline_list_view__pin_and_dot_past(void) {
@@ -196,24 +282,53 @@ void test_timeline_list_view__pin_and_dot_past(void) {
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
 }
 
+static void prv_render_pin_and_dot_past(void) {
+  prv_create_and_render_pin_and_dot(true /* past */);
+}
+
+void test_timeline_list_view__content_sizes_pin_and_dot_past(void) {
+  prv_check_for_each_size(prv_render_pin_and_dot_past, TEST_PBI_FILE);
+}
+
+void test_timeline_list_view__content_sizes_no_subtitle(void) {
+  ScreenGrid grid;
+  screen_grid_init(&grid, 2);
+  for (PreferredContentSize size = grid.first_size; size <= grid.last_size; size++) {
+    system_theme_set_content_size(size);
+    for (unsigned int past = 0; past < 2; past++) {
+      prv_create_list_view_and_render(&(ListViewConfig){
+        .pins = {&(TimelineItemConfig){
+          .relative_timestamp = 12 * PBL_SEC_PER_HOUR,
+          .duration = PBL_MIN_PER_HOUR,
+          .title = "Design review meeting",
+          .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+        }},
+        .past = past,
+      });
+      screen_grid_add(&grid, fake_graphics_context_get_context(), size, past);
+    }
+  }
+  screen_grid_check(&grid, TEST_PBI_FILE);
+}
+
 void prv_create_and_render_day_sep_tomorrow(bool past) {
-  prv_create_list_view_and_render(&(ListViewConfig) {
-    .pins = {
-      &(TimelineItemConfig) {
-        .relative_timestamp = (11 * SECONDS_PER_HOUR) + (30 * SECONDS_PER_MINUTE),
-        .duration = MINUTES_PER_HOUR,
-        .title = "Jon Byrd birthday party",
-        .subtitle = "Kaboom, Redwood City",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }, &(TimelineItemConfig) {
-        .relative_timestamp = ((11 * SECONDS_PER_HOUR) + (30 * SECONDS_PER_MINUTE) +
-                               SECONDS_PER_DAY),
-        .duration = MINUTES_PER_HOUR,
-        .title = "Design Review Meeting",
-        .subtitle = "Batavia, Palo Alto",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }
-    },
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins =
+        {&(TimelineItemConfig){
+           .relative_timestamp = (11 * PBL_SEC_PER_HOUR) + (30 * PBL_SEC_PER_MIN),
+           .duration = PBL_MIN_PER_HOUR,
+           .title = "Jon Byrd birthday party",
+           .subtitle = "Kaboom, Redwood City",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         },
+         &(TimelineItemConfig){
+           .relative_timestamp =
+               ((11 * PBL_SEC_PER_HOUR) + (30 * PBL_SEC_PER_MIN) + PBL_SEC_PER_DAY),
+           .duration = PBL_MIN_PER_HOUR,
+           .title = "Design Review Meeting",
+           .subtitle = "Batavia, Palo Alto",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         }},
     .past = past,
     .day_separator = true,
   });
@@ -229,17 +344,23 @@ void test_timeline_list_view__day_sep_tomorrow_past(void) {
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
 }
 
+static void prv_render_day_sep_tomorrow_future(void) {
+  prv_create_and_render_day_sep_tomorrow(false /* past */);
+}
+
+void test_timeline_list_view__content_sizes_day_sep_tomorrow_future(void) {
+  prv_check_for_each_size(prv_render_day_sep_tomorrow_future, TEST_PBI_FILE);
+}
+
 void prv_create_and_render_pin_and_fin(bool past) {
-  prv_create_list_view_and_render(&(ListViewConfig) {
-    .pins = {
-      &(TimelineItemConfig) {
-        .relative_timestamp = (11 * SECONDS_PER_HOUR) + (30 * SECONDS_PER_MINUTE),
-        .title = "Jon Byrd birthday party",
-        .duration = MINUTES_PER_HOUR,
-        .subtitle = "Kaboom, Redwood City",
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-      }
-    },
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins = {&(TimelineItemConfig){
+      .relative_timestamp = (11 * PBL_SEC_PER_HOUR) + (30 * PBL_SEC_PER_MIN),
+      .title = "Jon Byrd birthday party",
+      .duration = PBL_MIN_PER_HOUR,
+      .subtitle = "Kaboom, Redwood City",
+      .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+    }},
     .past = past,
   });
 }
@@ -254,20 +375,17 @@ void test_timeline_list_view__pin_and_fin_past(void) {
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
 }
 
-
 void prv_create_and_render_all_day(bool past) {
-  prv_create_list_view_and_render(&(ListViewConfig) {
-    .pins = {
-      &(TimelineItemConfig) {
-        // Must sit further back than the duration, or the past view correctly excludes it
-        // for still being in progress.
-        .relative_timestamp = 2 * SECONDS_PER_DAY,
-        .title = "Independence Day",
-        .duration = MINUTES_PER_DAY,
-        .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
-        .all_day = true,
-      }
-    },
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins = {&(TimelineItemConfig){
+      // Must sit further back than the duration, or the past view correctly excludes it
+      // for still being in progress.
+      .relative_timestamp = 2 * PBL_SEC_PER_DAY,
+      .title = "Independence Day",
+      .duration = PBL_MIN_PER_DAY,
+      .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+      .all_day = true,
+    }},
     .past = past,
   });
 }
@@ -280,4 +398,49 @@ void test_timeline_list_view__all_day_future(void) {
 void test_timeline_list_view__all_day_past(void) {
   prv_create_and_render_all_day(true /* past */);
   FAKE_GRAPHICS_CONTEXT_CHECK_DEST_BITMAP_FILE();
+}
+
+static void prv_create_and_render_short_titles(bool past) {
+  prv_create_list_view_and_render(&(ListViewConfig){
+    .pins =
+        {&(TimelineItemConfig){
+           .relative_timestamp = PBL_SEC_PER_HOUR,
+           .title = "Sunrise",
+           .subtitle = "92°/70°",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         },
+         &(TimelineItemConfig){
+           .relative_timestamp = 12 * PBL_SEC_PER_HOUR,
+           .title = "Sunset",
+           .subtitle = "94°/75°",
+           .icon = TIMELINE_RESOURCE_TIMELINE_CALENDAR,
+         }},
+    .past = past,
+  });
+}
+
+void test_timeline_list_view__content_sizes_time_title_spacing(void) {
+  ScreenGrid grid;
+  screen_grid_init(&grid, 2);
+  for (PreferredContentSize size = grid.first_size; size <= grid.last_size; size++) {
+    system_theme_set_content_size(size);
+    prv_create_and_render_short_titles(false /* past */);
+    screen_grid_add(&grid, fake_graphics_context_get_context(), size, 0);
+    prv_create_and_render_short_titles(true /* past */);
+    screen_grid_add(&grid, fake_graphics_context_get_context(), size, 1);
+  }
+  screen_grid_check(&grid, TEST_PBI_FILE);
+}
+
+void test_timeline_list_view__content_sizes_all_day(void) {
+  ScreenGrid grid;
+  screen_grid_init(&grid, 2);
+  for (PreferredContentSize size = grid.first_size; size <= grid.last_size; size++) {
+    system_theme_set_content_size(size);
+    prv_create_and_render_all_day(false /* past */);
+    screen_grid_add(&grid, fake_graphics_context_get_context(), size, 0);
+    prv_create_and_render_all_day(true /* past */);
+    screen_grid_add(&grid, fake_graphics_context_get_context(), size, 1);
+  }
+  screen_grid_check(&grid, TEST_PBI_FILE);
 }

@@ -1,15 +1,15 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
+#include <pbl/services/vibes/vibe_intensity.h>
 
-#include "pbl/services/vibes/vibe_intensity.h"
+#include <clar.h>
 
 // Stubs
 /////////
 
-#include "stubs_alerts_preferences.h"
-#include "stubs_vibe_pattern.h"
+#include <stubs_alerts_preferences.h>
+#include <stubs_vibe_pattern.h>
 
 // Setup and Teardown
 //////////////////////
@@ -25,7 +25,7 @@ void test_vibe_intensity__cleanup(void) {
 
 void test_vibe_intensity__get_string_for_intensity(void) {
   // A bogus intensity returns NULL
-  cl_assert_equal_p(vibe_intensity_get_string_for_intensity(VibeIntensityNum), NULL);
+  cl_assert_equal_p(vibe_intensity_get_string_for_intensity(VibeIntensityNum), nullptr);
 
   cl_assert_equal_s(vibe_intensity_get_string_for_intensity(VibeIntensityLow), "Standard - Low");
   cl_assert_equal_s(vibe_intensity_get_string_for_intensity(VibeIntensityMedium),

@@ -17,7 +17,6 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<describe>-<desc>.pbz
 ./minimed-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
 ./minimed-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
-./minimed-build.sh <desc> --configure  # add this after Kconfig / app-registry changes
 ./minimed-build.sh <desc> --allow-dirty  # bypass the clean-tree check (normally required)
 ```
 
@@ -31,10 +30,17 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   is this watch actually running" (describe's shape can collapse to just a tag name with no hash
   at all if `HEAD` is sitting exactly on one, e.g. rebuilding an unchanged commit on the PT2 path).
 - Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect.
-- **asterix** (the default): Docker image `pebbleos-build:local`, one bundle, no release band.
-- **obelix** (`--pt2`): image `ghcr.io/coredevices/pebbleos-docker:v6` (official CI), two
-  single-slot bundles, release build, release-band check. The rest of this section is that recipe.
-- Switching boards re-runs `waf configure` automatically (the c4che board no longer matches).
+- Builds with CMake (`pbl configure/build/bundle`) in the `pebbleos-minimed:v10` Docker image
+  (`tools/minimed/Dockerfile`: the official CI image plus the Python requirements and SDL2, built
+  on first use), one build directory per board and slot (`build-asterix`, `build-pt2-slot0`,
+  `build-pt2-slot1`). Every run reconfigures, which is quick, so Kconfig changes need no flag.
+- **asterix** (the default): one bundle, no release band. **Does not link on v4.41.0**: stock
+  v4.41.0 already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB,
+  so the region overflows by ~31 KB. `CONFIG_SERVICE_VOICE=n` alone does not link (the voice
+  endpoint, process manager and applib still reference it) and `CONFIG_LTO=y` does not link on
+  this CMake build either, so something has to be cut before asterix builds again.
+- **obelix** (`--pt2`): two single-slot bundles, release build, release-band check. The rest of
+  this section is that recipe.
 
 ### User-facing settings
 
@@ -49,7 +55,7 @@ it's not a bitmask), read it in `minimed_glucose_announce.c`, cache/persist it i
 Some behaviour is still gated behind a plain `#define` rather than Kconfig, for things that are
 genuinely a developer/debug knob rather than a user preference. To flip one of those on a personal
 build without it ever showing up in `git diff`: create
-`src/bluetooth-fw/nimble/minimed_local_overrides.h` (gitignored) and `#define` it there — a source
+`subsys/bluetooth/minimed_local_overrides.h` (gitignored) and `#define` it there — a source
 file `#include`s it if present (guarded by `__has_include`) and only falls back to its own default
 otherwise. There is no example left as of this writing (`MINIMED_ALERT_POPUPS` moved to the
 Settings page above); the mechanism remains for the next one.

@@ -10,7 +10,7 @@ typedef struct SimpleDialog {
 } SimpleDialog;
 
 SimpleDialog *simple_dialog_create(const char *dialog_name) {
-  return NULL;
+  return nullptr;
 }
 
 void simple_dialog_init(SimpleDialog *simple_dialog, const char *dialog_name) {
@@ -18,8 +18,8 @@ void simple_dialog_init(SimpleDialog *simple_dialog, const char *dialog_name) {
 }
 
 Dialog *simple_dialog_get_dialog(SimpleDialog *simple_dialog) {
-  if (simple_dialog == NULL) {
-    return NULL;
+  if (simple_dialog == nullptr) {
+    return nullptr;
   }
   return &simple_dialog->dialog;
 }
@@ -31,7 +31,7 @@ void simple_dialog_push(SimpleDialog *simple_dialog, WindowStack *window_stack) 
 void app_simple_dialog_push(SimpleDialog *simple_dialog) {
 }
 
-bool simple_dialog_does_text_fit(const char *text, GSize window_size,
-                                 GSize icon_size, bool has_status_bar) {
+bool simple_dialog_does_text_fit(const char *text, GSize window_size, GSize icon_size,
+                                 bool has_status_bar) {
   return true;
 }

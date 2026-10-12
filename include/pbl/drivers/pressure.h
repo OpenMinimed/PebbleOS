@@ -3,7 +3,18 @@
 
 #pragma once
 
-#include <stdbool.h>
+/**
+ * @defgroup drivers_pressure Pressure sensor
+ * @ingroup drivers
+ * @brief Barometric pressure sensor driver interface.
+ * @{
+ */
 
-//! Initialize the pressure sensor driver. Call this once at startup.
+/**
+ * @brief Initialize the pressure sensor.
+ *
+ * Called once at startup. Probes the sensor and leaves it in its low-power state.
+ */
 void pressure_init(void);
+
+/** @} */

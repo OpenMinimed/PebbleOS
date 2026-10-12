@@ -3,21 +3,22 @@
 
 #pragma once
 
-#include "applib/ui/click_internal.h"
-#include "applib/ui/window.h"
-#include "applib/ui/window_stack_private.h"
-#include "pbl/util/attributes.h"
+#include <pbl/kernel/compiler.h>
 
-Window *WEAK window_manager_get_top_window(void) {
-  return NULL;
+#include <applib/ui/click_internal.h>
+#include <applib/ui/window.h>
+#include <applib/ui/window_stack_private.h>
+
+Window *PBL_WEAK window_manager_get_top_window(void) {
+  return nullptr;
 }
 
-WindowStack *WEAK window_manager_get_window_stack(void) {
-  return NULL;
+WindowStack *PBL_WEAK window_manager_get_window_stack(void) {
+  return nullptr;
 }
 
-ClickManager *WEAK window_manager_get_window_click_manager(void) {
-  return NULL;
+ClickManager *PBL_WEAK window_manager_get_window_click_manager(void) {
+  return nullptr;
 }
 
 bool window_manager_is_window_visible(Window *window) {

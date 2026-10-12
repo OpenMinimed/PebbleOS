@@ -3,11 +3,11 @@
 
 #include "test_db.h"
 
-#include <string.h>
-
 #include "ram_storage.h"
 
-#include "kernel/pbl_malloc.h"
+#include <string.h>
+
+#include <kernel/pbl_malloc.h>
 
 struct {
   RamStorage ram_storage;
@@ -47,15 +47,15 @@ bool prv_dirty_items_each_cb(RamStorageEntry *entry, void *context) {
     BlobDBDirtyItem *new_item = kernel_zalloc_check(sizeof(BlobDBDirtyItem) + entry->key_len);
     memcpy(new_item->key, entry->key, entry->key_len);
     new_item->key_len = entry->key_len;
-    *dirty_items = (BlobDBDirtyItem *)list_insert_before((ListNode *)*dirty_items,
-                                                         (ListNode *)new_item);
+    *dirty_items =
+        (BlobDBDirtyItem *)list_insert_before((ListNode *)*dirty_items, (ListNode *)new_item);
   }
 
   return true;
 }
 
 BlobDBDirtyItem *test_db_get_dirty_list(void) {
-  BlobDBDirtyItem *dirty_items = NULL;
+  BlobDBDirtyItem *dirty_items = nullptr;
   ram_storage_each(&s_test_db.ram_storage, prv_dirty_items_each_cb, &dirty_items);
   return dirty_items;
 }

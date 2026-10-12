@@ -93,13 +93,13 @@ DEFAULT_DICT = os.path.join(os.path.dirname(__file__), "..", "build", "pebbleos_
 
 def make_dehasher(dict_path):
     if not os.path.exists(dict_path):
-        print("No loghash dictionary at {} -- lines will stay hashed. Build the firmware first."
-              .format(dict_path), file=sys.stderr)
+        print(f"No loghash dictionary at {dict_path} -- lines will stay hashed. Build the firmware first."
+              , file=sys.stderr)
         return None
     try:
         import logdehash
     except ImportError as e:
-        print("Could not import logdehash ({}); lines will stay hashed.".format(e), file=sys.stderr)
+        print(f"Could not import logdehash ({e}); lines will stay hashed.", file=sys.stderr)
         return None
     # monitor_dict_file spawns a watcher thread we do not need for a one-shot dump.
     return logdehash.LogDehash(dict_path, monitor_dict_file=False)
@@ -122,14 +122,14 @@ def main():
 
     dehasher = None if args.raw else make_dehasher(args.dict)
 
-    connection = PebbleConnection(WebsocketTransport("ws://{}:9000/".format(args.phone)))
+    connection = PebbleConnection(WebsocketTransport(f"ws://{args.phone}:9000/"))
     try:
         connection.connect()
-    except Exception as e:
-        sys.exit("Could not reach the phone at {}:9000 ({}).\n"
+    except Exception as e:  # noqa: BLE001 -- whatever the transport raises means unreachable
+        sys.exit(f"Could not reach the phone at {args.phone}:9000 ({e}).\n"
                  "Run `adb forward tcp:9000 tcp:9000`, and check the Pebble app has Developer\n"
                  "Connection enabled and the watch connected (NORMAL mode, not DUAL)."
-                 .format(args.phone, e))
+                 )
     connection.run_async()
 
     done = threading.Event()
@@ -149,8 +149,8 @@ def main():
                     # A hashed line carries its real origin in the dictionary, not in the record.
                     if d.get("file"):
                         payload.filename, payload.line = d["file"], d.get("line", payload.line)
-                except Exception:
-                    pass  # keep the hashed form rather than losing the line
+                except Exception:  # noqa: BLE001, S110 -- keep the hashed form, never lose the line
+                    pass
             # Timestamps matter more than they look: correlating when things happened relative to
             # each other is most of what a flash dump is for (e.g. did this notification arrive
             # right after our request, or on its own?).
@@ -158,13 +158,13 @@ def main():
                 stamp = datetime.fromtimestamp(payload.timestamp).strftime("%H:%M:%S")
             except (OverflowError, OSError, ValueError):
                 stamp = str(payload.timestamp)  # watch RTC unset or nonsense; show it raw
-            text = "{} [{}] {}:{} {}".format(stamp, level, payload.filename, payload.line, message)
+            text = f"{stamp} [{level}] {payload.filename}:{payload.line} {message}"
             lines.append(text)
             print(text, flush=True)
         elif isinstance(payload, LogMessageDone):
             done.set()
         elif isinstance(payload, NoLogMessages):
-            print("(the watch reports no logs stored for generation {})".format(args.generation),
+            print(f"(the watch reports no logs stored for generation {args.generation})",
                   file=sys.stderr)
             done.set()
 
@@ -178,15 +178,15 @@ def main():
     seen = -1
     while not done.wait(timeout=args.timeout):
         if len(lines) == seen:
-            print("No further lines for {:.0f}s; stopping. The dump may be incomplete."
-                  .format(args.timeout), file=sys.stderr)
+            print(f"No further lines for {args.timeout:.0f}s; stopping. The dump may be incomplete."
+                  , file=sys.stderr)
             break
         seen = len(lines)
 
     if args.output:
         with open(args.output, "w") as f:
             f.write("\n".join(lines) + "\n")
-        print("Wrote {} lines to {}".format(len(lines), args.output), file=sys.stderr)
+        print(f"Wrote {len(lines)} lines to {args.output}", file=sys.stderr)
     elif not lines:
         print("No lines retrieved.", file=sys.stderr)
 

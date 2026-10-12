@@ -7,16 +7,16 @@ can call), three things must change together — the firmware build alone will
 not surface it to apps:
 
 1. **Implement the applib wrapper and syscall** — add the function to the
-   appropriate `src/fw/applib/.../<area>.c/.h`, declare the `sys_*` syscall in
-   `src/fw/syscall/syscall.h`, and define it with `DEFINE_SYSCALL` (from
-   `src/fw/syscall/syscall_internal.h`), either in the matching
-   `src/fw/syscall/<area>_syscalls.c` or alongside the implementation it
+   appropriate `fw/applib/.../<area>.c/.h`, declare the `sys_*` syscall in
+   `fw/syscall/syscall.h`, and define it with `DEFINE_SYSCALL` (from
+   `fw/syscall/syscall_internal.h`), either in the matching
+   `fw/syscall/<area>_syscalls.c` or alongside the implementation it
    wraps.
 2. **Register the symbol** in
    `tools/generate_native_sdk/exported_symbols.json` under the matching
    group, with an `addedRevision` matching the new SDK revision.
 3. **Bump the SDK revision** in
-   `src/fw/process_management/pebble_process_info.h`: increment
+   `fw/process_management/pebble_process_info.h`: increment
    `PROCESS_INFO_CURRENT_SDK_VERSION_MINOR` and add a comment line above the
    `#define` following the existing pattern, e.g. `// sdk.major:0x5
 .minor:0x66 -- <description> (rev 105)`. The `rev` number in the comment
@@ -44,17 +44,32 @@ native watchapps, all under `build/`:
 
 - `build/sdk/<platform>/include/pebble.h` — typedefs, defines and function
   prototypes for apps (plus `pebble_worker.h` for background workers and a
-  few version/fonts headers)
+  few version/fonts headers). Exported declarations are copied verbatim and
+  use `pbl/kernel/compiler.h` macros rather than raw `__attribute__`; the
+  generator rewrites those into their GCC spellings, so the SDK ships no
+  firmware headers. Only macros that alias an attribute or forward their
+  arguments to a builtin can be exported.
 - `build/sdk/<platform>/lib/libpebble.a` — static library containing
   trampolines that call the exported functions in flash
-- `build/src/fw/pebble.auto.c` — `g_pbl_system_tbl`, the table of function
+- `build/fw/pebble.auto.c` — `g_pbl_system_tbl`, the table of function
   pointers the trampolines use to find an exported function's address;
   compiled into the firmware image
 
-The rest of the SDK distribution is assembled by `sdk/wscript_build`: it
-copies the common files from `sdk/` into `build/sdk/common/` (including the
-app project templates under `sdk/defaults/`) and bundles the SDK waftools
-into the `waf` binary app developers use to build their apps.
+The rest of the distribution is packaged by the firmware build's `sdk`
+target, which fills in the same `build/sdk/` tree:
+
+```shell
+pbl configure --board $BOARD
+pbl build sdk
+```
+
+`tools/cmake/sdk.py` copies the common files from `sdk/` into
+`build/sdk/common/` — the app project templates under `sdk/defaults/`, and
+the tools and resource pipeline the app build shares with the firmware —
+and bundles `sdk/waftools/` into the `waf` binary app developers use to
+build their apps. That waf is the only one left in the tree: everything it
+needs lives under `sdk/`, and it is built out of tree, so packaging leaves
+the checkout untouched.
 
 ## `exported_symbols.json` format
 

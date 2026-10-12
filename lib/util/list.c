@@ -1,20 +1,20 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "pbl/util/list.h"
-#include "pbl/util/assert.h"
-#include "pbl/util/logging.h"
-
 #include <stddef.h>
 #include <stdio.h>
 
-void list_init(ListNode* node) {
-  node->next = NULL;
-  node->prev = NULL;
+#include <pbl/util/assert.h>
+#include <pbl/util/list.h>
+#include <pbl/util/logging.h>
+
+void list_init(ListNode *node) {
+  node->next = nullptr;
+  node->prev = nullptr;
 }
 
-ListNode* list_insert_after(ListNode* node, ListNode* new_node) {
-  if (node == NULL) {
+ListNode *list_insert_after(ListNode *node, ListNode *new_node) {
+  if (node == nullptr) {
     return new_node;
   }
   new_node->next = node->next;
@@ -28,8 +28,8 @@ ListNode* list_insert_after(ListNode* node, ListNode* new_node) {
   return new_node;
 }
 
-ListNode* list_insert_before(ListNode* node, ListNode* new_node) {
-  if (node == NULL) {
+ListNode *list_insert_before(ListNode *node, ListNode *new_node) {
+  if (node == nullptr) {
     return new_node;
   }
   new_node->next = node;
@@ -43,28 +43,28 @@ ListNode* list_insert_before(ListNode* node, ListNode* new_node) {
   return new_node;
 }
 
-ListNode* list_pop_head(ListNode *node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_pop_head(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
   ListNode *head = list_get_head(node);
   ListNode *new_head = head->next;
-  list_remove(head, NULL, NULL);
+  list_remove(head, nullptr, nullptr);
   return new_head;
 }
 
-ListNode* list_pop_tail(ListNode *node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_pop_tail(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
-  ListNode* tail = list_get_tail(node);
-  ListNode* new_tail = tail->prev;
-  list_remove(tail, NULL, NULL);
+  ListNode *tail = list_get_tail(node);
+  ListNode *new_tail = tail->prev;
+  list_remove(tail, nullptr, nullptr);
   return new_tail;
 }
 
-void list_remove(ListNode* node, ListNode **head, ListNode **tail) {
-  if (node == NULL) {
+void list_remove(ListNode *node, ListNode **head, ListNode **tail) {
+  if (node == nullptr) {
     return;
   }
   if (head && *head == node) {
@@ -79,47 +79,47 @@ void list_remove(ListNode* node, ListNode **head, ListNode **tail) {
   if (node->prev) {
     node->prev->next = node->next;
   }
-  node->prev = NULL;
-  node->next = NULL;
+  node->prev = nullptr;
+  node->next = nullptr;
 }
 
-ListNode* list_append(ListNode* node, ListNode* new_node) {
+ListNode *list_append(ListNode *node, ListNode *new_node) {
   return list_insert_after(list_get_tail(node), new_node);
 }
 
-ListNode* list_prepend(ListNode* node, ListNode* new_node) {
+ListNode *list_prepend(ListNode *node, ListNode *new_node) {
   return list_insert_before(list_get_head(node), new_node);
 }
 
-ListNode* list_get_next(ListNode* node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_get_next(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
   return node->next;
 }
 
-ListNode* list_get_prev(ListNode* node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_get_prev(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
   return node->prev;
 }
 
-ListNode* list_get_tail(ListNode* node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_get_tail(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
-  while (node->next != NULL) {
+  while (node->next != nullptr) {
     node = node->next;
   }
   return node;
 }
 
-ListNode* list_get_head(ListNode* node) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_get_head(ListNode *node) {
+  if (node == nullptr) {
+    return nullptr;
   }
-  while (node->prev != NULL) {
+  while (node->prev != nullptr) {
     node = node->prev;
   }
   return node;
@@ -139,34 +139,34 @@ bool list_is_tail(const ListNode *node) {
   return !node->next;
 }
 
-uint32_t list_count_to_tail_from(ListNode* node) {
-  if (node == NULL) {
+uint32_t list_count_to_tail_from(ListNode *node) {
+  if (node == nullptr) {
     return 0;
   }
   uint32_t count = 1;
-  while ((node = node->next) != NULL) {
+  while ((node = node->next) != nullptr) {
     ++count;
   }
   return count;
 }
 
 uint32_t list_count_to_head_from(ListNode *node) {
-  if (node == NULL) {
+  if (node == nullptr) {
     return 0;
   }
   uint32_t count = 1;
-  while ((node = node->prev) != NULL) {
+  while ((node = node->prev) != nullptr) {
     ++count;
   }
   return count;
 }
 
-uint32_t list_count(ListNode* node) {
+uint32_t list_count(ListNode *node) {
   return list_count_to_tail_from(list_get_head(node));
 }
 
-ListNode* list_get_at(ListNode *node, int32_t index) {
-  while (node != NULL && index != 0) {
+ListNode *list_get_at(ListNode *node, int32_t index) {
+  while (node != nullptr && index != 0) {
     if (index > 0) {
       node = node->next;
       index--;
@@ -178,15 +178,16 @@ ListNode* list_get_at(ListNode *node, int32_t index) {
   return node;
 }
 
-ListNode* list_sorted_add(ListNode *node, ListNode *new_node, Comparator comparator, bool ascending) {
-  if (node == NULL) {
+ListNode *list_sorted_add(ListNode *node, ListNode *new_node, Comparator comparator,
+                          bool ascending) {
+  if (node == nullptr) {
     return new_node;
   }
-  if (new_node == NULL) {
+  if (new_node == nullptr) {
     return node;
   }
-  ListNode * const head = node;
-  for(;;) {
+  ListNode *const head = node;
+  for (;;) {
     int order = comparator(node, new_node);
     if (!ascending) {
       order = -order;
@@ -201,7 +202,7 @@ ListNode* list_sorted_add(ListNode *node, ListNode *new_node, Comparator compara
       }
     }
     ListNode *next = node->next;
-    if (next == NULL) {
+    if (next == nullptr) {
       list_insert_after(node, new_node);
       return head;
     }
@@ -210,7 +211,7 @@ ListNode* list_sorted_add(ListNode *node, ListNode *new_node, Comparator compara
 }
 
 bool list_contains(const ListNode *node, const ListNode *node_to_search) {
-  if (node == NULL || node_to_search == NULL) {
+  if (node == nullptr || node_to_search == nullptr) {
     return false;
   }
   while (node) {
@@ -222,9 +223,9 @@ bool list_contains(const ListNode *node, const ListNode *node_to_search) {
   return false;
 }
 
-ListNode* list_find(ListNode *node, ListFilterCallback filter_callback, void *data) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_find(ListNode *node, ListFilterCallback filter_callback, void *data) {
+  if (node == nullptr) {
+    return nullptr;
   }
   ListNode *cursor = node;
   do {
@@ -232,12 +233,13 @@ ListNode* list_find(ListNode *node, ListFilterCallback filter_callback, void *da
       return cursor;
     }
   } while ((cursor = cursor->next));
-  return NULL;
+  return nullptr;
 }
 
-ListNode* list_find_next(ListNode *node, ListFilterCallback filter_callback, bool wrap_around, void *data) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_find_next(ListNode *node, ListFilterCallback filter_callback, bool wrap_around,
+                         void *data) {
+  if (node == nullptr) {
+    return nullptr;
   }
   ListNode *cursor = node;
   while ((cursor = cursor->next)) {
@@ -246,7 +248,7 @@ ListNode* list_find_next(ListNode *node, ListFilterCallback filter_callback, boo
     }
   }
   if (wrap_around == false) {
-    return NULL;
+    return nullptr;
   }
   cursor = list_get_head(node);
   while (cursor) {
@@ -255,17 +257,18 @@ ListNode* list_find_next(ListNode *node, ListFilterCallback filter_callback, boo
     }
     // We're back at where we started and even <node> itself doesn't match the filter
     if (cursor == node) {
-      return NULL;
+      return nullptr;
     }
     cursor = cursor->next;
   }
   UTIL_ASSERT(0);
-  return NULL;
+  return nullptr;
 }
 
-ListNode* list_find_prev(ListNode *node, ListFilterCallback filter_callback, bool wrap_around, void *data) {
-  if (node == NULL) {
-    return NULL;
+ListNode *list_find_prev(ListNode *node, ListFilterCallback filter_callback, bool wrap_around,
+                         void *data) {
+  if (node == nullptr) {
+    return nullptr;
   }
   ListNode *cursor = node;
   while ((cursor = cursor->prev)) {
@@ -274,7 +277,7 @@ ListNode* list_find_prev(ListNode *node, ListFilterCallback filter_callback, boo
     }
   }
   if (wrap_around == false) {
-    return NULL;
+    return nullptr;
   }
   cursor = list_get_tail(node);
   while (cursor) {
@@ -283,22 +286,22 @@ ListNode* list_find_prev(ListNode *node, ListFilterCallback filter_callback, boo
     }
     // We're back at where we started and even <node> itself doesn't match the filter
     if (cursor == node) {
-      return NULL;
+      return nullptr;
     }
     cursor = cursor->prev;
   }
   UTIL_ASSERT(0);
-  return NULL;
+  return nullptr;
 }
 
 ListNode *list_concatenate(ListNode *restrict list_a, ListNode *restrict list_b) {
   ListNode *head_a = list_get_head(list_a);
-  if (list_b == NULL) {
+  if (list_b == nullptr) {
     return head_a;
   }
 
   ListNode *head_b = list_get_head(list_b);
-  if (list_a == NULL) {
+  if (list_a == nullptr) {
     return head_b;
   }
 
@@ -340,4 +343,3 @@ void list_debug_dump(ListNode *head) {
     iter = iter->next;
   }
 }
-

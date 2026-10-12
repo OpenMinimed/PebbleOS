@@ -29,6 +29,7 @@ import os
 import sys
 import time
 
+
 def _reexec_with_pebble_tool_python():
     import shutil
 
@@ -53,8 +54,8 @@ def _reexec_with_pebble_tool_python():
 try:
     from libpebble2.communication import PebbleConnection
     from libpebble2.communication.transports.websocket import WebsocketTransport
-    from libpebble2.services.getbytes import GetBytesService
     from libpebble2.exceptions import GetBytesError
+    from libpebble2.services.getbytes import GetBytesService
 except ImportError:
     _reexec_with_pebble_tool_python()
     raise
@@ -79,12 +80,12 @@ def main():
     ap.set_defaults(verify=True)
     args = ap.parse_args()
 
-    connection = PebbleConnection(WebsocketTransport("ws://{}:9000/".format(args.phone)))
+    connection = PebbleConnection(WebsocketTransport(f"ws://{args.phone}:9000/"))
     try:
         connection.connect()
         connection.run_async()
-    except Exception as e:
-        print("Could not reach the phone at {}:9000 ({})".format(args.phone, e))
+    except Exception as e:  # noqa: BLE001 -- whatever the transport raises means unreachable
+        print(f"Could not reach the phone at {args.phone}:9000 ({e})")
         print("Run `adb forward tcp:9000 tcp:9000`, and check the Pebble app has Developer")
         print("Connection enabled and the watch connected (NORMAL mode, not SPIKE).")
         return 1
@@ -104,20 +105,19 @@ def main():
             # unread, or no coredump at all) -- retrying won't help, stop immediately.
             if e.code == 3:
                 break
-            print("Fetch attempt {}/{} failed ({}), retrying...".format(
-                attempt, attempts, e))
+            print(f"Fetch attempt {attempt}/{attempts} failed ({e}), retrying...")
             time.sleep(1)
 
     if data is None:
         if last_err is not None:
-            print("No coredump present ({}).".format(last_err))
+            print(f"No coredump present ({last_err}).")
         else:
             print("No coredump present.")
         return 1
 
     with open(args.output, "wb") as f:
         f.write(data)
-    print("Wrote {} bytes to {}".format(len(data), args.output))
+    print(f"Wrote {len(data)} bytes to {args.output}")
     print("Transfer completed in full, so the watch already cleared its unread flag: "
           "the next crash gets its own fresh core dump immediately, no 24h wait.")
 
@@ -130,7 +130,7 @@ def main():
             if e.code == 3:
                 print("Verified: watch confirms no unread coredump remains.")
             else:
-                print("Verification probe failed ({}); ack status unconfirmed.".format(e))
+                print(f"Verification probe failed ({e}); ack status unconfirmed.")
 
     return 0
 

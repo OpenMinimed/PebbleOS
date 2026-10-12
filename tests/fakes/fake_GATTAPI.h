@@ -3,10 +3,9 @@
 
 #pragma once
 
-#include "GATTAPI.h"
-
-#include <stdbool.h>
 #include <stdint.h>
+
+#include <GATTAPI.h>
 
 bool fake_gatt_is_service_discovery_running(void);
 

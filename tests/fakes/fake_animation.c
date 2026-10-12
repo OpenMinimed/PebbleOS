@@ -3,9 +3,9 @@
 
 // Need to use the real struct because the product code accesses the structure directly. It would
 // be nice to instead create a dummy with only the fields we need, but oh well.
-#include "applib/ui/animation_private.h"
-
 #include <stdarg.h>
+
+#include <applib/ui/animation_private.h>
 
 //! List of all animations that were created in the current test in order of creation.
 ListNode *s_animations;
@@ -15,7 +15,7 @@ ListNode *s_animations;
 
 Animation *animation_create(void) {
   AnimationPrivate *animation = malloc(sizeof(AnimationPrivate));
-  *animation = (AnimationPrivate) {};
+  *animation = (AnimationPrivate){};
 
   if (!s_animations) {
     s_animations = (ListNode *)animation;
@@ -49,7 +49,7 @@ static Animation *prv_create_from_vararg(Animation *animation_a, Animation *anim
     animation_array[array_len++] = animation_c;
     while (array_len < ANIMATION_MAX_CREATE_VARGS) {
       void *arg = va_arg(args, void *);
-      if (arg == NULL) {
+      if (arg == nullptr) {
         break;
       }
       animation_array[array_len++] = arg;
@@ -58,8 +58,8 @@ static Animation *prv_create_from_vararg(Animation *animation_a, Animation *anim
   return prv_create_from_array(animation_array, array_len);
 }
 
-Animation *WEAK animation_sequence_create(Animation *animation_a, Animation *animation_b,
-                                          Animation *animation_c, ...) {
+Animation *PBL_WEAK animation_sequence_create(Animation *animation_a, Animation *animation_b,
+                                              Animation *animation_c, ...) {
   va_list args;
   va_start(args, animation_c);
   Animation *animation = prv_create_from_vararg(animation_a, animation_b, animation_c, args);
@@ -67,13 +67,13 @@ Animation *WEAK animation_sequence_create(Animation *animation_a, Animation *ani
   return animation;
 }
 
-Animation *WEAK animation_sequence_create_from_array(Animation **animation_array,
-                                                     uint32_t array_len) {
+Animation *PBL_WEAK animation_sequence_create_from_array(Animation **animation_array,
+                                                         uint32_t array_len) {
   return prv_create_from_array(animation_array, array_len);
 }
 
-Animation *WEAK animation_spawn_create(Animation *animation_a, Animation *animation_b,
-                                       Animation *animation_c, ...) {
+Animation *PBL_WEAK animation_spawn_create(Animation *animation_a, Animation *animation_b,
+                                           Animation *animation_c, ...) {
   va_list args;
   va_start(args, animation_c);
   Animation *animation = prv_create_from_vararg(animation_a, animation_b, animation_c, args);
@@ -81,8 +81,8 @@ Animation *WEAK animation_spawn_create(Animation *animation_a, Animation *animat
   return animation;
 }
 
-Animation *WEAK animation_spawn_create_from_array(Animation **animation_array,
-                                                  uint32_t array_len) {
+Animation *PBL_WEAK animation_spawn_create_from_array(Animation **animation_array,
+                                                      uint32_t array_len) {
   return prv_create_from_array(animation_array, array_len);
 }
 
@@ -100,12 +100,12 @@ static void prv_each(AnimationPrivate *animation, AnimationEachCallback callback
 }
 
 static void prv_free(AnimationPrivate *animation, uintptr_t context) {
-  list_remove(&animation->list_node, NULL, NULL);
+  list_remove(&animation->list_node, nullptr, nullptr);
   free(animation);
 }
 
 bool animation_destroy(Animation *animation) {
-  prv_each((AnimationPrivate *)animation, prv_free, (uintptr_t)NULL);
+  prv_each((AnimationPrivate *)animation, prv_free, 0);
   return true;
 }
 
@@ -134,7 +134,7 @@ uint32_t animation_get_duration(Animation *animation, bool include_delay, bool i
   return ((AnimationPrivate *)animation)->duration_ms;
 }
 
-static void prv_call_started(AnimationPrivate *animation, uintptr_t PBL_UNUSED context) {
+static void prv_call_started(AnimationPrivate *animation, [[maybe_unused]] uintptr_t context) {
   if (animation->implementation && animation->implementation->setup) {
     animation->implementation->setup((Animation *)animation);
   }
@@ -155,7 +155,7 @@ bool animation_schedule(Animation *animation_h) {
   if (!animation->scheduled) {
     prv_each(animation, prv_call_scheduled, true);
     // If your test is failing, build out this fake so that this is an async start
-    prv_each(animation, prv_call_started, (uintptr_t)NULL);
+    prv_each(animation, prv_call_started, 0);
   }
   return true;
 }
@@ -173,7 +173,7 @@ bool animation_set_elapsed(Animation *animation_h, uint32_t elapsed_ms) {
 }
 
 bool animation_get_elapsed(Animation *animation_h, int32_t *elapsed_ms) {
-  AnimationPrivate *animation= (AnimationPrivate *)animation_h;
+  AnimationPrivate *animation = (AnimationPrivate *)animation_h;
   if (!animation) {
     return false;
   }
@@ -193,11 +193,10 @@ bool animation_set_handlers(Animation *animation_h, AnimationHandlers callbacks,
   return true;
 }
 
-
 void *animation_get_context(Animation *animation_h) {
   AnimationPrivate *animation = (AnimationPrivate *)animation_h;
   if (!animation) {
-    return false;
+    return nullptr;
   }
   return animation->context;
 }
@@ -249,7 +248,7 @@ void fake_animation_cleanup(void) {
     free(current);
   }
 
-  s_animations = NULL;
+  s_animations = nullptr;
 }
 
 void fake_animation_complete(Animation *animation) {

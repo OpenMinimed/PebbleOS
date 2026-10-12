@@ -3,12 +3,12 @@
 
 import json
 import struct
-from waflib import Node, Task
-from waflib.TaskGen import before_method, feature
 
 from resources.types.resource_definition import ResourceDefinition
 from resources.types.resource_object import ResourceObject
 from sdk_helpers import validate_resource_not_larger_than
+from waflib import Node, Task
+from waflib.TaskGen import before_method, feature
 
 
 class layouts_json(Task.Task):
@@ -118,8 +118,8 @@ class timeline_reso(Task.Task):
                             )
                     else:
                         bld.fatal(
-                            "Resource {} in publishedMedia is missing values for ['glance'] "
-                            "and ['timeline']['tiny'].".format(published_media_name)
+                            f"Resource {published_media_name} in publishedMedia is missing values for ['glance'] "
+                            "and ['timeline']['tiny']."
                         )
 
             # Extend table if needed
@@ -133,9 +133,7 @@ class timeline_reso(Task.Task):
             for size, res_id in item["timeline"].items():
                 if res_id not in resource_id_mapping:
                     bld.fatal(
-                        "Invalid resource ID {} specified in publishedMedia".format(
-                            res_id
-                        )
+                        f"Invalid resource ID {res_id} specified in publishedMedia"
                     )
                 timeline_resources[timeline_id][size] = resource_id_mapping[res_id]
 
@@ -155,7 +153,7 @@ def _get_resource_file(ctx, mapping, resource_id, resources_node=None):
         resource = mapping[resource_id]
     except KeyError:
         ctx.bld.fatal(
-            "No resource '{}' found for publishedMedia use.".format(resource_id)
+            f"No resource '{resource_id}' found for publishedMedia use."
         )
     if isinstance(resource, Node.Node):
         return resource.abspath()
@@ -262,6 +260,8 @@ def process_timeline_resources(task_gen):
         "timeline_reso", src=None, tgt=timeline_resource_table
     )
     timeline_reso_task.published_media = published_media
+    timeline_reso_task.vars = getattr(task_gen, "vars", [])
 
     layouts_json_task = task_gen.create_task("layouts_json", src=None, tgt=layouts_json)
     layouts_json_task.published_media = published_media
+    layouts_json_task.vars = getattr(task_gen, "vars", [])

@@ -1,18 +1,19 @@
 # SPDX-FileCopyrightText: 2024 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-from resources.types.resource_object import ResourceObject
-from resources.types.resource_definition import ResourceDefinition
-from resources.resource_map.resource_generator import ResourceGenerator
-
-from font.fontgen import Font, MAX_GLYPHS_EXTENDED, MAX_GLYPHS
-
-from pebble_sdk_platform import pebble_platforms
-
-from threading import Lock
-
 import os
 import re
+from pathlib import Path
+from threading import Lock
+
+from font.fontgen import MAX_GLYPHS, MAX_GLYPHS_EXTENDED, Font
+from pebble_sdk_platform import pebble_platforms
+from resources.resource_map.resource_generator import ResourceGenerator
+from resources.types.resource_definition import ResourceDefinition
+from resources.types.resource_object import ResourceObject
+
+# The font format stores the height in a uint8_t
+MAX_FONT_HEIGHT = 255
 
 
 class FontResourceGenerator(ResourceGenerator):
@@ -75,9 +76,9 @@ class FontResourceGenerator(ResourceGenerator):
         if font_ext.lower() in (".ttf", ".otf", ".bdf"):
             font_data = cls.build_font_data(font_path, definition)
         elif font_ext.lower() == ".pbf":
-            font_data = open(font_path, "rb").read()
+            font_data = Path(font_path).read_bytes()
         else:
-            raise Exception(f"Unsupported font format: {font_ext}")
+            raise RuntimeError(f"Unsupported font format: {font_ext}")
 
         return ResourceObject(definition, font_data)
 
@@ -86,8 +87,21 @@ class FontResourceGenerator(ResourceGenerator):
         # PBL-23964: it turns out that font generation is not thread-safe with freetype
         # 2.4 (and possibly later versions). To avoid running into this, we use a lock.
         with cls.lock:
-            name_height = cls._get_font_height_from_name(definition.name)
-            height = getattr(definition, "pixel_height", None) or name_height
+            pixel_height = cls._get_pixel_height(definition)
+
+            # Extended fonts take their baseline from the name even when pixelHeight is set
+            name_height = None
+            if pixel_height is None or definition.extended:
+                name_height = cls._get_font_height_from_name(definition.name)
+                if not 1 <= name_height <= MAX_FONT_HEIGHT:
+                    raise ValueError(
+                        f"Font {definition.name}: the name gives {name_height}, which is "
+                        f"outside 1 to {MAX_FONT_HEIGHT}"
+                    )
+                cls._warn_if_height_moved(definition.name, name_height)
+
+            height = name_height if pixel_height is None else pixel_height
+
             is_legacy = definition.compatibility == "2.7"
             max_glyphs = MAX_GLYPHS_EXTENDED if definition.extended else MAX_GLYPHS
 
@@ -119,18 +133,67 @@ class FontResourceGenerator(ResourceGenerator):
             return font.bitstring()
 
     @staticmethod
+    def _get_pixel_height(definition):
+        """
+        The pixelHeight set on the font, as a checked integer, or None when it
+        is not set.
+        """
+
+        pixel_height = getattr(definition, "pixel_height", None)
+        if pixel_height is None:
+            return None
+
+        # int() would read true and false as 1 and 0
+        try:
+            if isinstance(pixel_height, bool):
+                raise TypeError
+            pixel_height = int(pixel_height)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Font {definition.name}: pixelHeight {pixel_height!r} is not a whole number"
+            ) from None
+
+        if not 1 <= pixel_height <= MAX_FONT_HEIGHT:
+            raise ValueError(
+                f"Font {definition.name}: pixelHeight {pixel_height} is outside 1 to "
+                f"{MAX_FONT_HEIGHT}"
+            )
+
+        return pixel_height
+
+    @staticmethod
     def _get_font_height_from_name(name):
         """
         Search the name of the font for an integer which will be used as the
-        pixel height of the generated font
+        pixel height of the generated font. The size ends the name, so the last
+        number that stands on its own between underscores wins, and a number
+        inside a word does not count. FONT_PIXEL8BIT_24 is 24 pixels high.
         """
+
+        standalone = re.findall("(?:^|_)([0-9]+)(?=_|$)", name)
+        if standalone:
+            return int(standalone[-1])
 
         match = re.search("([0-9]+)", name)
 
         if match is None:
             if name != "FONT_FALLBACK" and name != "FONT_FALLBACK_INTERNAL":
-                raise ValueError("Font {0}: no height found in name\n".format(name))
+                raise ValueError(f"Font {name}: no height found in name\n")
 
             return 14
 
-        return int(match.group(0))
+        return int(match.group(1))
+
+    @staticmethod
+    def _warn_if_height_moved(name, height):
+        """
+        Older SDKs took the first number anywhere in the name. Say so when that
+        gives a different number, since the font changes on a rebuild.
+        """
+
+        first = re.search("([0-9]+)", name)
+        if first is not None and int(first.group(1)) != height:
+            print(
+                f"WARNING: Font {name}: the name gives {height}, from its last "
+                f"standalone number. Older SDKs read {first.group(1)}, the first number."
+            )

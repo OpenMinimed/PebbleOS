@@ -34,12 +34,8 @@ NEWLOG_HASHED_INFO_REGEX = (
 )
 POINTER_FORMAT_TAG_REGEX = r"(?P<format>%-?[0-9]*)p"
 HEX_FORMAT_SPECIFIER_REGEX = r"%[- +#0]*\d*(\.\d+)?(hh|h|l|ll|j|z|t|L)?(x|X)"
-# C length modifiers, which Python's % formatting mostly rejects: it ignores h, l and L but
-# raises "unsupported format character" on hh, ll, z, j and t. So a firmware line using
-# PRIu8 (-> %hhu), PRIu64 (-> %llu) or %zu came out as an error string instead of a message.
-# Python ints are arbitrary precision, so dropping the modifier formats the value correctly.
 LENGTH_MODIFIER_REGEX = (
-    r"(?P<format>%[- +#0]*\d*(?:\.\d+)?)(?:hh|ll|[hlLjzt])(?=[diouxXeEfFgGaAcs])"
+    r"(?P<format>%[- +#0]*\d*(?:\.\d+)?)(?:hh|h|ll|l|j|z|t|L)(?=[diouxXc])"
 )
 
 # re patterns
@@ -72,7 +68,6 @@ BT_LOG_TYPES = ["BLE_LOG_DEBUG", "BT_LOG_ERROR", "BT_LOG_DEBUG"]
 QEMU_LOG_TYPES = ["QEMU_LOG_DEBUG", "QEMU_LOG_ERROR"]
 MISC_LOG_TYPES = [
     "ACCEL_LOG_DEBUG",
-    "ANIMATION_LOG_DEBUG",
     "VOICE_LOG",
     "ISPP_LOG_DEBUG",
     "ISPP_LOG_DEBUG_VERBOSE",

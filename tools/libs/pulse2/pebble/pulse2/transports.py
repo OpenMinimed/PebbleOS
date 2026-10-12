@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2024 Google LLC
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import absolute_import
 
 import logging
 import threading
@@ -14,18 +13,14 @@ except ImportError:
 
 import construct
 
-from . import exceptions
+from . import exceptions, pcmp, ppp, stats
 from . import logging as pulse2_logging
-from . import pcmp
-from . import ppp
-from . import stats
-
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
-class Socket(object):
+class Socket:
     """A socket for sending and receiving packets over a single port
     of a PULSE2 transport.
     """
@@ -88,7 +83,7 @@ class TransportControlProtocol(ppp.ControlProtocol):
 
 
 BestEffortPacket = construct.Struct(
-    "BestEffortPacket",  # noqa
+    "BestEffortPacket",
     construct.UBInt16("port"),
     construct.UBInt16("length"),
     construct.Field("information", lambda ctx: ctx.length - 4),
@@ -96,7 +91,7 @@ BestEffortPacket = construct.Struct(
 )
 
 
-class BestEffortTransportBase(object):
+class BestEffortTransportBase:
     def __init__(self, interface, link_mtu):
         self.logger = pulse2_logging.TaggedAdapter(logger, {"tag": type(self).__name__})
         self.sockets = {}
@@ -108,8 +103,7 @@ class BestEffortTransportBase(object):
     def send(self, port, information):
         if len(information) > self.mtu:
             raise ValueError(
-                "Packet length (%d) exceeds transport MTU (%d)"
-                % (len(information), self.mtu)
+                f"Packet length ({len(information):d}) exceeds transport MTU ({self.mtu:d})"
             )
         packet = BestEffortPacket.build(
             construct.Container(
@@ -147,7 +141,7 @@ class BestEffortTransportBase(object):
         if self.closed:
             raise ValueError("Cannot open socket on closed transport")
         if port in self.sockets and not self.sockets[port].closed:
-            raise KeyError("Another socket is already opened on port 0x%04x" % port)
+            raise KeyError(f"Another socket is already opened on port 0x{port:04x}")
         socket = factory(self, port)
         self.sockets[port] = socket
         return socket
@@ -271,7 +265,7 @@ class SimplexTransport(BestEffortTransportBase):
 
 
 ReliableInfoPacket = construct.Struct(
-    "ReliableInfoPacket",  # noqa
+    "ReliableInfoPacket",
     # BitStructs are parsed MSBit-first
     construct.EmbeddedBitStruct(
         construct.BitField("sequence_number", 7),  # N(S) in LAPB
@@ -290,7 +284,7 @@ ReliableSupervisoryPacket = construct.BitStruct(
     "ReliableSupervisoryPacket",
     construct.Const(construct.Nibble("reserved"), 0b0000),
     construct.Enum(
-        construct.BitField("kind", 2),  # noqa
+        construct.BitField("kind", 2),
         RR=0b00,
         RNR=0b01,
         REJ=0b10,
@@ -330,7 +324,7 @@ def build_reliable_supervisory_packet(kind, ack_number, poll=False, final=False)
     )
 
 
-class ReliableTransport(object):
+class ReliableTransport:
     """The reliable transport protocol, also known as TRAIN.
 
     The protocol is based on LAPB from ITU-T Recommendation X.25.
@@ -437,7 +431,7 @@ class ReliableTransport(object):
         if self.closed:
             raise ValueError("Cannot open socket on closed transport")
         if port in self.sockets and not self.sockets[port].closed:
-            raise KeyError("Another socket is already opened on port 0x%04x" % port)
+            raise KeyError(f"Another socket is already opened on port 0x{port:04x}")
         if not self.opened.wait(timeout):
             return None
         socket = factory(self, port)
@@ -449,10 +443,22 @@ class ReliableTransport(object):
 
     def down(self):
         self.closed = True
+        with self.transmit_lock:
+            if self.retransmit_timer:
+                self.retransmit_timer.cancel()
+                self.retransmit_timer = None
         self.close_all_sockets()
         self.command_socket.close()
         self.response_socket.close()
         self.ncp.down()
+
+    def _send(self, socket, packet):
+        # A timer or the receive loop can race the transport going down.
+        try:
+            socket.send(packet)
+        except exceptions.SocketClosed:
+            return False
+        return True
 
     def close_all_sockets(self):
         for socket in list(self.sockets.values()):
@@ -476,7 +482,8 @@ class ReliableTransport(object):
             port=port,
             information=information,
         )
-        self.command_socket.send(packet)
+        if not self._send(self.command_socket, packet):
+            return
         self.stats["info_packets_sent"] += 1
         self.last_packet_sent_time = time.time()
 
@@ -489,24 +496,22 @@ class ReliableTransport(object):
             )
         if len(information) > self.mtu:
             raise ValueError(
-                "Packet length (%d) exceeds transport MTU (%d)"
-                % (len(information), self.mtu)
+                f"Packet length ({len(information):d}) exceeds transport MTU ({self.mtu:d})"
             )
         self.send_queue.put((port, information))
         self.pump_send_queue()
 
     def process_ack(self, ack_number):
         with self.transmit_lock:
-            if not self.waiting_for_ack:
+            if not self.waiting_for_ack and self.retransmit_timer:
                 # Could be in the timer recovery condition (waiting for
                 # a response to an RR Poll command). This is a bit
                 # hacky and should probably be changed to use an
                 # explicit state machine when this transport is
                 # extended to support Go-Back-N ARQ.
-                if self.retransmit_timer:
-                    self.retransmit_timer.cancel()
-                    self.retransmit_timer = None
-                    self.retransmit_count = 0
+                self.retransmit_timer.cancel()
+                self.retransmit_timer = None
+                self.retransmit_count = 0
             if (ack_number - 1) % self.MODULUS == self.send_variable:
                 if self.retransmit_timer:
                     self.retransmit_timer.cancel()
@@ -561,14 +566,14 @@ class ReliableTransport(object):
             command = build_reliable_supervisory_packet(
                 kind=kind, poll=poll, ack_number=self.receive_variable
             )
-            self.command_socket.send(command)
+            self._send(self.command_socket, command)
 
     def send_supervisory_response(self, kind, final=False):
         with self.transmit_lock:
             response = build_reliable_supervisory_packet(
                 kind=kind, final=final, ack_number=self.receive_variable
             )
-            self.response_socket.send(response)
+            self._send(self.response_socket, response)
 
     def command_packet_received(self, packet):
         if not self.ncp.is_Opened():

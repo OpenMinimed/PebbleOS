@@ -4,8 +4,20 @@
 #pragma once
 
 #include <stdint.h>
-#include <stdbool.h>
 
-//! @param rand_out Storage for the 32-bit random number generated
-//! @return True if a random number was succesfully generated
+/**
+ * @defgroup drivers_rng RNG
+ * @ingroup drivers
+ * @brief Hardware random number generator.
+ * @{
+ */
+
+/**
+ * @brief Generate a 32-bit random number.
+ *
+ * @param[out] rand_out Random number.
+ * @return true on success, false on failure.
+ */
 bool rng_rand(uint32_t *rand_out);
+
+/** @} */

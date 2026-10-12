@@ -1,30 +1,29 @@
 /* SPDX-FileCopyrightText: 2024 Google LLC */
 /* SPDX-License-Identifier: Apache-2.0 */
 
-#include "clar.h"
-
-#include "kernel/event_loop.h"
-#include "kernel/events.h"
-#include "kernel/pebble_tasks.h"
-#include <pbl/drivers/display/display.h>
-#include "pbl/services/event_service.h"
-#include "pbl/services/touch/touch.h"
-#include "pbl/services/touch/touch_event.h"
-#include "pbl/services/touch/touch_session.h"
-
-#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
-#include "fake_events.h"
+#include <pbl/drivers/display/display.h>
+#include <pbl/services/event_service.h>
+#include <pbl/services/touch/touch.h>
+#include <pbl/services/touch/touch_event.h>
+#include <pbl/services/touch/touch_session.h>
+
+#include <clar.h>
+#include <fake_events.h>
+#include <kernel/event_loop.h>
+#include <kernel/events.h>
+#include <kernel/pebble_tasks.h>
 
 // Stubs
-#include "stubs_analytics.h"
-#include "stubs_logging.h"
-#include "stubs_mutex.h"
-#include "stubs_passert.h"
+#include <stubs_analytics.h>
+#include <stubs_logging.h>
+#include <stubs_mutex.h>
+#include <stubs_passert.h>
 
-void kernel_free(void *p) {}
+void kernel_free(void *p) {
+}
 
 // Declared in syscall/syscall.h; in the test build DEFINE_SYSCALL is a plain function.
 void sys_touch_set_raw_subscribed(bool subscribed);
@@ -75,8 +74,8 @@ void touch_sensor_set_enabled(bool enabled) {
 // setup and teardown
 void test_touch__initialize(void) {
   fake_event_init();
-  s_add_subscriber_cb = NULL;
-  s_remove_subscriber_cb = NULL;
+  s_add_subscriber_cb = nullptr;
+  s_remove_subscriber_cb = nullptr;
   s_touch_sensor_enable_count = 0;
   s_touch_sensor_disable_count = 0;
   s_touch_sensor_enabled = false;
@@ -155,8 +154,8 @@ void test_touch__reset_clears_state(void) {
 }
 
 void test_touch__subscriber_enables_sensor(void) {
-  cl_assert(s_add_subscriber_cb != NULL);
-  cl_assert(s_remove_subscriber_cb != NULL);
+  cl_assert(s_add_subscriber_cb != nullptr);
+  cl_assert(s_remove_subscriber_cb != nullptr);
 
   s_add_subscriber_cb(PebbleTask_App);
   cl_assert_equal_i(s_touch_sensor_enable_count, 1);
@@ -228,8 +227,8 @@ void test_touch__has_app_subscribers_ignores_shared_subscriptions(void) {
   // event-service subscription as raw handlers; those subscriptions must NOT
   // read as app subscribers, or wake-on-every-touch comes back with menu
   // gestures off.
-  s_add_subscriber_cb(PebbleTask_KernelMain);  // modal twin
-  s_add_subscriber_cb(PebbleTask_App);         // app twin
+  s_add_subscriber_cb(PebbleTask_KernelMain); // modal twin
+  s_add_subscriber_cb(PebbleTask_App);        // app twin
   cl_assert(!touch_has_app_subscribers());
   s_remove_subscriber_cb(PebbleTask_App);
   s_remove_subscriber_cb(PebbleTask_KernelMain);
@@ -414,21 +413,21 @@ void test_touch__wake_gate_latches_across_gesture(void) {
 
   // PositionUpdate and Liftoff carry the latch, regardless of their gate arg.
   TouchEvent pu = {.type = TouchEvent_PositionUpdate};
-  touch_wake_gate_stamp(&pu, (TouchWakeGateResult){0});
+  touch_wake_gate_stamp(&pu, (TouchWakeGateResult){});
   cl_assert(pu.non_navigational);
 
   TouchEvent lo = {.type = TouchEvent_Liftoff};
-  touch_wake_gate_stamp(&lo, (TouchWakeGateResult){0});
+  touch_wake_gate_stamp(&lo, (TouchWakeGateResult){});
   cl_assert(lo.non_navigational);
 
   // A fresh navigational Touchdown clears the latch for the next gesture.
-  TouchWakeGateResult nav = {0};
+  TouchWakeGateResult nav = {};
   TouchEvent td2 = {.type = TouchEvent_Touchdown};
   touch_wake_gate_stamp(&td2, nav);
   cl_assert(!td2.non_navigational);
 
   TouchEvent pu2 = {.type = TouchEvent_PositionUpdate};
-  touch_wake_gate_stamp(&pu2, (TouchWakeGateResult){0});
+  touch_wake_gate_stamp(&pu2, (TouchWakeGateResult){});
   cl_assert(!pu2.non_navigational);
 }
 
