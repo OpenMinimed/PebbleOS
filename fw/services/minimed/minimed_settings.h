@@ -20,6 +20,13 @@ void minimed_settings_init(void);
 //! vs SETTINGS_ALERT_OTHER -- see minimed_annunciation_is_low().
 bool minimed_settings_alert_enabled(bool is_low);
 
+//! Should the hypo model's own "Low predicted" alert pop up (SETTINGS_ALERT_HYPO_MODEL)?
+bool minimed_settings_hypo_alert_enabled(void);
+
+//! Should that alert ring through Quiet Time/Do Not Disturb instead of being hidden with
+//! everything else (SETTINGS_ALERT_HYPO_DND_BYPASS)? Meaningless if the alert itself is off.
+bool minimed_settings_hypo_dnd_bypass_enabled(void);
+
 //! Update the alert mask from a watchface's capability announcement (KEY_SETTINGS_ALERTS).
 //! Persists to flash only when the value actually changes.
 void minimed_settings_set_alerts(uint8_t mask);

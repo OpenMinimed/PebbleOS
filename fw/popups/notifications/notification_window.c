@@ -1579,9 +1579,38 @@ static void prv_do_notification_vibe(NotificationWindowData *data, Uuid *id) {
   }
 }
 
+// Safety alerts (a predicted hypo, not a chat message) that must ring through Quiet Time
+// regardless of the "hide notifications" setting and the per-type interruption mask. Sized for a
+// couple of alerts queued faster than the window can drain; the oldest is dropped rather than
+// blocking the producer, same discipline as minimed_alert_popup's own slot ring.
+#define DND_BYPASS_MAX 4
+static Uuid s_dnd_bypass_ids[DND_BYPASS_MAX];
+static uint8_t s_dnd_bypass_count;
+
+void notification_window_bypass_dnd(const Uuid *id) {
+  if (s_dnd_bypass_count >= DND_BYPASS_MAX) {
+    memmove(&s_dnd_bypass_ids[0], &s_dnd_bypass_ids[1], (DND_BYPASS_MAX - 1) * sizeof(Uuid));
+    s_dnd_bypass_count = DND_BYPASS_MAX - 1;
+  }
+  s_dnd_bypass_ids[s_dnd_bypass_count++] = *id;
+}
+
+// Consumes (removes) a matching entry so a bypass only ever applies to the one notification it
+// was requested for.
+static bool prv_consume_dnd_bypass(const Uuid *id) {
+  for (uint8_t i = 0; i < s_dnd_bypass_count; i++) {
+    if (uuid_equal(&s_dnd_bypass_ids[i], id)) {
+      s_dnd_bypass_ids[i] = s_dnd_bypass_ids[--s_dnd_bypass_count];
+      return true;
+    }
+  }
+  return false;
+}
+
 static void prv_handle_notification_added_common(Uuid *id, NotificationType type) {
   NotificationWindowData *data = &s_notification_window_data;
   prv_log_notification_vibe("received", id);
+  const bool bypass_dnd = prv_consume_dnd_bypass(id);
 
   if (!alerts_should_notify_for_type(prv_alert_type_for_notification_type(type))) {
     return;
@@ -1589,7 +1618,7 @@ static void prv_handle_notification_added_common(Uuid *id, NotificationType type
 
   alerts_incoming_alert_analytics();
 
-  if (do_not_disturb_is_active() &&
+  if (!bypass_dnd && do_not_disturb_is_active() &&
       alerts_preferences_dnd_get_show_notifications() == DndNotificationModeHide) {
     prv_log_notification_vibe("skipped: hidden by DND", id);
     return;
@@ -1633,7 +1662,7 @@ static void prv_handle_notification_added_common(Uuid *id, NotificationType type
     }
   }
 
-  if (alerts_should_vibrate_for_type(prv_alert_type_for_notification_type(type))) {
+  if (bypass_dnd || alerts_should_vibrate_for_type(prv_alert_type_for_notification_type(type))) {
     // Check if we should delay the vibration until the animation completes
     if (alerts_preferences_get_notification_vibe_delay() && data->peek_layer) {
       // Delay vibration until peek animation finishes
@@ -1649,7 +1678,8 @@ static void prv_handle_notification_added_common(Uuid *id, NotificationType type
     }
   }
 
-  if (alerts_should_enable_backlight_for_type(prv_alert_type_for_notification_type(type))) {
+  if (bypass_dnd ||
+      alerts_should_enable_backlight_for_type(prv_alert_type_for_notification_type(type))) {
     // Check if we should delay the backlight until the animation completes (same as vibe delay)
     if (alerts_preferences_get_notification_vibe_delay() && data->peek_layer) {
       data->pending_backlight = true;
