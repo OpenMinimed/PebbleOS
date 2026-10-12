@@ -10,6 +10,7 @@
 #include "pbl/services/notifications/notifications.h"
 #include "pbl/services/timeline/timeline.h"
 #include "pbl/services/timeline/timeline_resources.h"
+#include "popups/notifications/notification_window.h"
 
 // Pending alerts, written on the caller's task and drained on KernelMain (same lock-free
 // discipline as minimed_sake_sender). Sized for a worst-case indication burst; overflow drops
@@ -20,6 +21,7 @@
 typedef struct {
   char title[SLOT_TITLE_MAX];
   char body[SLOT_BODY_MAX];  // "" = no body attribute
+  bool bypass_dnd;
 } AlertSlot;
 static AlertSlot s_slots[SLOT_COUNT];
 static volatile uint8_t s_head, s_tail;  // tail written by producer, head by KernelMain
@@ -58,6 +60,9 @@ static void prv_push_cb(void *unused) {
     attribute_list_destroy_list(&dismiss_attr_list);
 
     if (item) {
+      if (slot->bypass_dnd) {
+        notification_window_bypass_dnd(&item->header.id);
+      }
       notifications_add_notification(item);
       timeline_item_destroy(item);
     }
@@ -65,7 +70,7 @@ static void prv_push_cb(void *unused) {
   }
 }
 
-void minimed_alert_popup_push(const char *title, const char *body) {
+void minimed_alert_popup_push(const char *title, const char *body, bool bypass_dnd) {
   if ((uint8_t)(s_tail - s_head) >= SLOT_COUNT) {
     s_head++;  // full: drop the oldest queued alert
   }
@@ -74,6 +79,7 @@ void minimed_alert_popup_push(const char *title, const char *body) {
   slot->title[SLOT_TITLE_MAX - 1] = '\0';
   strncpy(slot->body, body != NULL ? body : "", SLOT_BODY_MAX - 1);
   slot->body[SLOT_BODY_MAX - 1] = '\0';
+  slot->bypass_dnd = bypass_dnd;
   s_tail++;
   launcher_task_add_callback(prv_push_cb, NULL);
 }

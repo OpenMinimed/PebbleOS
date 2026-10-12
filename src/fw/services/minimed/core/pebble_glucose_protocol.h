@@ -63,6 +63,10 @@
 #define SETTINGS_ALERT_LOW 0x01   // predicted-low, low, and severe-low pump alerts
 #define SETTINGS_ALERT_OTHER 0x02 // every other pump alert (reservoir, battery, sensor, SmartGuard, ...)
 #define SETTINGS_ALERT_HYPO_MODEL 0x04 // the sender's own alert when its hypo model reaches TREAT
+#define SETTINGS_ALERT_HYPO_DND_BYPASS 0x08 // let the hypo TREAT alert (only) ring through Quiet
+                                             // Time/Do Not Disturb instead of being hidden with
+                                             // everything else. Defaults on: a predicted low is a
+                                             // safety alert, not a notification.
 
 // Feature-enable bitmask for KEY_SETTINGS_FEATURES, watchface -> sender. Defaults to
 // SETTINGS_FEATURE_HYPO on (the model's own decision, unchanged from before this key existed)

@@ -19,8 +19,10 @@ static const char s_features_key[] = "features";
 
 // Default until the watchface's first announcement carries a real value: low-BG alerts only,
 // matching the maintainer's stated preference (issue #15) rather than the old MINIMED_ALERT_POPUPS
-// flag's all-or-nothing choice.
-static uint8_t s_alerts_mask = SETTINGS_ALERT_LOW | SETTINGS_ALERT_HYPO_MODEL;
+// flag's all-or-nothing choice. The hypo alert's DND bypass defaults on with it (issue #30): a
+// predicted low should wake you, same as a real pump alarm would.
+static uint8_t s_alerts_mask =
+    SETTINGS_ALERT_LOW | SETTINGS_ALERT_HYPO_MODEL | SETTINGS_ALERT_HYPO_DND_BYPASS;
 // Default: the hypo model runs, same as before this key existed.
 static uint8_t s_features_mask = SETTINGS_FEATURE_HYPO;
 
@@ -45,6 +47,10 @@ bool minimed_settings_alert_enabled(bool is_low) {
 
 bool minimed_settings_hypo_alert_enabled(void) {
   return (s_alerts_mask & SETTINGS_ALERT_HYPO_MODEL) != 0;
+}
+
+bool minimed_settings_hypo_dnd_bypass_enabled(void) {
+  return (s_alerts_mask & SETTINGS_ALERT_HYPO_DND_BYPASS) != 0;
 }
 
 // Flash write deferred to KernelMain: minimed_settings_set_alerts runs on the BT host task

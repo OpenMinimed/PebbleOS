@@ -653,7 +653,8 @@ static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bo
   minimed_sake_log("hypo alert (model)");
   PBL_LOG_INFO("minimed: hypo alert shown: treat=%ld pct%s", (long)treat_pct,
                early ? " (early fast-fall)" : "");
-  minimed_alert_popup_push("Low predicted (model)", body);
+  minimed_alert_popup_push("Low predicted (model)", body,
+                           minimed_settings_hypo_dnd_bypass_enabled());
 }
 
 static void prv_hypo_check(const MinimedPredictWindow *win) {
@@ -1018,7 +1019,9 @@ static void prv_annunc_record_done(void) {
   } else {
     snprintf(body, sizeof(body), "%s", name);
   }
-  minimed_alert_popup_push("MiniMed", body);
+  // bypass_dnd false: the pump itself keeps alarming regardless; the watch mirror follows DND
+  // like any other notification (issue #30 only asked for the model's own predicted-low alert).
+  minimed_alert_popup_push("MiniMed", body, false);
 }
 
 // An inbound pump notification/indication on one of the characteristics the session uses.
