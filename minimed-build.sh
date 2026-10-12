@@ -22,6 +22,8 @@
 # asterix (Pebble 2 Duo, nRF52840) -- the default, Morten's watch:
 #   - Single bundle. asterix has one firmware slot, so there is no slot dance.
 #   - Non-release build against the locally built image.
+#   - Voice dictation is left out to fit: CONFIG_MINIMED_STUB_VOICE links stand-ins from
+#     fw/services/minimed/stubs/ in its place.
 #
 # obelix@pvt (Pebble Time 2, SiFli SF32LB52) -- palmarci's watch, --pt2:
 # (see PROGRESS.md "PT2 port" for the full post-mortem)
@@ -77,7 +79,7 @@ else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
   DOCKER_USER=(-u "$(id -u):$(id -g)")
   PIP_CMD=''
-  CORE_CFG="-DCONFIG_MINIMED_SAKE=y"
+  CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n -DCONFIG_MINIMED_STUB_VOICE=y"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0

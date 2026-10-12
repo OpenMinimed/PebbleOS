@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Pal Marci
+# SPDX-License-Identifier: Apache-2.0
+
+config MINIMED_STUB_VOICE
+    bool "Stub out voice dictation"
+    depends on MINIMED_SAKE && !SERVICE_VOICE && !SERVICE_VOICE_ENDPOINT
+    help
+      Link stand-ins for the voice service and the voice endpoint, so a MiniMed build can leave
+      voice dictation (and its speex codec) out. Upstream assumes voice is always built: the
+      applib dictation window, the process manager, normal-mode service init and the protocol
+      endpoint table call into it unconditionally. Dictation then fails like it does without a
+      microphone. Needs CONFIG_SERVICE_VOICE_ENDPOINT=n, which also turns SERVICE_VOICE off.
+      For asterix, whose 992 KB flash region cannot hold v4.41.0 and the pump link otherwise.
