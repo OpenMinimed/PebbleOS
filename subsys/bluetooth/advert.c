@@ -21,9 +21,9 @@
 
 #ifdef CONFIG_MINIMED_SAKE
 #include "comm/ble/gap_le_advert.h"
-#include "minimed_transport_nimble.h"
 #include "minimed_sake_sender.h"
 #include "minimed_sake_service.h"
+#include "minimed_transport_nimble.h"
 #include "popups/minimed_sake_ui.h"
 #endif
 
@@ -194,18 +194,19 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // Pump recognition: the known pump identity, or any connection while the pump-pairing window is
   // open (DUAL with the pump not yet bonded -- its identity is unknown until the handshake). The
   // gateway check stops a reconnecting phone in that window from being swallowed as the pump.
-  const bool is_pump = minimed_sake_addr_is_pump(&desc.peer_id_addr) ||
-                       (minimed_sake_pump_pairing_window() &&
-                        !minimed_sake_addr_is_gateway(desc.peer_id_addr.val,
-                                                      desc.peer_id_addr.type));
+  const bool is_pump =
+      minimed_sake_addr_is_pump(&desc.peer_id_addr) ||
+      (minimed_sake_pump_pairing_window() &&
+       !minimed_sake_addr_is_gateway(desc.peer_id_addr.val, desc.peer_id_addr.type));
 
   if (minimed_sake_get_mode() == MinimedSakeModeNormal && is_pump) {
     // The bonded pump reconnects by identity address regardless of the advertised payload (it holds
     // the bond + our IRK -- HW-confirmed: it handshakes in NORMAL even though we advertise a plain
-    // Pebble payload). In NORMAL we advertise for the phone, so a pump connection here would run SAKE
-    // and squat the connection, blocking the phone. Reject it: the freed slot lets the phone win.
+    // Pebble payload). In NORMAL we advertise for the phone, so a pump connection here would run
+    // SAKE and squat the connection, blocking the phone. Reject it: the freed slot lets the phone
+    // win.
     minimed_sake_log_evt("pump conn in NORMAL -> drop");
-    s_rejected_pump_conn = event->connect.conn_handle;  // so its disconnect is swallowed, not routed
+    s_rejected_pump_conn = event->connect.conn_handle; // so its disconnect is swallowed, not routed
     int rc = ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     if (rc != 0) {
       // Surface it: the pump may squat a slot until the link drops on its own. But KEEP the
@@ -234,8 +235,8 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     minimed_sake_report(MinimedSakeStageConnected);
     {
       char line[32];
-      snprintf(line, sizeof(line), "conn PUMP m=D %02x:%02x t%u",
-               desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
+      snprintf(line, sizeof(line), "conn PUMP m=D %02x:%02x t%u", desc.peer_id_addr.val[5],
+               desc.peer_id_addr.val[0], desc.peer_id_addr.type);
       minimed_sake_log_evt(line);
       prv_log_conn_params(&desc);
     }
@@ -248,8 +249,8 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
 
   if (minimed_sake_get_mode() == MinimedSakeModeDual) {
     char line[32];
-    snprintf(line, sizeof(line), "conn phone m=D %02x:%02x t%u",
-             desc.peer_id_addr.val[5], desc.peer_id_addr.val[0], desc.peer_id_addr.type);
+    snprintf(line, sizeof(line), "conn phone m=D %02x:%02x t%u", desc.peer_id_addr.val[5],
+             desc.peer_id_addr.val[0], desc.peer_id_addr.type);
     minimed_sake_log_evt(line);
     prv_log_conn_params(&desc);
   }
@@ -260,7 +261,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // connected forever. Handle reuse is possible now that there are two connection slots.
   if (event->connect.conn_handle == s_sake_conn_handle) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-    minimed_sake_sender_send_pump_connected(false);  // the pump link this handle meant is gone
+    minimed_sake_sender_send_pump_connected(false); // the pump link this handle meant is gone
     minimed_sake_sender_commit();
   }
   if (event->connect.conn_handle == s_rejected_pump_conn) {
@@ -336,6 +337,9 @@ static void prv_end_pairing(uint16_t conn_handle, bool success) {
 }
 
 static void prv_handle_disconnection_event(struct ble_gap_event *event) {
+  // A link dropped mid-pairing raises no pairing complete event.
+  prv_end_pairing(event->disconnect.conn.conn_handle, false);
+
 #ifdef CONFIG_MINIMED_SAKE
   const uint16_t conn_handle = event->disconnect.conn.conn_handle;
   // Layer 2 diagnostic: every host-delivered disconnect, BEFORE the swallow routing, with the two
@@ -344,9 +348,9 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
   // (e.g. a handle cleared early or a second pump link) and would route into the fw stack.
   {
     char line[64];
-    snprintf(line, sizeof(line), "disc hdl=%u r=0x%02x sake=%u rej=%u %02x:%02x",
-             conn_handle, (uint8_t)event->disconnect.reason, s_sake_conn_handle,
-             s_rejected_pump_conn, event->disconnect.conn.peer_id_addr.val[5],
+    snprintf(line, sizeof(line), "disc hdl=%u r=0x%02x sake=%u rej=%u %02x:%02x", conn_handle,
+             (uint8_t)event->disconnect.reason, s_sake_conn_handle, s_rejected_pump_conn,
+             event->disconnect.conn.peer_id_addr.val[5],
              event->disconnect.conn.peer_id_addr.val[0]);
     minimed_sake_log_evt(line);
   }
@@ -370,7 +374,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
     minimed_sake_sender_send_pump_connected(false);
     minimed_sake_sender_commit();
-    minimed_transport_nimble_link_down();  // stop the session; the link is gone
+    minimed_transport_nimble_link_down(); // stop the session; the link is gone
     {
       char line[32];
       snprintf(line, sizeof(line), "disc pump reason=0x%02x", (uint8_t)event->disconnect.reason);
@@ -394,9 +398,6 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
     minimed_sake_log_evt(line);
   }
 #endif
-
-  // A link dropped mid-pairing raises no pairing complete event.
-  prv_end_pairing(event->disconnect.conn.conn_handle, false);
 
   struct pbl_bt_gatt_device_disconnection_event gatt_event;
   nimble_addr_to_pebble_addr(&event->disconnect.conn.peer_id_addr, &gatt_event.dev_address);
@@ -423,12 +424,12 @@ static void prv_handle_enc_change_event(struct ble_gap_event *event) {
                (uint16_t)event->enc_change.status, desc.sec_state.encrypted, desc.sec_state.bonded);
 #ifdef CONFIG_MINIMED_SAKE
   // The pump link (swallowed, so no GAPLEConnection exists): routing this would deref NULL in
-  // bt_driver_handle_le_encryption_change_event (gap_le_connect.c) -- the v31 hard-fault class.
+  // pbl_bt_handle_le_encryption_change_event (gap_le_connect.c) -- the v31 hard-fault class.
   // Handle match in any mode (a stale handle is cleared on the phone-routing connect path).
   if (event->enc_change.conn_handle == s_sake_conn_handle) {
     // The pump link (DUAL): encryption/status change is driver-private. The firmware stack never
     // created a GAPLEConnection for the pump, so routing this would deref NULL in
-    // bt_driver_handle_le_encryption_change_event (gap_le_connect.c) -- the v31 hard-fault class.
+    // pbl_bt_handle_le_encryption_change_event (gap_le_connect.c) -- the v31 hard-fault class.
     if (desc.sec_state.encrypted) {
       minimed_sake_report(MinimedSakeStageEncrypted);
     }
@@ -459,13 +460,11 @@ static void prv_handle_conn_params_updated_event(struct ble_gap_event *event) {
     return;
   }
 
-  PBL_LOG_INFO(
-      "Connection parameters updated: "
-      "itvl=%u ms, latency=%u, spvn timeout=%u ms",
-      desc.conn_itvl * BLE_HCI_CONN_ITVL / 1000, desc.conn_latency,
-      desc.supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS);
+  PBL_LOG_DBG("Connection parameters updated: itvl=%u ms, latency=%u, spvn timeout=%u ms",
+              desc.conn_itvl * BLE_HCI_CONN_ITVL / 1000, desc.conn_latency,
+              desc.supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS);
 #ifdef CONFIG_MINIMED_SAKE
-  prv_log_conn_params(&desc);  // the link's duty cycle changed; keep the on-watch record current
+  prv_log_conn_params(&desc); // the link's duty cycle changed; keep the on-watch record current
 #endif
 
   struct pbl_bt_conn_update_complete_event conn_params_update_event = {
@@ -762,7 +761,8 @@ bool pbl_bt_advert_advertising_enable(uint32_t min_interval_ms, uint32_t max_int
       if (minimed_sake_get_mode() == MinimedSakeModeDual) {
         char line[32];
         snprintf(line, sizeof(line), "adv START FAIL 0x%04x", (uint16_t)rc);
-        minimed_sake_log_evt(line);  // v15 failed here invisibly -- surface the first failure, not the spam
+        minimed_sake_log_evt(
+            line); // v15 failed here invisibly -- surface the first failure, not the spam
       }
     }
     s_last_adv_enable_ok = false;
