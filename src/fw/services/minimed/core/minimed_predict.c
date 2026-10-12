@@ -1,4 +1,5 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
+/* SPDX-FileCopyrightText: 2026 Pal Marci */
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "minimed_predict.h"
@@ -114,6 +115,34 @@ static void prv_clear_slot(MinimedPredictState *st, int32_t cell) {
   st->micro[s] = 0.0f;
 }
 
+// What was delivered in a cell: logged insulin and carbs, plus the manual-mode basal carried
+// forward. A cell the ring no longer holds has only the basal.
+static void prv_cell_flow(const MinimedPredictState *st, int32_t cell, float *ins, float *carb) {
+  *ins = 0.0f;
+  *carb = 0.0f;
+  if (cell <= st->head && cell > st->head - CELLS) {
+    *ins = st->ins[prv_slot(cell)];
+    *carb = st->carb[prv_slot(cell)];
+  }
+  if (st->basal_u_per_h > 0.0f && cell >= st->basal_from) {
+    *ins += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
+  }
+}
+
+// Fold a cell's flow into the net's settled sums. Called right before the ring evicts that cell
+// for good, so this is the only chance to keep its contribution to iob180/cob120 (cheap.h: up to a
+// 180-minute time constant) once it is gone. Idempotent: a cell at or before ema_cell is skipped,
+// so replaying the same boundary twice (or settling a cell that was never actually written, whose
+// flow reads as zero) does nothing.
+static void prv_settle_slot(MinimedPredictState *st, int32_t cell) {
+  if (cell > st->ema_cell) {
+    float ins, carb;
+    prv_cell_flow(st, cell, &ins, &carb);
+    prv_ema_step(st->ema, ins, carb);
+    st->ema_cell = cell;
+  }
+}
+
 // Cell index of a timestamp, snapped to the nearest 5-minute mark like the training grid.
 static int32_t prv_cell_of(uint32_t ts) { return (int32_t)((ts + MINIMED_PREDICT_CELL_SECS / 2) / MINIMED_PREDICT_CELL_SECS); }
 
@@ -123,10 +152,22 @@ static int prv_touch(MinimedPredictState *st, int32_t cell) {
   if (!st->have) {
     st->have = true;
     st->head = cell;
+    st->ema_cell = cell - CELLS;  // nothing settled before the ring's own start
     prv_clear_slot(st, cell);
   } else if (cell > st->head) {
-    const int32_t from = (cell - st->head >= CELLS) ? cell - CELLS + 1 : st->head + 1;
-    for (int32_t c = from; c <= cell; c++) prv_clear_slot(st, c);
+    if (cell - st->head >= CELLS) {
+      // The whole ring turns over in one jump: settle whatever was still live first (a real
+      // gap, not a cell to throw away), then there is no data at all for the gap itself, so
+      // jump the settled boundary straight to where the new ring starts.
+      for (int32_t c = st->head - CELLS + 1; c <= st->head; c++) prv_settle_slot(st, c);
+      st->ema_cell = cell - CELLS;
+      for (int32_t c = cell - CELLS + 1; c <= cell; c++) prv_clear_slot(st, c);
+    } else {
+      for (int32_t c = st->head + 1; c <= cell; c++) {
+        prv_settle_slot(st, c - CELLS);  // read before prv_clear_slot overwrites the same slot
+        prv_clear_slot(st, c);
+      }
+    }
     st->head = cell;
   } else if (cell <= st->head - CELLS) {
     return -1;
@@ -196,20 +237,6 @@ static float prv_cell_bg(const MinimedPredictState *st, int32_t cell, bool *set)
   return st->bg[s];
 }
 
-// What was delivered in a cell: logged insulin and carbs, plus the manual-mode basal carried
-// forward. A cell the ring no longer holds has only the basal.
-static void prv_cell_flow(const MinimedPredictState *st, int32_t cell, float *ins, float *carb) {
-  *ins = 0.0f;
-  *carb = 0.0f;
-  if (cell <= st->head && cell > st->head - CELLS) {
-    *ins = st->ins[prv_slot(cell)];
-    *carb = st->carb[prv_slot(cell)];
-  }
-  if (st->basal_u_per_h > 0.0f && cell >= st->basal_from) {
-    *ins += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
-  }
-}
-
 bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gmt_offset_secs,
                          MinimedPrediction *out) {
   if (!st->have) return false;
@@ -249,10 +276,11 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
 
   for (int k = 0; k < WINDOW; k++) prv_cell_flow(st, first + k, &inp->ins[k], &inp->carb[k]);
 
-  // The net's insulin and carb sums decay over up to 3 h and the window only spans 4: seed them
-  // from the older cells the ring still holds rather than from zero.
-  memset(inp->ema0, 0, sizeof(inp->ema0));
-  for (int32_t c = st->head - CELLS + 1; c < first; c++) {
+  // The net's insulin and carb sums want up to 15 h to settle (cheap.h) and the window only spans
+  // 4: start from MinimedPredictState's settled ema (everything that has ever aged out of the
+  // ring, not just zero) and live-replay the still-editable ring cells between it and the window.
+  memcpy(inp->ema0, st->ema, sizeof(inp->ema0));
+  for (int32_t c = st->ema_cell + 1; c < first; c++) {
     float i, g;
     prv_cell_flow(st, c, &i, &g);
     prv_ema_step(inp->ema0, i, g);

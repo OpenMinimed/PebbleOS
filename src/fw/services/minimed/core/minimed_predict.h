@@ -1,4 +1,5 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
+/* SPDX-FileCopyrightText: 2026 Pal Marci */
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #pragma once
@@ -16,6 +17,14 @@
 //! before the newest cell. MinimedPredictState collects CGM, insulin delivered per 5-minute cell
 //! (basal and bolus) and carbohydrates entered per cell from timestamped events, in any order, and
 //! minimed_predict_run builds the model's input from it. The hypo model reads the same 4-hour window.
+//!
+//! The net's own iob/cob sums (cheap.h) want up to a 180-minute time constant to settle, i.e. the
+//! model wants about 15 h of continuous running before trusting them -- far more than the 4-hour
+//! window or the ring behind it. `ema`/`ema_cell` carry that history across calls instead: every
+//! cell that ages out of the ring (evicted by prv_touch, never to be read again) is folded into
+//! `ema` once, permanently, before it is overwritten. The ring only has to hold what might still
+//! be edited (late history, the window itself); the net's long memory is wall-clock time running,
+//! not ring depth, matching how sugar_predictor/firmware/cheap.c itself is meant to be called.
 
 #define MINIMED_PREDICT_WINDOW 48   //!< cells the model reads (4 h)
 #define MINIMED_PREDICT_CELLS 64    //!< ring size: the window plus room for late events
@@ -31,6 +40,8 @@ typedef struct {
   float micro[MINIMED_PREDICT_CELLS]; //!< U of that insulin that were Auto Basal microboluses
   float basal_u_per_h;               //!< manual-mode basal carried forward, 0 in auto mode
   int32_t basal_from;                //!< first cell the carried rate applies to
+  float ema[4];                      //!< settled iob60/iob180/cob45/cob120, cells <= ema_cell only
+  int32_t ema_cell;                  //!< newest cell folded into ema; always head - CELLS once have
 } MinimedPredictState;
 
 void minimed_predict_reset(MinimedPredictState *st);
@@ -57,8 +68,9 @@ int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now
 
 //! The 4-hour window both models read, oldest cell first, cell 47 the reading at t. bg carries
 //! gaps forward. ins/carb cell 47 covers [t, t+5) and is ignored; cell 46 is the newest known.
-//! `ema0` is the net's insulin/carb state at cell 0, from the cells before the window (zero when
-//! there are none). Public so the host harness can build windows by hand; the firmware goes
+//! `ema0` is the net's insulin/carb state at cell 0: MinimedPredictState's settled `ema` plus a
+//! live replay of whatever ring cells sit between it and the window (zero only when neither has
+//! any history yet). Public so the host harness can build windows by hand; the firmware goes
 //! through minimed_predict_run.
 typedef struct {
   float bg[MINIMED_PREDICT_WINDOW];

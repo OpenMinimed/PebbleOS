@@ -1268,6 +1268,31 @@ static void section_predict(void) {
   check("the same weekday a week apart predicts the same",
         minimed_predict_run(&d1, now, tz, &q1) && minimed_predict_run(&d2, now + 7 * 86400, tz, &q2) &&
             q1.mgdl == q2.mgdl);
+
+  // The net's iob/cob sums want up to 15 h to settle (cheap.h), far beyond the ring's 64-cell,
+  // 5.33 h depth. A bolus must still nudge the forecast long after its own cell has aged out of
+  // the ring, as long as the device kept running in between -- this is what minimed_predict_state's
+  // settled ema is for; it must not reset to zero just because the ring moved on.
+  MinimedPredictState warm, cold;
+  minimed_predict_reset(&warm);
+  minimed_predict_reset(&cold);
+  const int gap_cells = MINIMED_PREDICT_CELLS + 20;  // 7 h: past the ring, short of full settling
+  const uint32_t start = now - (uint32_t)(gap_cells)*300;
+  for (int i = MINIMED_PREDICT_CELLS - 1; i >= 0; i--) {
+    minimed_predict_add_bg(&warm, start - (uint32_t)i * 300, 120);
+    minimed_predict_add_bg(&cold, start - (uint32_t)i * 300, 120);
+  }
+  minimed_predict_add_insulin(&warm, start, 8.0f);  // a big bolus, only in `warm`
+  // Run both rings forward one cell at a time, as the live device does, well past the point
+  // where the bolus's own cell is evicted.
+  for (uint32_t ts = start + 300; ts <= now; ts += 300) {
+    minimed_predict_add_bg(&warm, ts, 120);
+    minimed_predict_add_bg(&cold, ts, 120);
+  }
+  MinimedPrediction pw, pc;
+  check("a bolus long evicted from the ring still nudges the forecast",
+        minimed_predict_run(&warm, now, tz, &pw) && minimed_predict_run(&cold, now, tz, &pc) &&
+            pw.mgdl != pc.mgdl);
 }
 
 static void section_basal_iob(void) {
