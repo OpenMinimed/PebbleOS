@@ -1,5 +1,5 @@
 build
-build-test
+build-*
 xcode
 
 .ycm*
@@ -11,6 +11,14 @@ xcode
 
 *.bin
 !bin/**/*.bin
+# Numpy-parity fixtures for the host tests (test_sake.c); without them the C-vs-numpy checks
+# silently skip rather than fail, on every machine but the one that generated them.
+# cheap_testvec.bin (c20_h32 predictor) comes only from MetaboNet's held-out "monitor" subjects.
+# testvec.bin (predict.c) and hypo_testvec.bin (hypo.c) are this wearer's own pump/CGM history --
+# committed at their explicit request so other builds get the full check too.
+!tools/minimed_sake_hosttest/cheap_testvec.bin
+!tools/minimed_sake_hosttest/testvec.bin
+!tools/minimed_sake_hosttest/hypo_testvec.bin
 *.bin.orig
 *.map
 build/*.elf
@@ -70,9 +78,8 @@ artifacts/
 .direnv
 
 # Personal compile-time overrides -- see TESTING.md.
-src/bluetooth-fw/nimble/minimed_local_overrides.h
+subsys/bluetooth/minimed_local_overrides.h
 tools/minimed_sake_hosttest/history.hex
-tools/minimed_sake_hosttest/testvec.bin
 tools/minimed_sake_hosttest/replay
 tools/minimed_sake_hosttest/test_sake
 logs_pull/

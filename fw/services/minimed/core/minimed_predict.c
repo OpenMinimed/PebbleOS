@@ -1,162 +1,113 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
+/* SPDX-FileCopyrightText: 2026 Pal Marci */
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "minimed_predict.h"
 
+#include "minimed_predict_model.h"
+
 #include <math.h>
 #include <string.h>
 
-#include "minimed_predict_model.h"
-
-#define WINDOW MINIMED_PREDICT_WINDOW
-#define CELLS MINIMED_PREDICT_CELLS
+#define WINDOW     MINIMED_PREDICT_WINDOW
+#define CELLS      MINIMED_PREDICT_CELLS
 #define STALE_SECS (10 * 60)
 
-// -- Model (ported from sugar_predictor/firmware/predict.c) --------------------------------------
+// -- Model (ported from sugar_predictor/firmware/cheap.c) -----------------------------------------
 
-typedef MinimedPredictWindow ModelInput;
+#if MINIMED_PREDICT_CGM_CELLS != CH_N
+#error "model header and input struct disagree"
+#endif
 
-static float prv_std_of(const float *a, int n) {
-  float m = 0.0f, s = 0.0f;
-  for (int i = 0; i < n; i++) m += a[i];
-  m /= (float)n;
-  for (int i = 0; i < n; i++) s += (a[i] - m) * (a[i] - m);
-  return sqrtf(s / (float)n);
-}
+float minimed_predict_cheap(MinimedPredictCheapIn *in) {
+  const float *b = in->bg;
+  const float now = b[CH_N - 1];
+  const float d5 = now - b[CH_N - 2];
+  const float d10 = now - b[CH_N - 3];
+  const float d30 = now - b[CH_N - 7];
+  float mean = 0.0f, var = 0.0f;
+  for (int i = CH_N - 12; i < CH_N; i++)
+    mean += b[i];
+  mean /= 12.0f;
+  for (int i = CH_N - 12; i < CH_N; i++)
+    var += (b[i] - mean) * (b[i] - mean);
 
-static float prv_dot_k(const float *a, const float *k) {
-  float s = 0.0f;
-  for (int i = 0; i < BGP_HIST; i++) s += a[i] * k[i];
-  return s;
-}
+  in->ema[0] = in->ema[0] * ch_ema_decay[0] + in->ins_prev;
+  in->ema[1] = in->ema[1] * ch_ema_decay[1] + in->ins_prev;
+  in->ema[2] = in->ema[2] * ch_ema_decay[2] + in->carb_prev;
+  in->ema[3] = in->ema[3] * ch_ema_decay[3] + in->carb_prev;
 
-// Minutes since the newest cell that passes the threshold, capped at 240.
-static float prv_since(const float *a, float thr) {
-  for (int i = BGP_HIST - 1; i >= 0; i--) {
-    if (a[i] > thr) {
-      const float m = (float)(BGP_HIST - 1 - i) * 5.0f;
-      return m > 240.0f ? 240.0f : m;
+  float t[CH_D];
+  t[0] = d5;
+  t[1] = d10;
+  t[2] = now - b[CH_N - 4];
+  t[3] = d30;
+  t[4] = now - b[CH_N - 13];
+  t[5] = d5 - (b[CH_N - 2] - b[CH_N - 3]);
+  t[6] = now - 120.0f;
+  t[7] = now < 70.0f ? 70.0f - now : 0.0f;
+  t[8] = now > 180.0f ? now - 180.0f : 0.0f;
+  t[9] = d5 < 0.0f ? -d5 : d5;
+  t[10] = d5 * d10 / 10.0f;
+  t[11] = (now - 120.0f) * d5 / 100.0f;
+  t[12] = (now - 120.0f) * d30 / 100.0f;
+  t[13] = sqrtf(var / 12.0f);
+  t[14] = in->tod_sin;
+  t[15] = in->tod_cos;
+  t[16] = in->ema[0];
+  t[17] = in->ema[1];
+  t[18] = in->ema[2];
+  t[19] = in->ema[3];
+
+  float out = ch_b2;
+  for (int j = 0; j < CH_H; j++) {
+    float acc = 0.0f;
+    for (int i = 0; i < CH_D; i++) {
+      acc += (float)ch_w1[j * CH_D + i] * ((t[i] - ch_mu[i]) * ch_isd[i]);
     }
+    acc = acc * ch_s_w1 + (float)ch_b1[j] * ch_s_b1;
+    if (acc > 0.0f)
+      out += acc * (float)ch_w2[j] * ch_s_w2;
   }
-  return 240.0f;
+  return out * ch_ys + ch_ym + now;
 }
 
-// The newest insulin/carb cell covers [t, t+5) and is not observable at t, so the window is shifted
-// one cell into the past, repeating the oldest cell (as the training features do).
-static void prv_shift_past(const float *src, float *dst) {
-  dst[0] = src[0];
-  for (int i = 1; i < BGP_HIST; i++) dst[i] = src[i - 1];
+// One 5-minute step of the net's decaying sums: what was delivered in a cell, as of the origin
+// that ends it.
+static void prv_ema_step(float ema[4], float ins, float carb) {
+  ema[0] = ema[0] * ch_ema_decay[0] + ins;
+  ema[1] = ema[1] * ch_ema_decay[1] + ins;
+  ema[2] = ema[2] * ch_ema_decay[2] + carb;
+  ema[3] = ema[3] * ch_ema_decay[3] + carb;
 }
 
-// Working buffers are static, not on the stack: this runs on the NimBLE host task, whose stack is
-// small (a logging call there has overflowed it before), and about 1.5 KB of locals is not free.
-// Nothing here is reentrant; the one caller is that task.
-static float s_ins[BGP_HIST], s_carb[BGP_HIST];
-static float s_features[BGP_DIN], s_scaled[BGP_DIN];
+// Working buffer is static: the hypo model reads the window after minimed_predict_run returns.
+// Nothing here is reentrant; the one caller is the MiniMed task.
 static MinimedPredictWindow s_window;
 
-static void prv_build_features(const ModelInput *in, float *f) {
-  const float *bg = in->bg;
-  float *ins = s_ins, *carb = s_carb;
-  const float now = bg[BGP_HIST - 1];
-  // lag(k) in the training feature builder is bg[HIST - k]
-  const float l2 = bg[BGP_HIST - 2], l3 = bg[BGP_HIST - 3], l4 = bg[BGP_HIST - 4];
-  const float l5 = bg[BGP_HIST - 5], l7 = bg[BGP_HIST - 7], l13 = bg[BGP_HIST - 13];
-  const float l19 = bg[BGP_HIST - 19], l25 = bg[BGP_HIST - 25];
-  const float d5 = now - l2, d10 = now - l3, d15 = now - l4, d30 = now - l7;
-  const float d60 = now - l13, d90 = now - l19, d120 = now - l25;
-  float mx, mn, last_carb = 0.0f;
-
-  prv_shift_past(in->ins, ins);
-  prv_shift_past(in->carb, carb);
-
-  mx = mn = bg[BGP_HIST - 12];
-  for (int i = BGP_HIST - 12; i < BGP_HIST; i++) {
-    if (bg[i] > mx) mx = bg[i];
-    if (bg[i] < mn) mn = bg[i];
-  }
-  for (int i = 0; i < BGP_HIST; i++) {
-    if (carb[i] > last_carb) last_carb = carb[i];
-  }
-  const float t_ins = prv_since(ins, 0.3f);
-  const float t_carb = prv_since(carb, 0.0f);
-
-  f[0] = 1.0f;
-  f[1] = now;
-  f[2] = d5;
-  f[3] = d10;
-  f[4] = d15;
-  f[5] = d30;
-  f[6] = d60;
-  f[7] = d90;
-  f[8] = d120;
-  f[9] = d5 - (l2 - l3);
-  f[10] = d10 - (l3 - l5);
-  f[11] = prv_std_of(bg + BGP_HIST - 12, 12);
-  f[12] = mx - mn;
-  f[13] = prv_std_of(bg + BGP_HIST - 36, 36);
-  f[14] = prv_dot_k(ins, bgp_kins0);
-  f[15] = prv_dot_k(ins, bgp_kins1);
-  f[16] = prv_dot_k(ins, bgp_kins2);
-  f[17] = prv_dot_k(carb, bgp_kcarb0);
-  f[18] = prv_dot_k(carb, bgp_kcarb1);
-  f[19] = prv_dot_k(carb, bgp_kcarb2);
-  f[20] = t_ins / 60.0f;
-  f[21] = t_carb / 60.0f;
-  f[22] = last_carb / 10.0f;
-  f[23] = d5 < 0.0f ? -d5 : d5;
-  f[24] = d5 * d10 / 10.0f;
-  f[25] = now * d5 / 100.0f;
-  f[26] = now > 180.0f ? now - 180.0f : 0.0f;
-  f[27] = now < 70.0f ? 70.0f - now : 0.0f;
-  f[28] = d30 * d5 / 10.0f;
-  f[29] = (now - 120.0f) * (now - 120.0f) / 1000.0f;
-  f[30] = (d5 > 0.0f ? 1.0f : (d5 < 0.0f ? -1.0f : 0.0f)) * d5 * d5 / 10.0f;
-  f[31] = now * d30 / 100.0f;
-  f[32] = expf(-t_carb / 60.0f) * last_carb / 10.0f;
-  f[33] = in->tod_sin;
-  f[34] = in->tod_cos;
-  f[35] = in->dow_sin;
-  f[36] = in->dow_cos;
-  int hour = in->hour;
-  if (hour < 0) hour = 0;
-  if (hour > 23) hour = 23;
-  f[37] = bgp_hour_base[hour];
-}
-
-static float prv_model_predict(const float *f_raw) {
-  float *f = s_scaled;
-  float out = bgp_b2;
-  for (int i = 0; i < BGP_DIN; i++) f[i] = (f_raw[i] - bgp_mu[i]) / bgp_sd[i];
-  for (int j = 0; j < BGP_HID; j++) {
-    const signed char *w = bgp_w1 + (long)j * BGP_DIN;
-    float acc = 0.0f;
-    for (int i = 0; i < BGP_DIN; i++) acc += (float)w[i] * f[i];
-    acc = acc * bgp_s_w1 + (float)bgp_b1[j] * bgp_s_b1;
-    if (acc > 0.0f) out += acc * (float)bgp_w2[j] * bgp_s_w2;
-  }
-  return out * bgp_ys + bgp_ym;  // delta over the current reading
-}
-
-static float prv_model_low_probability(const float *f_raw) {
-  float z = 0.0f;
-  for (int i = 0; i < BGP_DIN; i++) z += ((f_raw[i] - bgp_mu[i]) / bgp_sd[i]) * bgp_w_low[i];
-  return 1.0f / (1.0f + expf(-z));
-}
-
 void minimed_predict_window(const MinimedPredictWindow *in, MinimedPrediction *out) {
-  float *f = s_features;
-  prv_build_features(in, f);
-  out->mgdl = in->bg[WINDOW - 1] + prv_model_predict(f);
-  out->low_prob = prv_model_low_probability(f);
-  out->low_alarm = out->low_prob >= bgp_thr_low;
+  MinimedPredictCheapIn c;
+  memcpy(c.bg, in->bg + WINDOW - MINIMED_PREDICT_CGM_CELLS, sizeof(c.bg));
+  c.tod_sin = in->tod_sin;
+  c.tod_cos = in->tod_cos;
+  memcpy(c.ema, in->ema0, sizeof(c.ema));
+  // The model sums the cells that ended before the newest origin; it adds the last one itself.
+  for (int k = 0; k < WINDOW - 2; k++)
+    prv_ema_step(c.ema, in->ins[k], in->carb[k]);
+  c.ins_prev = in->ins[WINDOW - 2];
+  c.carb_prev = in->carb[WINDOW - 2];
+  out->mgdl = minimed_predict_cheap(&c);
 }
 
-const MinimedPredictWindow *minimed_predict_last_window(void) { return &s_window; }
+const MinimedPredictWindow *minimed_predict_last_window(void) {
+  return &s_window;
+}
 
 // -- State ----------------------------------------------------------------------------------------
 
-void minimed_predict_reset(MinimedPredictState *st) { memset(st, 0, sizeof(*st)); }
+void minimed_predict_reset(MinimedPredictState *st) {
+  memset(st, 0, sizeof(*st));
+}
 
 static int prv_slot(int32_t cell) {
   const int m = (int)(cell % CELLS);
@@ -172,8 +123,38 @@ static void prv_clear_slot(MinimedPredictState *st, int32_t cell) {
   st->micro[s] = 0.0f;
 }
 
+// What was delivered in a cell: logged insulin and carbs, plus the manual-mode basal carried
+// forward. A cell the ring no longer holds has only the basal.
+static void prv_cell_flow(const MinimedPredictState *st, int32_t cell, float *ins, float *carb) {
+  *ins = 0.0f;
+  *carb = 0.0f;
+  if (cell <= st->head && cell > st->head - CELLS) {
+    *ins = st->ins[prv_slot(cell)];
+    *carb = st->carb[prv_slot(cell)];
+  }
+  if (st->basal_u_per_h > 0.0f && cell >= st->basal_from) {
+    *ins += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
+  }
+}
+
+// Fold a cell's flow into the net's settled sums. Called right before the ring evicts that cell
+// for good, so this is the only chance to keep its contribution to iob180/cob120 (cheap.h: up to a
+// 180-minute time constant) once it is gone. Idempotent: a cell at or before ema_cell is skipped,
+// so replaying the same boundary twice (or settling a cell that was never actually written, whose
+// flow reads as zero) does nothing.
+static void prv_settle_slot(MinimedPredictState *st, int32_t cell) {
+  if (cell > st->ema_cell) {
+    float ins, carb;
+    prv_cell_flow(st, cell, &ins, &carb);
+    prv_ema_step(st->ema, ins, carb);
+    st->ema_cell = cell;
+  }
+}
+
 // Cell index of a timestamp, snapped to the nearest 5-minute mark like the training grid.
-static int32_t prv_cell_of(uint32_t ts) { return (int32_t)((ts + MINIMED_PREDICT_CELL_SECS / 2) / MINIMED_PREDICT_CELL_SECS); }
+static int32_t prv_cell_of(uint32_t ts) {
+  return (int32_t)((ts + MINIMED_PREDICT_CELL_SECS / 2) / MINIMED_PREDICT_CELL_SECS);
+}
 
 // The slot for a cell, advancing the ring if the cell is newer than any so far. NULL-equivalent
 // (-1) for a cell that has already aged out of the ring.
@@ -181,10 +162,24 @@ static int prv_touch(MinimedPredictState *st, int32_t cell) {
   if (!st->have) {
     st->have = true;
     st->head = cell;
+    st->ema_cell = cell - CELLS; // nothing settled before the ring's own start
     prv_clear_slot(st, cell);
   } else if (cell > st->head) {
-    const int32_t from = (cell - st->head >= CELLS) ? cell - CELLS + 1 : st->head + 1;
-    for (int32_t c = from; c <= cell; c++) prv_clear_slot(st, c);
+    if (cell - st->head >= CELLS) {
+      // The whole ring turns over in one jump: settle whatever was still live first (a real
+      // gap, not a cell to throw away), then there is no data at all for the gap itself, so
+      // jump the settled boundary straight to where the new ring starts.
+      for (int32_t c = st->head - CELLS + 1; c <= st->head; c++)
+        prv_settle_slot(st, c);
+      st->ema_cell = cell - CELLS;
+      for (int32_t c = cell - CELLS + 1; c <= cell; c++)
+        prv_clear_slot(st, c);
+    } else {
+      for (int32_t c = st->head + 1; c <= cell; c++) {
+        prv_settle_slot(st, c - CELLS); // read before prv_clear_slot overwrites the same slot
+        prv_clear_slot(st, c);
+      }
+    }
     st->head = cell;
   } else if (cell <= st->head - CELLS) {
     return -1;
@@ -193,39 +188,49 @@ static int prv_touch(MinimedPredictState *st, int32_t cell) {
 }
 
 void minimed_predict_add_bg(MinimedPredictState *st, uint32_t ts, int32_t mgdl) {
-  if (mgdl <= 0) return;
+  if (mgdl <= 0)
+    return;
   const int s = prv_touch(st, prv_cell_of(ts));
-  if (s < 0) return;
+  if (s < 0)
+    return;
   st->bg[s] = (float)mgdl;
   st->bg_set[s] = true;
 }
 
 void minimed_predict_add_insulin(MinimedPredictState *st, uint32_t ts, float units) {
-  if (units <= 0.0f) return;
+  if (units <= 0.0f)
+    return;
   const int s = prv_touch(st, prv_cell_of(ts));
-  if (s >= 0) st->ins[s] += units;
+  if (s >= 0)
+    st->ins[s] += units;
 }
 
 void minimed_predict_add_micro(MinimedPredictState *st, uint32_t ts, float units) {
-  if (units <= 0.0f) return;
+  if (units <= 0.0f)
+    return;
   const int s = prv_touch(st, prv_cell_of(ts));
-  if (s < 0) return;
+  if (s < 0)
+    return;
   st->ins[s] += units;
   st->micro[s] += units;
 }
 
 int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now) {
-  if (!st->have) return 0;
+  if (!st->have)
+    return 0;
   float iob = 0.0f;
   for (int32_t c = st->head; c > st->head - CELLS; c--) {
     const int64_t age = (int64_t)now - (int64_t)c * MINIMED_PREDICT_CELL_SECS;
-    if (age >= MINIMED_IOB_AIT_SECS) break;  // older cells are all spent
+    if (age >= MINIMED_IOB_AIT_SECS)
+      break; // older cells are all spent
     float delivered = st->micro[prv_slot(c)];
     if (st->basal_u_per_h > 0.0f && c >= st->basal_from) {
       // The cell spans age +-150 s; the part after `now` has not been delivered yet.
       int64_t elapsed = age + MINIMED_PREDICT_CELL_SECS / 2;
-      if (elapsed > MINIMED_PREDICT_CELL_SECS) elapsed = MINIMED_PREDICT_CELL_SECS;
-      if (elapsed > 0) delivered += st->basal_u_per_h * (float)elapsed / 3600.0f;
+      if (elapsed > MINIMED_PREDICT_CELL_SECS)
+        elapsed = MINIMED_PREDICT_CELL_SECS;
+      if (elapsed > 0)
+        delivered += st->basal_u_per_h * (float)elapsed / 3600.0f;
     }
     const float left = 1.0f - (float)(age > 0 ? age : 0) / (float)MINIMED_IOB_AIT_SECS;
     iob += delivered * left;
@@ -234,9 +239,11 @@ int32_t minimed_predict_basal_iob_mu(const MinimedPredictState *st, uint32_t now
 }
 
 void minimed_predict_add_carbs(MinimedPredictState *st, uint32_t ts, float grams) {
-  if (grams <= 0.0f) return;
+  if (grams <= 0.0f)
+    return;
   const int s = prv_touch(st, prv_cell_of(ts));
-  if (s >= 0) st->carb[s] += grams;
+  if (s >= 0)
+    st->carb[s] += grams;
 }
 
 void minimed_predict_set_basal(MinimedPredictState *st, uint32_t ts, float u_per_h) {
@@ -248,7 +255,8 @@ void minimed_predict_set_basal(MinimedPredictState *st, uint32_t ts, float u_per
 
 static float prv_cell_bg(const MinimedPredictState *st, int32_t cell, bool *set) {
   *set = false;
-  if (cell > st->head || cell <= st->head - CELLS) return 0.0f;
+  if (cell > st->head || cell <= st->head - CELLS)
+    return 0.0f;
   const int s = prv_slot(cell);
   *set = st->bg_set[s];
   return st->bg[s];
@@ -256,23 +264,26 @@ static float prv_cell_bg(const MinimedPredictState *st, int32_t cell, bool *set)
 
 bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gmt_offset_secs,
                          MinimedPrediction *out) {
-  if (!st->have) return false;
+  if (!st->have)
+    return false;
 
   // The newest cell that holds a reading.
   int32_t newest = st->head;
   bool set = false;
   while (newest > st->head - CELLS) {
     prv_cell_bg(st, newest, &set);
-    if (set) break;
+    if (set)
+      break;
     newest--;
   }
-  if (!set) return false;
-  if ((int64_t)now - (int64_t)newest * MINIMED_PREDICT_CELL_SECS > STALE_SECS +
-                                                                    MINIMED_PREDICT_CELL_SECS / 2) {
+  if (!set)
+    return false;
+  if ((int64_t)now - (int64_t)newest * MINIMED_PREDICT_CELL_SECS >
+      STALE_SECS + MINIMED_PREDICT_CELL_SECS / 2) {
     return false;
   }
 
-  ModelInput *inp = &s_window;
+  MinimedPredictWindow *inp = &s_window;
   const int32_t first = newest - (WINDOW - 1);
   // BG: forward-fill gaps (the pump keeps showing its last reading), and repeat the oldest known
   // reading into any leading cells that were never seen.
@@ -288,34 +299,32 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
     inp->bg[k] = have_last ? last : 0.0f;
   }
   int lead = 0;
-  while (lead < WINDOW && inp->bg[lead] == 0.0f) lead++;
-  for (int k = 0; k < lead && lead < WINDOW; k++) inp->bg[k] = inp->bg[lead];
+  while (lead < WINDOW && inp->bg[lead] == 0.0f)
+    lead++;
+  for (int k = 0; k < lead && lead < WINDOW; k++)
+    inp->bg[k] = inp->bg[lead];
 
-  for (int k = 0; k < WINDOW; k++) {
-    const int32_t cell = first + k;
-    inp->ins[k] = 0.0f;
-    inp->carb[k] = 0.0f;
-    if (cell <= st->head && cell > st->head - CELLS) {
-      inp->ins[k] = st->ins[prv_slot(cell)];
-      inp->carb[k] = st->carb[prv_slot(cell)];
-    }
-    if (st->basal_u_per_h > 0.0f && cell >= st->basal_from) {
-      inp->ins[k] += st->basal_u_per_h * (MINIMED_PREDICT_CELL_SECS / 3600.0f);
-    }
+  for (int k = 0; k < WINDOW; k++)
+    prv_cell_flow(st, first + k, &inp->ins[k], &inp->carb[k]);
+
+  // The net's insulin and carb sums want up to 15 h to settle (cheap.h) and the window only spans
+  // 4: start from MinimedPredictState's settled ema (everything that has ever aged out of the
+  // ring, not just zero) and live-replay the still-editable ring cells between it and the window.
+  memcpy(inp->ema0, st->ema, sizeof(inp->ema0));
+  for (int32_t c = st->ema_cell + 1; c < first; c++) {
+    float i, g;
+    prv_cell_flow(st, c, &i, &g);
+    prv_ema_step(inp->ema0, i, g);
   }
 
-  // Local time. Day 0 of the epoch was a Thursday, and the model's day-of-week index counts from
-  // there (Thursday = 0), so days-since-epoch mod 7 is used as is.
+  // Local time of day.
   const int64_t local = (int64_t)now + gmt_offset_secs;
   const int64_t days = local >= 0 ? local / 86400 : -((-local + 86399) / 86400);
   const int64_t sec_of_day = local - days * 86400;
-  const int dow = (int)(((days % 7) + 7) % 7);
   const float minutes = (float)sec_of_day / 60.0f;
   const float two_pi = 6.28318530717958647692f;
   inp->tod_sin = sinf(two_pi * minutes / 1440.0f);
   inp->tod_cos = cosf(two_pi * minutes / 1440.0f);
-  inp->dow_sin = sinf(two_pi * (float)dow / 7.0f);
-  inp->dow_cos = cosf(two_pi * (float)dow / 7.0f);
   inp->hour = (int)(sec_of_day / 3600);
 
   minimed_predict_window(inp, out);
@@ -325,8 +334,9 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
   for (int k = 0; k < WINDOW; k++) {
     bool s;
     prv_cell_bg(st, first + k, &s);
-    if (s) cells++;
-    if (k < WINDOW - 1) {  // the newest cell is ignored by the model
+    if (s)
+      cells++;
+    if (k < WINDOW - 1) { // the newest cell is ignored by the model
       ins += inp->ins[k];
       carb += inp->carb[k];
     }
@@ -339,11 +349,13 @@ bool minimed_predict_run(const MinimedPredictState *st, uint32_t now, int32_t gm
   return true;
 }
 
-void minimed_predict_score_reset(MinimedPredictScore *sc) { memset(sc, 0, sizeof(*sc)); }
+void minimed_predict_score_reset(MinimedPredictScore *sc) {
+  memset(sc, 0, sizeof(*sc));
+}
 
 void minimed_predict_score_note(MinimedPredictScore *sc, uint32_t ts, int32_t pred_mgdl,
                                 int32_t base_mgdl) {
-  if (sc->pending == MINIMED_SCORE_PENDING) {  // drop the oldest
+  if (sc->pending == MINIMED_SCORE_PENDING) { // drop the oldest
     memmove(&sc->due[0], &sc->due[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->due[0]));
     memmove(&sc->pred[0], &sc->pred[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->pred[0]));
     memmove(&sc->base[0], &sc->base[1], (MINIMED_SCORE_PENDING - 1) * sizeof(sc->base[0]));
@@ -361,14 +373,16 @@ bool minimed_predict_score_actual(MinimedPredictScore *sc, uint32_t ts, int32_t 
   uint8_t keep = 0;
   for (uint8_t i = 0; i < sc->pending; i++) {
     const int64_t d = (int64_t)ts - (int64_t)sc->due[i];
-    if (d > MINIMED_SCORE_TOLERANCE_SECS) continue;  // missed its reading: forget it
+    if (d > MINIMED_SCORE_TOLERANCE_SECS)
+      continue; // missed its reading: forget it
     if (d >= -MINIMED_SCORE_TOLERANCE_SECS && !scored) {
       const int32_t e = sc->pred[i] - mgdl;
       const int32_t eb = sc->base[i] - mgdl;
       sc->sse += (uint64_t)((int64_t)e * e);
       sc->sse_base += (uint64_t)((int64_t)eb * eb);
       sc->count++;
-      if (err) *err = e;
+      if (err)
+        *err = e;
       scored = true;
       continue;
     }
@@ -382,7 +396,8 @@ bool minimed_predict_score_actual(MinimedPredictScore *sc, uint32_t ts, int32_t 
 }
 
 uint32_t minimed_predict_score_rmse_x10(const MinimedPredictScore *sc, bool baseline) {
-  if (sc->count == 0) return 0;
+  if (sc->count == 0)
+    return 0;
   const float mse = (float)(baseline ? sc->sse_base : sc->sse) / (float)sc->count;
   return (uint32_t)(sqrtf(mse) * 10.0f + 0.5f);
 }

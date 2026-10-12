@@ -9,49 +9,50 @@
 
 #include "minimed_session.h"
 
-#include <stdio.h>
-#include <string.h>
-
 #include "drivers/rtc.h"
-#include <pbl/util/time.h>
 #include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
 #include "minimed_history.h"
 #include "minimed_hypo.h"
 #include "minimed_idd_flags.h"
-#include "minimed_predict.h"
 #include "minimed_iob.h"
-#include "minimed_settings.h"
-#include "popups/minimed_alert_popup.h"
+#include "minimed_predict.h"
 #include "minimed_sake_sender.h"
+#include "minimed_settings.h"
 #include "minimed_status.h"
 #include "minimed_task.h"
 #include "minimed_transport.h"
 #include "pebble_glucose_protocol.h"
+#include "popups/minimed_alert_popup.h"
 #include "popups/minimed_sake_ui.h"
+
+#include <stdio.h>
+#include <string.h>
+
 #include <pbl/logging/logging.h>
+#include <pbl/util/time.h>
 
 PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 
 // Timers (minimed_task_timer_start). Each fires as a MinimedEventTimer on this task.
 enum {
-  TimerKickoff,     // a beat after the handshake: start discovery
-  TimerPoll,        // 60 s poll, or the 6-minute dead-man once push mode is proven
-  TimerWatchdog,    // pump-liveness watchdog (silent-link retoggle)
-  TimerDispatch,    // issue the next pending exchange
-  TimerOpTimeout,   // unwedge a lost terminating indication
+  TimerKickoff,   // a beat after the handshake: start discovery
+  TimerPoll,      // 60 s poll, or the 6-minute dead-man once push mode is proven
+  TimerWatchdog,  // pump-liveness watchdog (silent-link retoggle)
+  TimerDispatch,  // issue the next pending exchange
+  TimerOpTimeout, // unwedge a lost terminating indication
   TimerBattery,
-  TimerHeap,        // fixed-interval kernel heap watch
+  TimerHeap, // fixed-interval kernel heap watch
   TimerDevinfo,
   TimerSensorInfo,
-  TimerAnnuncProbe,  // start of the Snooze/Confirm probe, then its per-command timeout
+  TimerAnnuncProbe, // start of the Snooze/Confirm probe, then its per-command timeout
   TimerCount
 };
 _Static_assert(TimerCount <= MINIMED_TIMER_COUNT, "raise MINIMED_TIMER_COUNT");
 
 // GATT operation tags: which request a MinimedEventGattDone answers.
 enum {
-  TagNone,  // fire-and-forget: no completion event
+  TagNone, // fire-and-forget: no completion event
   TagCgmFeatureRead,
   TagSubMeasurement,
   TagSubCgmRacp,
@@ -101,8 +102,7 @@ static const uint8_t SRCP_GET_TAS[] = {0xFD, 0x03};
 // ~5 min, so 6 min of silence means push is late or dead -- do one full read and re-arm. A
 // silently dead push thus degrades to a 6-minute poll, the bridge's soaked trade-off.
 #define FALLBACK_AFTER_SECS (6 * 60)
-static bool s_push_mode;  // false until the first indication of this connection proves push
-
+static bool s_push_mode; // false until the first indication of this connection proves push
 
 // Exchange serialiser (spec: docs/superpowers/specs/2026-07-27-pump-push-design.md). The pump
 // exchanges (CGM poll, SRCP IOB read, IDD Status read, SRCP TAS read, SRCP Reset Status) each
@@ -111,15 +111,15 @@ static bool s_push_mode;  // false until the first indication of this connection
 // in-flight op's PEND_ bit (0 = idle) and doubles as the SRCP-response disambiguator: the same
 // char carries the IOB response (complete at >= 7 bytes), the TAS response, and the short Reset
 // Status response.
-#define PEND_CGM 0x01
-#define PEND_IOB 0x02
-#define PEND_RESET 0x04
+#define PEND_CGM    0x01
+#define PEND_IOB    0x02
+#define PEND_RESET  0x04
 #define PEND_STATUS 0x08
-#define PEND_TAS 0x10
+#define PEND_TAS    0x10
 #define PEND_ANNUNC 0x20
 static uint8_t s_pending;
 static uint8_t s_op;
-static uint64_t s_reset_flags;  // union of received 0x101 flags awaiting a Reset Status write
+static uint64_t s_reset_flags; // union of received 0x101 flags awaiting a Reset Status write
 
 // Writes are dispatched off a timer, never straight from a notify/indication: NimBLE sends an
 // indication's confirmation only after the handler returns, so a synchronous write would go on
@@ -130,7 +130,7 @@ static uint64_t s_reset_flags;  // union of received 0x101 flags awaiting a Rese
 #define OP_TIMEOUT_SECS 10
 
 // 780G sensor display range, 2.8-22.2 mmol/L. Off-scale readings graph at the edge they crossed.
-#define SG_FLOOR_MGDL 50
+#define SG_FLOOR_MGDL   50
 #define SG_CEILING_MGDL 400
 
 // Pump battery (SIG Battery Level 0x2A19, plaintext read). Hourly samples to characterise its
@@ -153,19 +153,19 @@ static const struct {
   const char *name;
   bool hex;
 } s_devinfo_chrs[] = {
-    {MinimedChrDisManufacturer, "manufacturer", false},
-    {MinimedChrDisModel, "model", false},
-    {MinimedChrDisSerial, "serial", false},
-    {MinimedChrDisHardware, "hardware revision", false},
-    {MinimedChrDisFirmware, "firmware revision", false},
-    {MinimedChrDisSoftware, "software revision", false},
-    {MinimedChrDisSystemId, "system id", true},
-    {MinimedChrDisPnpId, "pnp id", true},
-    {MinimedChrDisRegulatory, "ieee regulatory cert", true},
+  {MinimedChrDisManufacturer, "manufacturer", false},
+  {MinimedChrDisModel, "model", false},
+  {MinimedChrDisSerial, "serial", false},
+  {MinimedChrDisHardware, "hardware revision", false},
+  {MinimedChrDisFirmware, "firmware revision", false},
+  {MinimedChrDisSoftware, "software revision", false},
+  {MinimedChrDisSystemId, "system id", true},
+  {MinimedChrDisPnpId, "pnp id", true},
+  {MinimedChrDisRegulatory, "ieee regulatory cert", true},
 };
 #define DEVINFO_CHR_COUNT (sizeof(s_devinfo_chrs) / sizeof(s_devinfo_chrs[0]))
 
-#define BATTERY_READ_INTERVAL_SECS (60 * 60)
+#define BATTERY_READ_INTERVAL_SECS    (60 * 60)
 #define BATTERY_FIRST_READ_DELAY_SECS 30
 
 static void prv_op_complete(void);
@@ -195,11 +195,11 @@ static bool s_have[MinimedChrCount];
 #define SENSORINFO_READ_DELAY_SECS 30
 static bool s_sensorinfo_done;
 // Steps of the sweep; each ends with a chained read of the next.
-#define SI_STEP_RUN_TIME 0
-#define SI_STEP_EXPIRATION 1
-#define SI_STEP_IDD_FEATURES 2
+#define SI_STEP_RUN_TIME      0
+#define SI_STEP_EXPIRATION    1
+#define SI_STEP_IDD_FEATURES  2
 #define SI_STEP_SESSION_START 3
-#define SI_STEP_COUNT 4
+#define SI_STEP_COUNT         4
 static uint8_t s_sensorinfo_step;
 // Shared line buffers: PBL_LOG is stack-hungry (see the v57 note on the devinfo sweep).
 static char s_sensorinfo_line[112];
@@ -209,7 +209,7 @@ static char s_sensorinfo_line[112];
 // free the phantom connection slot and re-arm the pump advert. This is the simplest recovery --
 // not a diagnostic, hence separate from the Layer 4 'lnk' check.
 #define PUMP_WD_NO_TRAFFIC_SECS (15 * 60)
-static uint32_t s_last_pump_traffic;  // wall-clock time of the last pump data/exchange completion
+static uint32_t s_last_pump_traffic; // wall-clock time of the last pump data/exchange completion
 
 // Latest parsed status pair, one-shot per read cycle: invalidated after each publish so a failed
 // read next cycle is not papered over with the previous cycle's fields (mirrors the bridge
@@ -242,9 +242,9 @@ static uint8_t s_hist_len;
 // pump alarms audibly; the watch only mirrors alarms it is connected for). s_annunc_baseline
 // marks the in-flight exchange as that baseline read.
 static uint32_t s_annunc_seq;
-static bool s_annunc_have;      // baseline done; catch-up reads may notify
-static bool s_annunc_baseline;  // the in-flight PEND_ANNUNC exchange is the baseline read
-static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
+static bool s_annunc_have;     // baseline done; catch-up reads may notify
+static bool s_annunc_baseline; // the in-flight PEND_ANNUNC exchange is the baseline read
+static bool s_annunc_seen;     // the in-flight exchange delivered >= 1 record
 
 // Graph backfill: once per connection, after the annunciation baseline and the first CGM read (the
 // anchor), read the SG Measurement records covering the visible graph window from the event log
@@ -258,11 +258,11 @@ static bool s_annunc_seen;      // the in-flight exchange delivered >= 1 record
 // time zone, so only differences are used: the newest sample is taken to be the CGM reading the
 // watch already showed (stamped s_reading_ts), and older samples sit their pump-clock distance
 // behind it.
-#define BACKFILL_WINDOW_MIN 240  // the predictor reads 4 hours; the graph keeps what it shows
-#define BACKFILL_SEQ_SPAN 300
-static bool s_backfill_done;    // this connection's backfill has been issued
-static bool s_backfill_wanted;  // the next PEND_ANNUNC exchange is to be the backfill read
-static bool s_backfill_run;     // the in-flight PEND_ANNUNC exchange is the backfill read
+#define BACKFILL_WINDOW_MIN 240 // the predictor reads 4 hours; the graph keeps what it shows
+#define BACKFILL_SEQ_SPAN   300
+static bool s_backfill_done;   // this connection's backfill has been issued
+static bool s_backfill_wanted; // the next PEND_ANNUNC exchange is to be the backfill read
+static bool s_backfill_run;    // the in-flight PEND_ANNUNC exchange is the backfill read
 static MinimedHistClock s_backfill_clock;
 
 // The backfill places the log's samples on the watch clock through one offset, pump clock minus
@@ -271,30 +271,30 @@ static MinimedHistClock s_backfill_clock;
 // Current Time instead, read at that moment, so the hours before the change still reach the graph.
 static bool s_pump_clock_known;
 static bool s_pump_clock_requested;
-static int32_t s_pump_clock_offset;  // pump secs - watch secs, when s_pump_clock_known
+static int32_t s_pump_clock_offset; // pump secs - watch secs, when s_pump_clock_known
 
 // A short live gap (a couple of missed 5-min CGM cycles) while already connected: re-issue the same
 // RACP history read the connect-time backfill above uses, so the pump's own log fills the hole
 // instead of leaving a permanent break in the graph and the predictor's window. Cooldown bounds how
 // often this can fire so a run of gaps (a bad radio patch) doesn't turn into a RACP read on every
 // poll; REFILL_GAP_MIN is set above one missed cycle (5 min) with margin for poll jitter.
-#define REFILL_GAP_MIN 12
+#define REFILL_GAP_MIN       12
 #define REFILL_COOLDOWN_SECS (20 * 60)
-static uint32_t s_last_refill_ts;  // rtc seconds of the last live refill trigger; 0 = never
+static uint32_t s_last_refill_ts; // rtc seconds of the last live refill trigger; 0 = never
 // Off-scale side of the newest SG sample in the pump's event log: 0 none, 1 below, 2 above. The IDD
 // status only names the side sometimes, and in one capture never did over 15 minutes of 0 mg/dL
 // records, while the log held the below-range code for every one of them.
 static uint8_t s_hist_edge;
 static uint16_t s_backfill_raw[MINIMED_BACKFILL_MAX_POINTS];
-static uint8_t s_backfill_n;  // the newest MINIMED_BACKFILL_MAX_POINTS samples, oldest first
-static uint32_t s_backfill_secs[MINIMED_BACKFILL_MAX_POINTS];  // pump clock
+static uint8_t s_backfill_n; // the newest MINIMED_BACKFILL_MAX_POINTS samples, oldest first
+static uint32_t s_backfill_secs[MINIMED_BACKFILL_MAX_POINTS]; // pump clock
 static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
 // The insulin, meal and basal-rate events of the same read, for the predictor, oldest first.
 #define BACKFILL_MAX_EVENTS 64
 static uint8_t s_backfill_ne;
 static uint32_t s_backfill_esecs[BACKFILL_MAX_EVENTS];
 static float s_backfill_evalue[BACKFILL_MAX_EVENTS];
-static uint8_t s_backfill_ekind[BACKFILL_MAX_EVENTS];  // MinimedHistEventKind
+static uint8_t s_backfill_ekind[BACKFILL_MAX_EVENTS]; // MinimedHistEventKind
 
 // The glucose predictor's view of the last 4 hours. Filled from the backfill (which resets it, so
 // a reconnect cannot count an event twice) and then live; it predicts only once the backfill has
@@ -322,7 +322,7 @@ static uint8_t s_annunc_ids_next;
 static uint16_t s_last_offset;
 static bool s_have_offset;
 static uint32_t s_reading_ts;  // wall-clock time we first saw the current reading
-static int32_t s_reading_mgdl;  // its value, for checking the backfill anchor
+static int32_t s_reading_mgdl; // its value, for checking the backfill anchor
 
 // Decode an IEEE-11073 SFLOAT (MedFloat16) to an integer, scaled by `scale` before the exponent is
 // applied (e.g. scale=10 keeps one decimal digit instead of truncating it away). Returns INT32_MIN
@@ -333,12 +333,16 @@ static int32_t prv_decode_medfloat16_scaled(uint16_t raw, int32_t scale) {
     return INT32_MIN;
   }
   int exp = (raw >> 12) & 0x0F;
-  if (exp & 0x8) exp -= 0x10;
+  if (exp & 0x8)
+    exp -= 0x10;
   int32_t mant = raw & 0x0FFF;
-  if (mant & 0x800) mant -= 0x1000;
+  if (mant & 0x800)
+    mant -= 0x1000;
   int32_t val = mant * scale;
-  for (; exp > 0; exp--) val *= 10;
-  for (; exp < 0; exp++) val /= 10;
+  for (; exp > 0; exp--)
+    val *= 10;
+  for (; exp < 0; exp++)
+    val /= 10;
   return val;
 }
 
@@ -358,9 +362,9 @@ static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
   static const uint8_t up[] = {TREND_FLAT, TREND_SLANT_UP, TREND_UP, TREND_DOUBLE_UP};
   static const uint8_t down[] = {TREND_FLAT, TREND_SLANT_DOWN, TREND_DOWN, TREND_DOUBLE_DOWN};
   int32_t mag = (rate_tenths < 0) ? -rate_tenths : rate_tenths;
-  int32_t level = mag / 10;  // whole mg/dL/min
+  int32_t level = mag / 10; // whole mg/dL/min
   if (level > 3) {
-    level = 3;  // cap at the table size (DOUBLE_*, the pump's own worst-case bucket)
+    level = 3; // cap at the table size (DOUBLE_*, the pump's own worst-case bucket)
   }
   return (rate_tenths < 0) ? down[level] : up[level];
 }
@@ -369,9 +373,9 @@ static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
 // the golden reference's parse(): bits 0x80/0x40/0x20 gate optional Status/Cal-Temp/Warning
 // octets that, when present, each push the trend field's offset one byte further out -- it is
 // NOT always right after the mandatory 6-byte prefix.
-#define CGM_FLAG_STATUS_PRESENT 0x80
-#define CGM_FLAG_CAL_TEMP_PRESENT 0x40
-#define CGM_FLAG_WARNING_PRESENT 0x20
+#define CGM_FLAG_STATUS_PRESENT     0x80
+#define CGM_FLAG_CAL_TEMP_PRESENT   0x40
+#define CGM_FLAG_WARNING_PRESENT    0x20
 #define CGM_FLAG_TREND_INFO_PRESENT 0x01
 
 // Forward this reading's trend (or its absence) to the watchface. Called once per NEW reading,
@@ -379,10 +383,13 @@ static uint8_t prv_trend_arrow_from_rate_tenths(int32_t rate_tenths) {
 // re-announce a trend, and a reading that genuinely carries no trend field must clear any
 // previously shown arrow rather than let it go stale.
 static void prv_forward_trend(uint8_t flags) {
-  size_t off = 6;  // end of the mandatory prefix: size(1) flags(1) glucose(2) offset(2)
-  if (flags & CGM_FLAG_STATUS_PRESENT) off += 1;
-  if (flags & CGM_FLAG_CAL_TEMP_PRESENT) off += 1;
-  if (flags & CGM_FLAG_WARNING_PRESENT) off += 1;
+  size_t off = 6; // end of the mandatory prefix: size(1) flags(1) glucose(2) offset(2)
+  if (flags & CGM_FLAG_STATUS_PRESENT)
+    off += 1;
+  if (flags & CGM_FLAG_CAL_TEMP_PRESENT)
+    off += 1;
+  if (flags & CGM_FLAG_WARNING_PRESENT)
+    off += 1;
   if ((flags & CGM_FLAG_TREND_INFO_PRESENT) && s_rec_len >= off + 2) {
     uint16_t traw = (uint16_t)(s_rec[off] | (s_rec[off + 1] << 8));
     int32_t rate_tenths = prv_decode_medfloat16_scaled(traw, 10);
@@ -415,8 +422,8 @@ static void prv_parse_and_show(void) {
     minimed_sake_log("SG: no value (warmup?)");
     // Raw bytes to flash: which sentinel the pump uses (and that records flow at all) during
     // warm-up / transmitter charging is undocumented.
-    PBL_LOG_INFO("minimed: CGM sentinel rec %02x %02x %02x %02x %02x %02x",
-                 s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5]);
+    PBL_LOG_INFO("minimed: CGM sentinel rec %02x %02x %02x %02x %02x %02x", s_rec[0], s_rec[1],
+                 s_rec[2], s_rec[3], s_rec[4], s_rec[5]);
     return;
   }
   const uint16_t offset = (uint16_t)(s_rec[4] | (s_rec[5] << 8));
@@ -427,8 +434,8 @@ static void prv_parse_and_show(void) {
     // HW 2026-08-16 during SG-below and "sensor updating"; what SG-above sends is an assumption
     // (0 like below?), so a real HIGH capture is what would correct the branch below.
     // side: 0 = neither, 1 = SG below, 2 = SG above (max 7 conversions per PBL_LOG).
-    PBL_LOG_INFO("minimed: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d",
-                 s_rec[0], s_rec[1], s_rec[2], s_rec[3], s_rec[4], s_rec[5],
+    PBL_LOG_INFO("minimed: CGM edge rec %02x %02x %02x %02x %02x %02x side=%d", s_rec[0], s_rec[1],
+                 s_rec[2], s_rec[3], s_rec[4], s_rec[5],
                  minimed_status_sg_below() ? 1 : (minimed_status_sg_above() ? 2 : 0));
     PBL_LOG_INFO("minimed: SG history edge=%d", (int)s_hist_edge);
   }
@@ -473,7 +480,7 @@ static void prv_parse_and_show(void) {
 
   if (is_new) {
     const uint32_t prev_ts = s_reading_ts;
-    s_hist_edge = 0;  // a real number: the sensor is back in range
+    s_hist_edge = 0; // a real number: the sensor is back in range
     s_last_offset = offset;
     s_have_offset = true;
     s_reading_ts = (uint32_t)rtc_get_time();
@@ -535,9 +542,9 @@ static void prv_parse_iob(void) {
   snprintf(line, sizeof(line), "*** IOB %ld.%ld U ***", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_log(line);
 
-  char iob_str[12];  // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
+  char iob_str[12]; // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
   snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
-  minimed_sake_sender_send_iob(iob_str);  // forward to the watchface (no-op if it isn't running)
+  minimed_sake_sender_send_iob(iob_str); // forward to the watchface (no-op if it isn't running)
 
   // Total IOB: the pump's number counts boluses only, so add the basal insulin still active. Only
   // once the backfill has loaded the last hours of delivery, or the basal part would be missing.
@@ -559,7 +566,8 @@ static void prv_parse_iob(void) {
 static bool prv_annunc_already_notified(uint16_t id) {
   const size_t n = sizeof(s_annunc_ids) / sizeof(s_annunc_ids[0]);
   for (size_t i = 0; i < n; i++) {
-    if (s_annunc_ids[i] == id) return true;
+    if (s_annunc_ids[i] == id)
+      return true;
   }
   s_annunc_ids[s_annunc_ids_next++ % n] = id;
   return false;
@@ -573,12 +581,16 @@ static void prv_backfill_record(uint8_t rec_len) {
                               &ev)) {
     return;
   }
-  if (ev.kind == MinimedHistEventRef) return;
+  if (ev.kind == MinimedHistEventRef)
+    return;
   if (ev.kind == MinimedHistEventSg) {
-    if (ev.mgdl < 0) return;
+    if (ev.mgdl < 0)
+      return;
     if (s_backfill_n == MINIMED_BACKFILL_MAX_POINTS) {
-      memmove(s_backfill_secs, s_backfill_secs + 1, (s_backfill_n - 1) * sizeof(s_backfill_secs[0]));
-      memmove(s_backfill_mgdl, s_backfill_mgdl + 1, (s_backfill_n - 1) * sizeof(s_backfill_mgdl[0]));
+      memmove(s_backfill_secs, s_backfill_secs + 1,
+              (s_backfill_n - 1) * sizeof(s_backfill_secs[0]));
+      memmove(s_backfill_mgdl, s_backfill_mgdl + 1,
+              (s_backfill_n - 1) * sizeof(s_backfill_mgdl[0]));
       memmove(s_backfill_raw, s_backfill_raw + 1, (s_backfill_n - 1) * sizeof(s_backfill_raw[0]));
       s_backfill_n--;
     }
@@ -589,9 +601,12 @@ static void prv_backfill_record(uint8_t rec_len) {
     return;
   }
   if (s_backfill_ne == BACKFILL_MAX_EVENTS) {
-    memmove(s_backfill_esecs, s_backfill_esecs + 1, (s_backfill_ne - 1) * sizeof(s_backfill_esecs[0]));
-    memmove(s_backfill_evalue, s_backfill_evalue + 1, (s_backfill_ne - 1) * sizeof(s_backfill_evalue[0]));
-    memmove(s_backfill_ekind, s_backfill_ekind + 1, (s_backfill_ne - 1) * sizeof(s_backfill_ekind[0]));
+    memmove(s_backfill_esecs, s_backfill_esecs + 1,
+            (s_backfill_ne - 1) * sizeof(s_backfill_esecs[0]));
+    memmove(s_backfill_evalue, s_backfill_evalue + 1,
+            (s_backfill_ne - 1) * sizeof(s_backfill_evalue[0]));
+    memmove(s_backfill_ekind, s_backfill_ekind + 1,
+            (s_backfill_ne - 1) * sizeof(s_backfill_ekind[0]));
     s_backfill_ne--;
   }
   s_backfill_esecs[s_backfill_ne] = ev.secs;
@@ -601,7 +616,9 @@ static void prv_backfill_record(uint8_t rec_len) {
 }
 
 // Local-time offset of the watch, seconds east of UTC.
-static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now); }
+static int32_t prv_gmt_offset(uint32_t now) {
+  return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now);
+}
 
 // A falling low: score whether to treat, with the sugar_predictor/firmware/hypo.c model ported to
 // minimed_hypo.c. Fires at a decision point (minimed_hypo_should_evaluate, about 16 times a day on
@@ -614,7 +631,7 @@ static int32_t prv_gmt_offset(uint32_t now) { return (int32_t)(time_utc_to_local
 // The threshold is the watchface's default TREAT level (HYPO_TREAT_THRESHOLD_DEFAULT there, the
 // model's validated cut-off); the phone-set threshold only reaches the watchface. Switched on and
 // off by its own setting (SETTINGS_ALERT_HYPO_MODEL, "Alert on TREAT" on the Settings page).
-#define HYPO_ALERT_TREAT_PCT 32
+#define HYPO_ALERT_TREAT_PCT     32
 #define HYPO_ALERT_COOLDOWN_SECS (30 * 60)
 static bool s_hypo_alert_armed = true;
 static uint32_t s_hypo_alert_last;
@@ -659,26 +676,25 @@ static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bo
 
 static void prv_hypo_check(const MinimedPredictWindow *win) {
   if (!minimed_settings_hypo_enabled()) {
-    return;  // phone-disabled: skip the computation entirely, not just the send/display
+    return; // phone-disabled: skip the computation entirely, not just the send/display
   }
   const bool normal = win && minimed_hypo_should_evaluate(win);
   const bool early = win && !normal && minimed_hypo_falling_fast(win);
   if (!normal && !early) {
-    minimed_sake_sender_send_hypo(false, 0, 0);  // out of the falling-low regime: clear any banner
+    minimed_sake_sender_send_hypo(false, 0, 0); // out of the falling-low regime: clear any banner
     s_hypo_alert_armed = true;
     return;
   }
   MinimedHypoPrediction h;
   const RtcTicks hypo_start = rtc_get_ticks();
   minimed_hypo_eval(win, 0.3f, &h);
-  const uint32_t hypo_ms =
-      (uint32_t)(((rtc_get_ticks() - hypo_start) * 1000) / RTC_TICKS_HZ);
-  PBL_LOG_INFO("minimed: hypo%s treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
-               "%ld/%ld, %lums",
-               early ? " (early fast-fall)" : "", (int)(h.treat_pct + 0.5f),
-               (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
-               (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f),
-               (unsigned long)hypo_ms);
+  const uint32_t hypo_ms = (uint32_t)(((rtc_get_ticks() - hypo_start) * 1000) / RTC_TICKS_HZ);
+  PBL_LOG_INFO(
+      "minimed: hypo%s treat=%d pct, nadir %ld/%ld mg/dL (untreated/treated), mins<70 "
+      "%ld/%ld, %lums",
+      early ? " (early fast-fall)" : "", (int)(h.treat_pct + 0.5f),
+      (long)(h.nadir_untreated + 0.5f), (long)(h.nadir_treated + 0.5f),
+      (long)(h.mins_untreated + 0.5f), (long)(h.mins_treated + 0.5f), (unsigned long)hypo_ms);
   PBL_LOG_INFO("minimed: hypo p_low=%d pct p_severe=%d pct p_over=%d pct",
                (int)(h.p_low * 100.0f + 0.5f), (int)(h.p_severe * 100.0f + 0.5f),
                (int)(h.p_over * 100.0f + 0.5f));
@@ -702,23 +718,19 @@ static void prv_predict_and_send(void) {
   const uint32_t now = (uint32_t)rtc_get_time();
   const RtcTicks predict_start = rtc_get_ticks();
   const bool have_pred = s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p);
-  const uint32_t predict_ms =
-      (uint32_t)(((rtc_get_ticks() - predict_start) * 1000) / RTC_TICKS_HZ);
+  const uint32_t predict_ms = (uint32_t)(((rtc_get_ticks() - predict_start) * 1000) / RTC_TICKS_HZ);
   if (have_pred) {
     const int32_t pred = (int32_t)(p.mgdl + 0.5f);
-    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), low p=%d/1000 alarm=%d, "
-                 "%lums",
-                 (long)pred, (long)s_reading_mgdl, (long)(pred - s_reading_mgdl),
-                 (int)(p.low_prob * 1000.0f), (int)p.low_alarm, (unsigned long)predict_ms);
-    PBL_LOG_INFO("minimed: predict inputs bg=%u/48 cells, slope15=%+d.%d mg/dL/min, ins4h=%d.%02dU, "
-                 "carb4h=%dg, hour=%u",
-                 p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
-                 p.ins_cu / 100, p.ins_cu % 100, p.carb_g, p.hour);
+    PBL_LOG_INFO("minimed: predict %ld mg/dL in 30 min (now %ld, %+ld), %lums", (long)pred,
+                 (long)s_reading_mgdl, (long)(pred - s_reading_mgdl), (unsigned long)predict_ms);
+    PBL_LOG_INFO(
+        "minimed: predict inputs bg=%u/48 cells, slope15=%+d.%d mg/dL/min, ins4h=%d.%02dU, "
+        "carb4h=%dg, hour=%u",
+        p.bg_cells, p.slope_x10 / 10, (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10,
+        p.ins_cu / 100, p.ins_cu % 100, p.carb_g, p.hour);
     // The watch's log view keeps 31 characters after the time; the rest is cut there.
     char line[64];
-    snprintf(line, sizeof(line), "pred %ld %+ld low%d.%d%%", (long)pred,
-             (long)(pred - s_reading_mgdl), (int)(p.low_prob * 100.0f),
-             (int)(p.low_prob * 1000.0f) % 10);
+    snprintf(line, sizeof(line), "pred %ld %+ld", (long)pred, (long)(pred - s_reading_mgdl));
     minimed_sake_log(line);
     snprintf(line, sizeof(line), "in bg%u s%+d.%d i%d.%dU c%dg h%u", p.bg_cells, p.slope_x10 / 10,
              (p.slope_x10 < 0 ? -p.slope_x10 : p.slope_x10) % 10, p.ins_cu / 100,
@@ -740,17 +752,17 @@ static void prv_predict_reading(int32_t mgdl) {
   const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
   const uint32_t b = minimed_predict_score_rmse_x10(&s_pred_score, true);
   if (scored) {
-    PBL_LOG_INFO("minimed: predict score n=%lu err=%+ld rmse=%lu.%lu carry-forward=%lu.%lu mg/dL "
-                 "since start",
-                 (unsigned long)s_pred_score.count, (long)err, (unsigned long)(r / 10),
-                 (unsigned long)(r % 10), (unsigned long)(b / 10), (unsigned long)(b % 10));
+    PBL_LOG_INFO(
+        "minimed: predict score n=%lu err=%+ld rmse=%lu.%lu carry-forward=%lu.%lu mg/dL "
+        "since start",
+        (unsigned long)s_pred_score.count, (long)err, (unsigned long)(r / 10),
+        (unsigned long)(r % 10), (unsigned long)(b / 10), (unsigned long)(b % 10));
   }
   // Always show the score in the watch's log view, also before the first forecast is due.
   char line[64];
   if (s_pred_score.count == 0) {
     const uint32_t first_due = s_pred_score.pending ? s_pred_score.due[0] : 0;
-    const uint32_t wait_min =
-        first_due > s_reading_ts ? (first_due - s_reading_ts + 59) / 60 : 0;
+    const uint32_t wait_min = first_due > s_reading_ts ? (first_due - s_reading_ts + 59) / 60 : 0;
     snprintf(line, sizeof(line), "rmse n0, first in %lum", (unsigned long)wait_min);
   } else {
     snprintf(line, sizeof(line), "rmse%lu.%lu cf%lu.%lu n%lu err%+ld", (unsigned long)(r / 10),
@@ -785,7 +797,8 @@ static void prv_live_record(uint8_t rec_len) {
   MinimedHistInsulin ins;
   MinimedHistEvent ev = {0};
   if (minimed_history_parse_meal(s_hist, rec_len, &meal)) {
-    if (meal.grams == 0) return;  // the pump logs a Meal record for a bolus without carbs too
+    if (meal.grams == 0)
+      return; // the pump logs a Meal record for a bolus without carbs too
     PBL_LOG_INFO("minimed: meal %u g seq=%lu", (unsigned)meal.grams, (unsigned long)meal.seq);
     minimed_sake_sender_send_meal(meal.grams, (uint32_t)rtc_get_time());
     ev.kind = MinimedHistEventCarbs;
@@ -796,8 +809,8 @@ static void prv_live_record(uint8_t rec_len) {
       ev.kind = MinimedHistEventBasal;
       ev.value = ins.by_algorithm ? 0.0f : ins.amount;
     } else {
-      ev.kind = ins.kind == MinimedHistInsulinMicro ? MinimedHistEventMicro
-                                                    : MinimedHistEventInsulin;
+      ev.kind =
+          ins.kind == MinimedHistInsulinMicro ? MinimedHistEventMicro : MinimedHistEventInsulin;
       ev.value = ins.amount;
     }
     prv_predict_live_event(&ev);
@@ -808,16 +821,19 @@ static void prv_live_record(uint8_t rec_len) {
 // record that just arrived as a "0 mg/dL" marker may have been skipped for want of a side: read it
 // again so it is judged with the side known.
 static void prv_set_hist_edge(int edge) {
-  if (edge == s_hist_edge) return;
+  if (edge == s_hist_edge)
+    return;
   s_hist_edge = (uint8_t)edge;
   PBL_LOG_INFO("minimed: SG history edge -> %d", edge);
-  if (edge != 0) prv_request(PEND_CGM);
+  if (edge != 0)
+    prv_request(PEND_CGM);
 }
 
 // A live history record that may be an SG sample.
 static void prv_hist_sg_record(uint8_t rec_len) {
   MinimedHistSg sg;
-  if (!minimed_history_parse_sg(s_hist, rec_len, &sg)) return;
+  if (!minimed_history_parse_sg(s_hist, rec_len, &sg))
+    return;
   prv_set_hist_edge(minimed_history_sg_edge(sg.sg));
 }
 
@@ -828,24 +844,26 @@ static void prv_backfill_finish(void) {
   s_backfill_clock.have_ref = false;
   uint32_t newest = 0;
   for (uint8_t i = 0; i < s_backfill_n; i++) {
-    if (s_backfill_secs[i] > newest) newest = s_backfill_secs[i];
+    if (s_backfill_secs[i] > newest)
+      newest = s_backfill_secs[i];
   }
   // Pump clock minus watch clock. With a live reading, the newest sample is the reading already
   // shown; without one, the pump clock read for this backfill (see s_pump_clock_offset).
   const bool by_reading = s_have_offset;
-  const int32_t offset =
-      by_reading ? (int32_t)(newest - s_reading_ts) : (s_pump_clock_known ? s_pump_clock_offset : 0);
+  const int32_t offset = by_reading ? (int32_t)(newest - s_reading_ts)
+                                    : (s_pump_clock_known ? s_pump_clock_offset : 0);
   const bool anchored = by_reading || s_pump_clock_known;
   // The window ends at the anchor: the reading, or the pump's "now".
   const uint32_t window_end = by_reading ? newest : (uint32_t)((int32_t)rtc_get_time() + offset);
-  #define BF_TS(secs) ((uint32_t)((int32_t)(secs) - offset))
+#define BF_TS(secs) ((uint32_t)((int32_t)(secs) - offset))
   const uint32_t window_secs = BACKFILL_WINDOW_MIN * 60u;
 
   uint32_t ts[MINIMED_BACKFILL_MAX_POINTS];
   int32_t mgdl[MINIMED_BACKFILL_MAX_POINTS];
   uint8_t kept = 0;
   for (uint8_t i = 0; i < s_backfill_n && anchored; i++) {
-    if (s_backfill_secs[i] > window_end || window_end - s_backfill_secs[i] > window_secs) continue;
+    if (s_backfill_secs[i] > window_end || window_end - s_backfill_secs[i] > window_secs)
+      continue;
     ts[kept] = BF_TS(s_backfill_secs[i]);
     mgdl[kept] = s_backfill_mgdl[i];
     kept++;
@@ -861,13 +879,15 @@ static void prv_backfill_finish(void) {
       newest_edge = minimed_history_sg_edge(s_backfill_raw[i]);
     }
   }
-  if (s_backfill_n > 0) prv_set_hist_edge(newest_edge);
-  PBL_LOG_INFO("minimed: backfill %u of %u samples, %u events, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
-               (unsigned)kept, (unsigned)s_backfill_n, (unsigned)s_backfill_ne, (long)newest_mgdl,
-               (long)s_reading_mgdl,
-               !by_reading ? (anchored ? "pump-clock" : "NONE")
-                           : (newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH"),
-               (unsigned long)s_annunc_seq);
+  if (s_backfill_n > 0)
+    prv_set_hist_edge(newest_edge);
+  PBL_LOG_INFO(
+      "minimed: backfill %u of %u samples, %u events, newest sg=%ld cgm=%ld anchor=%s seq=%lu",
+      (unsigned)kept, (unsigned)s_backfill_n, (unsigned)s_backfill_ne, (long)newest_mgdl,
+      (long)s_reading_mgdl,
+      !by_reading ? (anchored ? "pump-clock" : "NONE")
+                  : (newest_mgdl == s_reading_mgdl ? "match" : "MISMATCH"),
+      (unsigned long)s_annunc_seq);
   if (kept > 0) {
     minimed_sake_sender_backfill_graph(ts, mgdl, kept);
   }
@@ -875,27 +895,36 @@ static void prv_backfill_finish(void) {
   // The predictor starts over from the log, so nothing is counted twice, then takes back the
   // reading the watch already had.
   minimed_predict_reset(&s_pred);
-  for (uint8_t i = 0; i < kept; i++) minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
+  for (uint8_t i = 0; i < kept; i++)
+    minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
   for (uint8_t i = 0; i < s_backfill_ne && anchored; i++) {
     if (s_backfill_esecs[i] > window_end || window_end - s_backfill_esecs[i] > window_secs) {
       continue;
     }
     const uint32_t ets = BF_TS(s_backfill_esecs[i]);
     switch ((MinimedHistEventKind)s_backfill_ekind[i]) {
-      case MinimedHistEventInsulin: minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]); break;
-      case MinimedHistEventMicro: minimed_predict_add_micro(&s_pred, ets, s_backfill_evalue[i]); break;
-      case MinimedHistEventBasal: minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]); break;
+      case MinimedHistEventInsulin:
+        minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]);
+        break;
+      case MinimedHistEventMicro:
+        minimed_predict_add_micro(&s_pred, ets, s_backfill_evalue[i]);
+        break;
+      case MinimedHistEventBasal:
+        minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]);
+        break;
       case MinimedHistEventCarbs:
         minimed_predict_add_carbs(&s_pred, ets, s_backfill_evalue[i]);
         // Every meal in the window, not just the newest -- the sender keeps all of them for the
         // watchface's meal list (KEY_MEAL_LIST) and the newest as the legacy single-meal fields.
         minimed_sake_sender_send_meal((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
         break;
-      default: break;
+      default:
+        break;
     }
   }
-  #undef BF_TS
-  if (s_have_offset) minimed_predict_add_bg(&s_pred, s_reading_ts, s_reading_mgdl);
+#undef BF_TS
+  if (s_have_offset)
+    minimed_predict_add_bg(&s_pred, s_reading_ts, s_reading_mgdl);
   s_pred_ready = kept > 0;
   prv_predict_and_send();
   s_backfill_n = 0;
@@ -910,10 +939,13 @@ static void prv_refill_if_gap(uint32_t prev_ts, uint32_t new_ts) {
   if (!s_annunc_have || !s_have_offset || !HAVE(MinimedChrIddRacp) || !HAVE(MinimedChrIddHistory)) {
     return;
   }
-  if (prev_ts == 0 || new_ts <= prev_ts) return;  // no prior reading yet, or a clock step back
+  if (prev_ts == 0 || new_ts <= prev_ts)
+    return; // no prior reading yet, or a clock step back
   const uint32_t gap_min = (new_ts - prev_ts) / 60;
-  if (gap_min < REFILL_GAP_MIN) return;
-  if (s_last_refill_ts != 0 && new_ts - s_last_refill_ts < REFILL_COOLDOWN_SECS) return;
+  if (gap_min < REFILL_GAP_MIN)
+    return;
+  if (s_last_refill_ts != 0 && new_ts - s_last_refill_ts < REFILL_COOLDOWN_SECS)
+    return;
   s_last_refill_ts = new_ts;
   s_backfill_wanted = true;
   char line[32];
@@ -938,7 +970,7 @@ static void prv_backfill_maybe_request(void) {
         PBL_LOG_INFO("minimed: pump clock read rc=0x%04x", status.code);
       }
     }
-    return;  // the read's result calls back in here; a later reading also will
+    return; // the read's result calls back in here; a later reading also will
   }
   s_backfill_done = true;
   s_backfill_wanted = true;
@@ -950,7 +982,7 @@ static void prv_pump_clock_read_done(const MinimedEvent *e) {
   if (!e->status.ok || !minimed_history_parse_current_time(e->data, e->len, &pump_secs)) {
     PBL_LOG_INFO("minimed: pump clock read failed err=0x%04x len=%u", e->status.code,
                  (unsigned)e->len);
-    return;  // the backfill waits for a live reading instead
+    return; // the backfill waits for a live reading instead
   }
   s_pump_clock_offset = (int32_t)(pump_secs - (uint32_t)rtc_get_time());
   s_pump_clock_known = true;
@@ -972,7 +1004,8 @@ static void prv_annunc_record_done(void) {
     return;
   }
   s_annunc_seen = true;
-  if (a.seq > s_annunc_seq) s_annunc_seq = a.seq;
+  if (a.seq > s_annunc_seq)
+    s_annunc_seq = a.seq;
   if (r != MinimedAnnuncRecordYes) {
     // "Other" is a valid record of another event type, and SG measurements, NGP reference times
     // and meals are all "Other". Feed the backfill and meal parsers first: logging these and
@@ -998,12 +1031,16 @@ static void prv_annunc_record_done(void) {
   PBL_LOG_INFO("minimed: annunc type=0x%03x id=%u status=0x%02x sil=%d seq=%lu base=%d",
                (unsigned)a.type, (unsigned)a.id, (unsigned)a.status, (int)a.silenced,
                (unsigned long)a.seq, (int)s_annunc_baseline);
-  if (s_annunc_baseline) return;
-  if (a.silenced) return;  // the pump raised it quietly (alert settings); mirror that choice
+  if (s_annunc_baseline)
+    return;
+  if (a.silenced)
+    return; // the pump raised it quietly (alert settings); mirror that choice
   // Phone-configured (Settings page -> KEY_SETTINGS_ALERTS -> minimed_settings), not a compile
   // flag: see minimed_settings.h.
-  if (!minimed_settings_alert_enabled(minimed_annunciation_is_low(a.type))) return;
-  if (prv_annunc_already_notified(a.id)) return;
+  if (!minimed_settings_alert_enabled(minimed_annunciation_is_low(a.type)))
+    return;
+  if (prv_annunc_already_notified(a.id))
+    return;
 
   char name[28];
   const char *known = minimed_annunciation_name(a.type);
@@ -1030,12 +1067,12 @@ static void prv_annunc_record_done(void) {
 
 // An inbound pump notification/indication on one of the characteristics the session uses.
 static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len, bool truncated) {
-  s_last_pump_traffic = (uint32_t)rtc_get_time();  // any pump notification = the link is alive
+  s_last_pump_traffic = (uint32_t)rtc_get_time(); // any pump notification = the link is alive
   if (truncated) {
     char line[32];
     snprintf(line, sizeof(line), "notify cut chr=%u", (unsigned)chr);
     minimed_sake_log(line);
-    return;  // a cut SAKE frame fails its MAC anyway
+    return; // a cut SAKE frame fails its MAC anyway
   }
   if (chr == MinimedChrSensorExpiration) {
     // Sensor-info probe: the pump pushes Time Of Sensor Expiration here (indicate-only char).
@@ -1054,7 +1091,7 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
       return;
     }
     if (s_rec_len + plain_len > sizeof(s_rec)) {
-      s_rec_len = 0;  // overflow guard; abandon this frame
+      s_rec_len = 0; // overflow guard; abandon this frame
     }
     memcpy(s_rec + s_rec_len, plain, plain_len);
     s_rec_len += plain_len;
@@ -1091,13 +1128,15 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
                  (unsigned)(flags >> 32), (unsigned)flags, (unsigned)plain_len);
 
     uint8_t req = 0;
-    if (flags & MINIMED_IDD_FLAG_NEW_CGM) req |= PEND_CGM;
+    if (flags & MINIMED_IDD_FLAG_NEW_CGM)
+      req |= PEND_CGM;
     if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_OPERATIONAL |
                  MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
       // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
       // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
       // the status pair (bridge bits + bit 1).
-      req |= (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) | (HAVE(MinimedChrIddSrcp) ? PEND_TAS : 0);
+      req |=
+          (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) | (HAVE(MinimedChrIddSrcp) ? PEND_TAS : 0);
     }
     if (HAVE(MinimedChrIddRacp) && HAVE(MinimedChrIddHistory) &&
         ((flags & (MINIMED_IDD_FLAG_ANNUNCIATION | MINIMED_IDD_FLAG_HISTORY_EVENT)) != 0 ||
@@ -1108,9 +1147,10 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
       req |= PEND_ANNUNC;
     }
     if (HAVE(MinimedChrIddSrcp)) {
-      if (flags & MINIMED_IDD_FLAG_IOB) req |= PEND_IOB;
+      if (flags & MINIMED_IDD_FLAG_IOB)
+        req |= PEND_IOB;
       s_reset_flags |= flags;
-      req |= PEND_RESET;  // no SRCP char would mean no reset possible; fallback still covers us
+      req |= PEND_RESET; // no SRCP char would mean no reset possible; fallback still covers us
     }
 
     if (!s_push_mode) {
@@ -1120,14 +1160,14 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
     // Re-arm the dead-man: an indication is proof push is alive.
     minimed_task_timer_start(TimerPoll, FALLBACK_AFTER_SECS * 1000);
 
-    if (req != 0) prv_request(req);
+    if (req != 0)
+      prv_request(req);
     return;
   }
   if (chr == MinimedChrCgmRacp) {
     // Success is the common case and stays quiet so the log keeps scrolling BG readings; only an
     // unexpected RACP response is worth a line.
-    bool ok = (len == sizeof(RACP_REPORT_SUCCESS) &&
-               memcmp(data, RACP_REPORT_SUCCESS, len) == 0);
+    bool ok = (len == sizeof(RACP_REPORT_SUCCESS) && memcmp(data, RACP_REPORT_SUCCESS, len) == 0);
     if (!ok) {
       minimed_sake_log("RACP unexpected resp");
     }
@@ -1153,14 +1193,15 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
       return;
     }
     if (s_hist_len + plain_len > sizeof(s_hist)) {
-      s_hist_len = 0;  // overflow guard; abandon this record
+      s_hist_len = 0; // overflow guard; abandon this record
     }
     memcpy(s_hist + s_hist_len, plain, plain_len);
     s_hist_len += plain_len;
     // No length prefix: a wire fragment shorter than the ATT cap ends the record (the pump fills
     // notifications to the cap; the bridge's reassembler uses the same rule). An exact-multiple
     // record is flushed at the RACP terminal instead.
-    if (len < minimed_transport_max_value_len()) prv_annunc_record_done();
+    if (len < minimed_transport_max_value_len())
+      prv_annunc_record_done();
     // A long catch-up read can outlive the 10 s op timer; each fragment is proof of progress.
     if (s_op == PEND_ANNUNC) {
       minimed_task_timer_start(TimerOpTimeout, OP_TIMEOUT_SECS * 1000);
@@ -1170,9 +1211,10 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
   if (chr == MinimedChrIddRacp) {
     // Plaintext terminal indication: 0f 0f 33 f0 = success, 0f 0f 33 06 = no records (an empty
     // window is a clean result, not an error).
-    if (s_hist_len != 0) prv_annunc_record_done();  // exact-multiple flush
-    const bool ok = (len >= 4 && data[0] == 0x0F && data[2] == 0x33 &&
-                     (data[3] == 0xF0 || data[3] == 0x06));
+    if (s_hist_len != 0)
+      prv_annunc_record_done(); // exact-multiple flush
+    const bool ok =
+        (len >= 4 && data[0] == 0x0F && data[2] == 0x33 && (data[3] == 0xF0 || data[3] == 0x06));
     if (!ok) {
       char line[32];
       snprintf(line, sizeof(line), "IDD RACP resp %02x%02x%02x%02x", len > 0 ? data[0] : 0,
@@ -1230,7 +1272,7 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
       return;
     }
     if (s_srcp_len + plain_len > sizeof(s_srcp)) {
-      s_srcp_len = 0;  // overflow guard; abandon this frame
+      s_srcp_len = 0; // overflow guard; abandon this frame
     }
     memcpy(s_srcp + s_srcp_len, plain, plain_len);
     s_srcp_len += plain_len;
@@ -1293,7 +1335,8 @@ static void prv_wd_timer(void) {
 // that failed leaves its struct invalid, and the mapping just skips its clauses.
 static void prv_status_publish_if_done(uint8_t completed_op) {
   const uint8_t other = (completed_op == PEND_STATUS) ? PEND_TAS : PEND_STATUS;
-  if (s_pending & other) return;
+  if (s_pending & other)
+    return;
   const uint32_t now = (uint32_t)rtc_get_time();
   minimed_status_update(&s_idd_st, &s_tas, now);
   char label[20];
@@ -1312,7 +1355,7 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
       // immediately, stamped now so the watchface shows a current "---" like the pump does,
       // instead of an old number with a climbing age. The next real reading overwrites it.
       minimed_sake_sender_send_bg("---", now);
-      s_last_bg_str[0] = '\0';  // no valid glucose: alert notifications drop the BG body
+      s_last_bg_str[0] = '\0'; // no valid glucose: alert notifications drop the BG body
     }
   }
   if (minimed_status_take_bg_became_valid()) {
@@ -1329,7 +1372,8 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
 // IDD Status (0x102) is a plain encrypted READ -- the one exchange that completes with its own
 // read result rather than via an indication.
 static void prv_idd_status_read_done(const MinimedEvent *e) {
-  if (s_op != PEND_STATUS) return;  // late/stale result; a newer op owns the buffers now
+  if (s_op != PEND_STATUS)
+    return; // late/stale result; a newer op owns the buffers now
   char line[32];
   if (e->status.ok && e->len > 0) {
     uint8_t plain[24];
@@ -1362,9 +1406,10 @@ static void prv_request(uint8_t mask) {
 
 // Encrypt and write an SRCP request (IOB, TAS, Reset Status). False: the op never started.
 static bool prv_srcp_write(const uint8_t *plain, uint16_t plain_len, const char *what) {
-  uint8_t enc[24];  // SeqCrypt appends a 1-byte counter + 2-byte MAC
+  uint8_t enc[24]; // SeqCrypt appends a 1-byte counter + 2-byte MAC
   uint16_t enc_len = 0;
-  if ((size_t)plain_len + 3 > sizeof(enc) || !minimed_sake_encrypt(plain, plain_len, enc, &enc_len)) {
+  if ((size_t)plain_len + 3 > sizeof(enc) ||
+      !minimed_sake_encrypt(plain, plain_len, enc, &enc_len)) {
     char line[32];
     snprintf(line, sizeof(line), "%s encrypt failed", what);
     minimed_sake_log(line);
@@ -1383,12 +1428,13 @@ static bool prv_srcp_write(const uint8_t *plain, uint16_t plain_len, const char 
 // then covers a whole indication burst). On a failed issue, complete immediately -- no
 // indication will terminate an exchange that never started.
 static void prv_dispatch_timer(void) {
-  if (s_op != 0) return;  // in flight; prv_op_complete re-kicks
+  if (s_op != 0)
+    return; // in flight; prv_op_complete re-kicks
   MinimedGattStatus status;
   if (s_pending & PEND_CGM) {
     s_pending &= ~PEND_CGM;
     s_op = PEND_CGM;
-    s_rec_len = 0;  // reassembly reset at issue time, not in a free-running poll
+    s_rec_len = 0; // reassembly reset at issue time, not in a free-running poll
     if (!minimed_transport_write(MinimedChrCgmRacp, RACP_REPORT_LAST_RECORD,
                                  sizeof(RACP_REPORT_LAST_RECORD), TagCgmRacpWrite, &status)) {
       prv_log_gatt_err("RACP", status, true);
@@ -1464,13 +1510,13 @@ static void prv_dispatch_timer(void) {
     memcpy(plain, SRCP_RESET_STATUS, sizeof(SRCP_RESET_STATUS));
     const uint16_t flags_len =
         minimed_idd_flags_encode(s_reset_flags, plain + sizeof(SRCP_RESET_STATUS));
-    s_reset_flags = 0;  // an indication landing mid-exchange starts a fresh union
+    s_reset_flags = 0; // an indication landing mid-exchange starts a fresh union
     if (!prv_srcp_write(plain, sizeof(SRCP_RESET_STATUS) + flags_len, "rst")) {
       prv_op_complete();
       return;
     }
   } else {
-    return;  // nothing pending
+    return; // nothing pending
   }
   minimed_task_timer_start(TimerOpTimeout, OP_TIMEOUT_SECS * 1000);
 }
@@ -1487,7 +1533,7 @@ static void prv_op_timeout_timer(void) {
   s_hist_len = 0;
   s_op = 0;
   if (op == PEND_ANNUNC && s_backfill_run) {
-    prv_backfill_finish();  // keep what arrived; the samples read so far are still good
+    prv_backfill_finish(); // keep what arrived; the samples read so far are still good
   }
   if (op == PEND_STATUS || op == PEND_TAS) {
     // The timed-out read stays invalid; publish whatever the pair's other half delivered.
@@ -1503,17 +1549,22 @@ static void prv_op_timeout_timer(void) {
 // A write the session answers only on failure: its exchange ends with an indication, which no
 // failed write will produce, so skip the exchange now rather than stalling until the op timeout.
 static void prv_write_done(const MinimedEvent *e) {
-  if (e->status.ok) return;
+  if (e->status.ok)
+    return;
   if (e->tag == TagCgmRacpWrite) {
     prv_log_gatt_err("RACP wr", e->status, false);
-    if (s_op == PEND_CGM) prv_op_complete();
+    if (s_op == PEND_CGM)
+      prv_op_complete();
   } else if (e->tag == TagIddRacpWrite) {
     prv_log_gatt_err("IDD RACP wr", e->status, false);
-    if (s_op == PEND_ANNUNC) prv_op_complete();
+    if (s_op == PEND_ANNUNC)
+      prv_op_complete();
   } else if (e->tag == TagSrcpWrite) {
     prv_log_gatt_err("SRCP wr", e->status, false);
-    if (s_op == PEND_TAS) prv_status_publish_if_done(PEND_TAS);
-    if (s_op == PEND_IOB || s_op == PEND_RESET || s_op == PEND_TAS) prv_op_complete();
+    if (s_op == PEND_TAS)
+      prv_status_publish_if_done(PEND_TAS);
+    if (s_op == PEND_IOB || s_op == PEND_RESET || s_op == PEND_TAS)
+      prv_op_complete();
   }
 }
 
@@ -1540,7 +1591,7 @@ static char s_devinfo_line[80];
 
 static void prv_devinfo_read_next(void) {
   if (s_devinfo_idx >= DEVINFO_CHR_COUNT) {
-    s_devinfo_read = true;  // whole sweep done; latch so it stays once per boot
+    s_devinfo_read = true; // whole sweep done; latch so it stays once per boot
     return;
   }
   const uint8_t idx = s_devinfo_idx;
@@ -1554,10 +1605,11 @@ static void prv_devinfo_read_next(void) {
 
 static void prv_devinfo_read_done(const MinimedEvent *e) {
   const uint8_t idx = s_devinfo_idx;
-  if (idx >= DEVINFO_CHR_COUNT || e->chr != s_devinfo_chrs[idx].chr) return;
-  s_devinfo_idx = idx + 1;  // advance whatever happened: a field the pump won't give is skipped
+  if (idx >= DEVINFO_CHR_COUNT || e->chr != s_devinfo_chrs[idx].chr)
+    return;
+  s_devinfo_idx = idx + 1; // advance whatever happened: a field the pump won't give is skipped
   if (!e->status.ok || e->len < 1) {
-    if (e->status.code != 0) {  // code 0: the pump just doesn't have it
+    if (e->status.code != 0) { // code 0: the pump just doesn't have it
       snprintf(s_devinfo_line, sizeof(s_devinfo_line), "%s read err=0x%04x",
                s_devinfo_chrs[idx].name, e->status.code);
       PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
@@ -1575,7 +1627,8 @@ static void prv_devinfo_read_done(const MinimedEvent *e) {
       unsigned room = sizeof(s_devinfo_line) - off - 1;
       uint16_t len = e->len > room ? (uint16_t)room : e->len;
       memcpy(&s_devinfo_line[off], e->data, len);
-      while (len > 0 && s_devinfo_line[off + len - 1] == '\0') len--;  // trim a trailing NUL
+      while (len > 0 && s_devinfo_line[off + len - 1] == '\0')
+        len--; // trim a trailing NUL
       s_devinfo_line[off + len] = '\0';
     }
     PBL_LOG_INFO("minimed: pump %s", s_devinfo_line);
@@ -1623,11 +1676,16 @@ static void prv_battery_timer(void) {
 
 static const char *prv_sensorinfo_step_name(uint8_t step) {
   switch (step) {
-    case SI_STEP_RUN_TIME: return "sess run";
-    case SI_STEP_EXPIRATION: return "sensor exp";
-    case SI_STEP_IDD_FEATURES: return "idd feat";
-    case SI_STEP_SESSION_START: return "sess start";
-    default: return "?";
+    case SI_STEP_RUN_TIME:
+      return "sess run";
+    case SI_STEP_EXPIRATION:
+      return "sensor exp";
+    case SI_STEP_IDD_FEATURES:
+      return "idd feat";
+    case SI_STEP_SESSION_START:
+      return "sess start";
+    default:
+      return "?";
   }
 }
 
@@ -1644,7 +1702,8 @@ static size_t prv_append_hex(char *dst, size_t cap, size_t off, const uint8_t *d
 // An encrypted characteristic shows up as a decrypt success; a plaintext one as a decrypt
 // failure with sane raw bytes. Two short lines, not one: long flash-log records get split.
 static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n) {
-  size_t off = (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s raw=", name);
+  size_t off =
+      (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s raw=", name);
   off = prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, raw, n);
   PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
   uint8_t plain[24];
@@ -1682,8 +1741,8 @@ static void prv_sensorinfo_read(uint8_t step) {
       prv_sensorinfo_read(step + 1);
       return;
     }
-    started = minimed_transport_subscribe(MinimedChrSensorExpiration, true, TagSensorExpSub,
-                                          &status);
+    started =
+        minimed_transport_subscribe(MinimedChrSensorExpiration, true, TagSensorExpSub, &status);
   } else {
     const MinimedChr chr =
         (step == SI_STEP_IDD_FEATURES) ? MinimedChrIddFeatures : MinimedChrSessionRunTime;
@@ -1693,7 +1752,7 @@ static void prv_sensorinfo_read(uint8_t step) {
     snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s rc=0x%04x",
              prv_sensorinfo_step_name(step), status.code);
     minimed_sake_log(s_sensorinfo_line);
-    prv_sensorinfo_read(step + 1);  // keep sweeping; failure of one step is not fatal
+    prv_sensorinfo_read(step + 1); // keep sweeping; failure of one step is not fatal
   }
 }
 
@@ -1723,13 +1782,15 @@ static void prv_sensorinfo_done(const MinimedEvent *e) {
 }
 
 static void prv_sensorinfo_timer(void) {
-  if (s_sensorinfo_done) return;
+  if (s_sensorinfo_done)
+    return;
   minimed_sake_log("sensor probe start");
   prv_sensorinfo_read(SI_STEP_RUN_TIME);
 }
 
 static void prv_poll_timer(void) {
-  if (s_push_mode) minimed_sake_log("fallback poll");
+  if (s_push_mode)
+    minimed_sake_log("fallback poll");
   // Layer 4 diagnostic: does the stack still believe the pump link is connected? Runs on the same
   // cadence as the poll. If the pump has gone silent but the link is still there (and MTU is
   // sane), the silence is the pump not pushing, not a dropped link. If it is gone, the stack
@@ -1757,28 +1818,36 @@ static void prv_poll_timer(void) {
 // annunciation; "Opcode not supported" (0x70) means it is not. The bogus ID is what keeps this a
 // pure probe: no real alarm is ever snoozed or dismissed. The current annunciation is read and
 // logged first, for the instance ID a later real Confirm would use.
-#define ANNUNC_PROBE_DELAY_SECS 45
+#define ANNUNC_PROBE_DELAY_SECS   45
 #define ANNUNC_PROBE_TIMEOUT_SECS 10
-#define ANNUNC_PROBE_INSTANCE 0xFFFF
-#define IDD_CMD_RESPONSE_CODE 0x0F55
-#define IDD_CMD_SNOOZE 0x0F69
-#define IDD_CMD_SNOOZE_RESPONSE 0x0F96
-#define IDD_CMD_CONFIRM 0x0F99
-#define IDD_CMD_CONFIRM_RESPONSE 0x0FA5
-static bool s_annunc_probe_done;       // once per boot, like the devinfo sweep
-static uint16_t s_annunc_probe_wait;   // the command awaiting its answer; 0 = none
+#define ANNUNC_PROBE_INSTANCE     0xFFFF
+#define IDD_CMD_RESPONSE_CODE     0x0F55
+#define IDD_CMD_SNOOZE            0x0F69
+#define IDD_CMD_SNOOZE_RESPONSE   0x0F96
+#define IDD_CMD_CONFIRM           0x0F99
+#define IDD_CMD_CONFIRM_RESPONSE  0x0FA5
+static bool s_annunc_probe_done;     // once per boot, like the devinfo sweep
+static uint16_t s_annunc_probe_wait; // the command awaiting its answer; 0 = none
 static char s_annunc_probe_line[96];
 
 static const char *prv_idd_response_name(uint8_t code) {
   switch (code) {
-    case 0x0F: return "success";
-    case 0x70: return "opcode not supported";
-    case 0x71: return "invalid operand";
-    case 0x72: return "procedure not completed";
-    case 0x73: return "parameter out of range";
-    case 0x74: return "procedure not applicable (opcode implemented)";
-    case 0x75: return "plausibility check failed";
-    default: return "?";
+    case 0x0F:
+      return "success";
+    case 0x70:
+      return "opcode not supported";
+    case 0x71:
+      return "invalid operand";
+    case 0x72:
+      return "procedure not completed";
+    case 0x73:
+      return "parameter out of range";
+    case 0x74:
+      return "procedure not applicable (opcode implemented)";
+    case 0x75:
+      return "plausibility check failed";
+    default:
+      return "?";
   }
 }
 
@@ -1794,8 +1863,10 @@ static void prv_annunc_probe_finish(void) {
 }
 
 static void prv_annunc_probe_send(uint16_t op) {
-  const uint8_t plain[] = {(uint8_t)op, (uint8_t)(op >> 8), (uint8_t)ANNUNC_PROBE_INSTANCE,
-                           (uint8_t)(ANNUNC_PROBE_INSTANCE >> 8)};
+  const uint8_t plain[] = {
+    (uint8_t)op, (uint8_t)(op >> 8), (uint8_t)ANNUNC_PROBE_INSTANCE,
+    (uint8_t)(ANNUNC_PROBE_INSTANCE >> 8)
+  };
   uint8_t enc[sizeof(plain) + 3];
   uint16_t enc_len = 0;
   MinimedGattStatus status = {0};
@@ -1829,19 +1900,20 @@ static void prv_annunc_probe_notify(const uint8_t *data, uint16_t len) {
   uint8_t plain[24];
   uint16_t n = 0;
   if (!minimed_sake_decrypt(data, len, plain, sizeof(plain), &n)) {
-    PBL_LOG_INFO("minimed: annunc probe: undecryptable command response (%u bytes)",
-                 (unsigned)len);
+    PBL_LOG_INFO("minimed: annunc probe: undecryptable command response (%u bytes)", (unsigned)len);
     return;
   }
-  size_t off = (size_t)snprintf(s_annunc_probe_line, sizeof(s_annunc_probe_line),
-                                "annunc probe resp ");
+  size_t off =
+      (size_t)snprintf(s_annunc_probe_line, sizeof(s_annunc_probe_line), "annunc probe resp ");
   off = prv_append_hex(s_annunc_probe_line, sizeof(s_annunc_probe_line), off, plain, n);
   PBL_LOG_INFO("minimed: %s", s_annunc_probe_line);
-  if (n < 2 || s_annunc_probe_wait == 0) return;
+  if (n < 2 || s_annunc_probe_wait == 0)
+    return;
   const uint16_t op = (uint16_t)(plain[0] | (plain[1] << 8));
   if (op == IDD_CMD_RESPONSE_CODE && n >= 5) {
     const uint16_t req = (uint16_t)(plain[2] | (plain[3] << 8));
-    if (req != s_annunc_probe_wait) return;
+    if (req != s_annunc_probe_wait)
+      return;
     PBL_LOG_INFO("minimed: annunc probe %s -> 0x%02x %s", prv_probe_cmd_name(req), plain[4],
                  prv_idd_response_name(plain[4]));
     char line[40];
@@ -1864,7 +1936,8 @@ static void prv_annunc_probe_timer(void) {
     prv_annunc_probe_next();
     return;
   }
-  if (s_annunc_probe_done) return;
+  if (s_annunc_probe_done)
+    return;
   if (!HAVE(MinimedChrIddCommandCp) || !HAVE(MinimedChrIddCommandData)) {
     PBL_LOG_INFO("minimed: annunc probe: no IDD Command CP/Data characteristic");
     s_annunc_probe_done = true;
@@ -1905,8 +1978,8 @@ static void prv_annunc_probe_done(const MinimedEvent *e) {
       if (e->status.ok && minimed_sake_decrypt(e->data, e->len, plain, sizeof(plain), &n) &&
           n >= 6) {
         // Flags(1) | instance ID(2) | type(2, low 12 bits) | status(1): IDD Annunciation Status.
-        PBL_LOG_INFO("minimed: annunc status flags=%02x id=%u type=0x%03x status=0x%02x",
-                     plain[0], (unsigned)(plain[1] | (plain[2] << 8)),
+        PBL_LOG_INFO("minimed: annunc status flags=%02x id=%u type=0x%03x status=0x%02x", plain[0],
+                     (unsigned)(plain[1] | (plain[2] << 8)),
                      (unsigned)((plain[3] | (plain[4] << 8)) & 0x0fff), plain[5]);
       } else {
         PBL_LOG_INFO("minimed: annunc status read failed err=0x%04x len=%u", e->status.code,
@@ -1986,7 +2059,7 @@ static void prv_sub_annunc(void) {
 static void prv_setup_idd(void) {
   if (!HAVE(MinimedChrIddSrcp)) {
     minimed_sake_log("no IDD SRCP chr");
-    prv_sub_annunc();  // BG still works without IOB
+    prv_sub_annunc(); // BG still works without IOB
     return;
   }
   MinimedGattStatus status;
@@ -2048,7 +2121,7 @@ static void prv_setup_done(const MinimedEvent *e) {
       if (!e->status.ok) {
         snprintf(line, sizeof(line), "SRCP sub err=0x%04x", e->status.code);
         minimed_sake_log(line);
-        s_have[MinimedChrIddSrcp] = false;  // give up on IOB, keep BG
+        s_have[MinimedChrIddSrcp] = false; // give up on IOB, keep BG
       }
       prv_sub_annunc();
       return;
@@ -2102,12 +2175,12 @@ static void prv_link_up(void) {
   minimed_task_timer_stop(TimerDispatch);
   minimed_task_timer_stop(TimerOpTimeout);
   s_link_up = true;
-  s_last_pump_traffic = (uint32_t)rtc_get_time();  // fresh baseline; pump just connected
+  s_last_pump_traffic = (uint32_t)rtc_get_time(); // fresh baseline; pump just connected
   minimed_task_timer_start(TimerWatchdog, 60 * 1000);
   minimed_task_timer_start(TimerHeap, HEAP_LOG_INTERVAL_SECS * 1000);
-  memset(s_have, 0, sizeof(s_have));  // re-discovered per connection; a stale one could alias
+  memset(s_have, 0, sizeof(s_have)); // re-discovered per connection; a stale one could alias
   s_sensorinfo_done = false;
-  s_annunc_probe_wait = 0;  // a probe command cut off by the disconnect gets no answer now
+  s_annunc_probe_wait = 0; // a probe command cut off by the disconnect gets no answer now
   s_rec_len = 0;
   s_srcp_len = 0;
   s_hist_len = 0;
@@ -2125,14 +2198,14 @@ static void prv_link_up(void) {
   s_backfill_clock.have_ref = false;
   s_backfill_n = 0;
   s_backfill_ne = 0;
-  s_pump_clock_known = false;  // re-read per connection, like everything else here
+  s_pump_clock_known = false; // re-read per connection, like everything else here
   s_pump_clock_requested = false;
-  s_pred_ready = false;  // primed again by this connection's backfill
+  s_pred_ready = false; // primed again by this connection's backfill
   s_hist_edge = 0;
   s_pending = 0;
   s_op = 0;
   s_reset_flags = 0;
-  s_push_mode = false;  // a reconnect re-subscribes and must re-prove push
+  s_push_mode = false; // a reconnect re-subscribes and must re-prove push
   s_idd_st.valid = false;
   s_tas.valid = false;
   // minimed_status.c state deliberately survives the reconnect (a warm-up countdown keeps
@@ -2154,22 +2227,42 @@ static void prv_link_down(void) {
 }
 
 static void prv_timer(uint8_t timer) {
-  if (!s_link_up) return;  // a timer that fired just before the link went down
+  if (!s_link_up)
+    return; // a timer that fired just before the link went down
   switch (timer) {
     case TimerKickoff:
       minimed_sake_log("discovering pump svcs...");
       minimed_transport_discover();
       break;
-    case TimerPoll: prv_poll_timer(); break;
-    case TimerWatchdog: prv_wd_timer(); break;
-    case TimerDispatch: prv_dispatch_timer(); break;
-    case TimerOpTimeout: prv_op_timeout_timer(); break;
-    case TimerBattery: prv_battery_timer(); break;
-    case TimerHeap: prv_heap_timer(); break;
-    case TimerDevinfo: prv_devinfo_timer(); break;
-    case TimerSensorInfo: prv_sensorinfo_timer(); break;
-    case TimerAnnuncProbe: prv_annunc_probe_timer(); break;
-    default: break;
+    case TimerPoll:
+      prv_poll_timer();
+      break;
+    case TimerWatchdog:
+      prv_wd_timer();
+      break;
+    case TimerDispatch:
+      prv_dispatch_timer();
+      break;
+    case TimerOpTimeout:
+      prv_op_timeout_timer();
+      break;
+    case TimerBattery:
+      prv_battery_timer();
+      break;
+    case TimerHeap:
+      prv_heap_timer();
+      break;
+    case TimerDevinfo:
+      prv_devinfo_timer();
+      break;
+    case TimerSensorInfo:
+      prv_sensorinfo_timer();
+      break;
+    case TimerAnnuncProbe:
+      prv_annunc_probe_timer();
+      break;
+    default:
+      break;
   }
 }
 
@@ -2180,9 +2273,15 @@ static void prv_gatt_done(const MinimedEvent *e) {
     case TagSrcpWrite:
       prv_write_done(e);
       break;
-    case TagIddStatusRead: prv_idd_status_read_done(e); break;
-    case TagDevinfoRead: prv_devinfo_read_done(e); break;
-    case TagBatteryRead: prv_battery_read_done(e); break;
+    case TagIddStatusRead:
+      prv_idd_status_read_done(e);
+      break;
+    case TagDevinfoRead:
+      prv_devinfo_read_done(e);
+      break;
+    case TagBatteryRead:
+      prv_battery_read_done(e);
+      break;
     case TagSensorInfoRead:
     case TagSensorExpSub:
     case TagSessionStartRead:
@@ -2194,25 +2293,46 @@ static void prv_gatt_done(const MinimedEvent *e) {
     case TagProbeWrite:
       prv_annunc_probe_done(e);
       break;
-    case TagPumpClockRead: prv_pump_clock_read_done(e); break;
-    default: prv_setup_done(e); break;
+    case TagPumpClockRead:
+      prv_pump_clock_read_done(e);
+      break;
+    default:
+      prv_setup_done(e);
+      break;
   }
 }
 
-void minimed_session_init(void) { minimed_settings_init(); }
+void minimed_session_init(void) {
+  minimed_settings_init();
+}
 
 void minimed_session_handle_event(const MinimedEvent *e) {
   switch ((MinimedEventType)e->type) {
-    case MinimedEventLinkUp: prv_link_up(); return;
-    case MinimedEventLinkDown: prv_link_down(); return;
-    case MinimedEventTimer: prv_timer(e->tag); return;
-    default: break;
+    case MinimedEventLinkUp:
+      prv_link_up();
+      return;
+    case MinimedEventLinkDown:
+      prv_link_down();
+      return;
+    case MinimedEventTimer:
+      prv_timer(e->tag);
+      return;
+    default:
+      break;
   }
-  if (!s_link_up) return;  // a result from a link that is already gone
+  if (!s_link_up)
+    return; // a result from a link that is already gone
   switch ((MinimedEventType)e->type) {
-    case MinimedEventDiscovered: prv_discovered(); break;
-    case MinimedEventNotify: prv_handle_notify((MinimedChr)e->chr, e->data, e->len, e->truncated); break;
-    case MinimedEventGattDone: prv_gatt_done(e); break;
-    default: break;
+    case MinimedEventDiscovered:
+      prv_discovered();
+      break;
+    case MinimedEventNotify:
+      prv_handle_notify((MinimedChr)e->chr, e->data, e->len, e->truncated);
+      break;
+    case MinimedEventGattDone:
+      prv_gatt_done(e);
+      break;
+    default:
+      break;
   }
 }
