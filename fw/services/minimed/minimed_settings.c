@@ -21,6 +21,12 @@ static const char s_set_started_key[] = "setStarted";
 static const char s_set_notified_key[] = "setNotified";
 static uint32_t s_set_started_at;
 static uint32_t s_set_last_notification_day;
+static const char s_sensor_start_key[] = "sensorStart";
+static const char s_sensor_duration_key[] = "sensorDuration";
+static const char s_sensor_notified_key[] = "sensorNotified";
+static uint32_t s_sensor_start;
+static uint16_t s_sensor_duration;
+static uint8_t s_sensor_notified;
 
 // Default until the watchface's first announcement carries a real value: low-BG alerts only,
 // matching the maintainer's stated preference (issue #15) rather than the old MINIMED_ALERT_POPUPS
@@ -47,6 +53,12 @@ void minimed_settings_init(void) {
                     sizeof(s_set_started_at));
   settings_file_get(&fd, s_set_notified_key, sizeof(s_set_notified_key),
                     &s_set_last_notification_day, sizeof(s_set_last_notification_day));
+  settings_file_get(&fd, s_sensor_start_key, sizeof(s_sensor_start_key), &s_sensor_start,
+                    sizeof(s_sensor_start));
+  settings_file_get(&fd, s_sensor_duration_key, sizeof(s_sensor_duration_key),
+                    &s_sensor_duration, sizeof(s_sensor_duration));
+  settings_file_get(&fd, s_sensor_notified_key, sizeof(s_sensor_notified_key),
+                    &s_sensor_notified, sizeof(s_sensor_notified));
   settings_file_close(&fd);
 }
 
@@ -141,4 +153,44 @@ void minimed_settings_set_set_reminder(uint32_t set_started_at, uint32_t last_no
   s_set_started_at = set_started_at;
   s_set_last_notification_day = last_notification_day;
   launcher_task_add_callback(prv_store_set_reminder_cb, NULL);
+}
+
+static void prv_store_sensor_reminder_cb(void *unused) {
+  SettingsFile fd;
+  if (settings_file_open(&fd, MINIMED_SETTINGS_FILE, MINIMED_SETTINGS_MAX_SIZE) != S_SUCCESS) {
+    PBL_LOG_WRN("minimed: sensor reminder persist open fail");
+    return;
+  }
+  const status_t start_rc = settings_file_set(&fd, s_sensor_start_key, sizeof(s_sensor_start_key),
+                                              &s_sensor_start, sizeof(s_sensor_start));
+  const status_t duration_rc =
+      settings_file_set(&fd, s_sensor_duration_key, sizeof(s_sensor_duration_key),
+                        &s_sensor_duration, sizeof(s_sensor_duration));
+  const status_t notified_rc =
+      settings_file_set(&fd, s_sensor_notified_key, sizeof(s_sensor_notified_key),
+                        &s_sensor_notified, sizeof(s_sensor_notified));
+  if (start_rc != S_SUCCESS || duration_rc != S_SUCCESS || notified_rc != S_SUCCESS) {
+    PBL_LOG_WRN("minimed: sensor reminder persist set fail");
+  }
+  settings_file_close(&fd);
+}
+
+void minimed_settings_get_sensor_reminder(uint32_t *session_start, uint16_t *duration_minutes,
+                                          bool *notified) {
+  *session_start = s_sensor_start;
+  *duration_minutes = s_sensor_duration;
+  *notified = s_sensor_notified != 0;
+}
+
+void minimed_settings_set_sensor_reminder(uint32_t session_start, uint16_t duration_minutes,
+                                          bool notified) {
+  const uint8_t notified_value = notified ? 1 : 0;
+  if (session_start == s_sensor_start && duration_minutes == s_sensor_duration &&
+      notified_value == s_sensor_notified) {
+    return;
+  }
+  s_sensor_start = session_start;
+  s_sensor_duration = duration_minutes;
+  s_sensor_notified = notified_value;
+  launcher_task_add_callback(prv_store_sensor_reminder_cb, NULL);
 }

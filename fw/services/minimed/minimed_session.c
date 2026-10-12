@@ -20,6 +20,7 @@
 #include "minimed_sake_sender.h"
 #include "minimed_settings.h"
 #include "minimed_status.h"
+#include "minimed_sensor_reminder.h"
 #include "minimed_set_reminder.h"
 #include "minimed_task.h"
 #include "minimed_transport.h"
@@ -70,6 +71,7 @@ enum {
   TagSensorInfoRead,
   TagSensorExpSub,
   TagSessionStartRead,
+  TagSensorStartRead, // PEND_SENSOR_START: re-read the session start after a sensor change
   TagProbeSubData,
   TagProbeSubCp,
   TagProbeStatusRead,
@@ -119,6 +121,7 @@ static bool s_push_mode; // false until the first indication of this connection 
 #define PEND_STATUS 0x08
 #define PEND_TAS    0x10
 #define PEND_ANNUNC 0x20
+#define PEND_SENSOR_START 0x40
 static uint8_t s_pending;
 static uint8_t s_op;
 static uint64_t s_reset_flags; // union of received 0x101 flags awaiting a Reset Status write
@@ -180,12 +183,17 @@ static void prv_status_publish_if_done(uint8_t completed_op);
 
 #define REMINDER_CHECK_SECS 60
 static MinimedSetReminder s_set_reminder;
+static MinimedSensorReminder s_sensor_reminder;
+static bool s_sensor_session_current;
 static bool s_watch_status_sent;
 static char s_watch_status[20];
 static uint32_t s_watch_status_start;
 static uint32_t s_watch_status_end;
 static void prv_sensorinfo_read(uint8_t step);
-static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n);
+static void prv_sensorinfo_log_raw(const char *name, const uint8_t *raw, uint16_t n);
+static bool prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n,
+                                     uint8_t *plain_out, uint16_t *plain_len_out);
+static void prv_sensor_start_update(const uint8_t *plain, uint16_t len);
 static void prv_annunc_probe_notify(const uint8_t *data, uint16_t len);
 
 // True between LinkUp and LinkDown: events for a link that is gone are dropped.
@@ -1084,8 +1092,15 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
     return; // a cut SAKE frame fails its MAC anyway
   }
   if (chr == MinimedChrSensorExpiration) {
-    // Sensor-info probe: the pump pushes Time Of Sensor Expiration here (indicate-only char).
-    prv_sensorinfo_log_value("sensor exp", data, len);
+    // The pump pushes Time Of Sensor Expiration here (indicate-only char).
+    uint16_t minutes;
+    prv_sensorinfo_log_raw("sensor exp", data, len);
+    if (minimed_sensor_reminder_parse_expiration(data, len, &minutes) &&
+        minimed_sensor_reminder_set_expiration(&s_sensor_reminder, minutes)) {
+      minimed_settings_set_sensor_reminder(s_sensor_reminder.session_start,
+                                           s_sensor_reminder.expiration_minutes,
+                                           s_sensor_reminder.notified);
+    }
     return;
   }
   if (chr == MinimedChrIddCommandCp || chr == MinimedChrIddCommandData) {
@@ -1140,12 +1155,17 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
     if (flags & MINIMED_IDD_FLAG_NEW_CGM)
       req |= PEND_CGM;
     if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_OPERATIONAL |
-                 MINIMED_IDD_FLAG_THERAPY_ALGORITHM)) {
+                 MINIMED_IDD_FLAG_THERAPY_ALGORITHM | MINIMED_IDD_FLAG_SENSOR_STATUS_MESSAGE |
+                 MINIMED_IDD_FLAG_SENSOR_CHANGED)) {
       // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
       // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
       // the status pair (bridge bits + bit 1).
       req |=
           (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) | (HAVE(MinimedChrIddSrcp) ? PEND_TAS : 0);
+    }
+    if ((flags & (MINIMED_IDD_FLAG_SENSOR_STATUS_MESSAGE | MINIMED_IDD_FLAG_SENSOR_CHANGED)) &&
+        HAVE(MinimedChrCgmSessionStart)) {
+      req |= PEND_SENSOR_START;
     }
     if (HAVE(MinimedChrIddRacp) && HAVE(MinimedChrIddHistory) &&
         ((flags & (MINIMED_IDD_FLAG_ANNUNCIATION | MINIMED_IDD_FLAG_HISTORY_EVENT)) != 0 ||
@@ -1348,7 +1368,12 @@ static bool prv_send_reminder_status(const char *pump_status, MinimedStatusTimer
                                      uint32_t now) {
   const char *display = pump_status;
   char set_status[20];
-  if (pump_status[0] == '\0' && s_set_reminder.have_reservoir &&
+  uint32_t sensor_expiration;
+  if (pump_status[0] == '\0' && s_sensor_session_current &&
+      minimed_sensor_reminder_status_window(&s_sensor_reminder, now, &sensor_expiration)) {
+    display = "SENSOR";
+    timers = (MinimedStatusTimers){.end = sensor_expiration};
+  } else if (pump_status[0] == '\0' && s_set_reminder.have_reservoir &&
       minimed_set_reminder_morning_window(&s_set_reminder, now)) {
     const uint32_t age_days = minimed_set_reminder_age_days(&s_set_reminder, now);
     if (age_days > 99) {
@@ -1372,8 +1397,27 @@ static bool prv_send_reminder_status(const char *pump_status, MinimedStatusTimer
   return true;
 }
 
+static void prv_sensor_reminder_notify_if_due(uint32_t now) {
+  if (!s_sensor_session_current ||
+      !minimed_sensor_reminder_notification_due(&s_sensor_reminder, now)) {
+    return;
+  }
+  const uint32_t expiration = minimed_sensor_reminder_expiration(&s_sensor_reminder);
+  const uint32_t remaining_min = (expiration - now + 59) / 60;
+  char body[48];
+  snprintf(body, sizeof(body), "Sensor expires in %luh %02lum", (unsigned long)(remaining_min / 60),
+           (unsigned long)(remaining_min % 60));
+  minimed_alert_popup_push("MiniMed", body, false);
+  minimed_sensor_reminder_mark_notified(&s_sensor_reminder);
+  minimed_settings_set_sensor_reminder(s_sensor_reminder.session_start,
+                                       s_sensor_reminder.expiration_minutes,
+                                       s_sensor_reminder.notified);
+  minimed_sake_log_evt("sensor reminder notification");
+}
+
 static void prv_reminder_timer(void) {
   const uint32_t now = (uint32_t)rtc_get_time();
+  prv_sensor_reminder_notify_if_due(now);
   char pump_status[20];
   if (minimed_status_compose(pump_status, sizeof(pump_status))) {
     const MinimedStatusTimers timers = minimed_status_get_timers();
@@ -1398,6 +1442,7 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
   if (s_pending & other)
     return;
   const uint32_t now = (uint32_t)rtc_get_time();
+  prv_sensor_reminder_notify_if_due(now);
   if (s_idd_st.valid &&
       minimed_set_reminder_observe_reservoir(&s_set_reminder, s_idd_st.reservoir_mu, now)) {
     minimed_settings_set_set_reminder(s_set_reminder.set_started_at, 0);
@@ -1574,6 +1619,14 @@ static void prv_dispatch_timer(void) {
     s_op = PEND_TAS;
     if (!prv_srcp_write(SRCP_GET_TAS, sizeof(SRCP_GET_TAS), "TAS")) {
       prv_status_publish_if_done(PEND_TAS);
+      prv_op_complete();
+      return;
+    }
+  } else if (s_pending & PEND_SENSOR_START) {
+    s_pending &= ~PEND_SENSOR_START;
+    s_op = PEND_SENSOR_START;
+    if (!minimed_transport_read(MinimedChrCgmSessionStart, TagSensorStartRead, &status)) {
+      prv_log_gatt_err("sensor start", status, true);
       prv_op_complete();
       return;
     }
@@ -1772,21 +1825,65 @@ static size_t prv_append_hex(char *dst, size_t cap, size_t off, const uint8_t *d
   return off;
 }
 
-// Log one probe value: raw hex on one line, then hex of a decrypt attempt on a second line.
-// An encrypted characteristic shows up as a decrypt success; a plaintext one as a decrypt
-// failure with sane raw bytes. Two short lines, not one: long flash-log records get split.
-static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n) {
-  size_t off =
+static void prv_sensorinfo_log_raw(const char *name, const uint8_t *raw, uint16_t n) {
+  const size_t off =
       (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s raw=", name);
-  off = prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, raw, n);
+  prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, raw, n);
   PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+}
+
+// Log one probe value: raw hex on one line, then hex of a decrypt attempt on a second line.
+// Two short lines, not one: long flash-log records get split. Returns the decrypted payload when
+// the characteristic is SAKE-encrypted.
+static bool prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint16_t n,
+                                     uint8_t *plain_out, uint16_t *plain_len_out) {
+  prv_sensorinfo_log_raw(name, raw, n);
   uint8_t plain[24];
   uint16_t plain_len = 0;
-  if (minimed_sake_decrypt(raw, n, plain, sizeof(plain), &plain_len)) {
-    off = (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s plain=", name);
-    prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, plain, plain_len);
-    PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+  if (!minimed_sake_decrypt(raw, n, plain, sizeof(plain), &plain_len))
+    return false;
+  const size_t off =
+      (size_t)snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s plain=", name);
+  prv_append_hex(s_sensorinfo_line, sizeof(s_sensorinfo_line), off, plain, plain_len);
+  PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
+  if (plain_out != NULL && plain_len_out != NULL && plain_len <= *plain_len_out) {
+    memcpy(plain_out, plain, plain_len);
+    *plain_len_out = plain_len;
   }
+  return true;
+}
+
+static void prv_sensor_start_update(const uint8_t *plain, uint16_t len) {
+  uint32_t local_start;
+  if (!minimed_sensor_reminder_parse_session_start(plain, len, &local_start)) {
+    minimed_sake_log("sensor: bad session start");
+    return;
+  }
+  const uint32_t session_start = (uint32_t)time_local_to_utc((time_t)local_start);
+  s_sensor_session_current = true;
+  if (minimed_sensor_reminder_set_session_start(&s_sensor_reminder, session_start)) {
+    minimed_settings_set_sensor_reminder(s_sensor_reminder.session_start,
+                                         s_sensor_reminder.expiration_minutes,
+                                         s_sensor_reminder.notified);
+    minimed_sake_log_evt("sensor session changed");
+  }
+}
+
+static void prv_sensor_start_read_done(const MinimedEvent *e) {
+  if (s_op != PEND_SENSOR_START)
+    return; // late/stale result
+  if (e->status.ok && e->len > 0) {
+    uint8_t plain[24];
+    uint16_t plain_len = sizeof(plain);
+    if (prv_sensorinfo_log_value("sess start", e->data, e->len, plain, &plain_len)) {
+      prv_sensor_start_update(plain, plain_len);
+    } else {
+      minimed_sake_log("sensor: session start decrypt failed");
+    }
+  } else {
+    prv_log_gatt_err("sensor start read", e->status, false);
+  }
+  prv_op_complete();
 }
 
 // Chained sweep. Steps 0 and 2 read by UUID over the whole handle range; step 1 is an
@@ -1842,7 +1939,13 @@ static void prv_sensorinfo_done(const MinimedEvent *e) {
     return;
   }
   if (e->status.ok && e->len >= 1) {
-    prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), e->data, e->len);
+    uint8_t plain[24];
+    uint16_t plain_len = sizeof(plain);
+    if (prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), e->data, e->len, plain,
+                                 &plain_len) &&
+        e->tag == TagSessionStartRead) {
+      prv_sensor_start_update(plain, plain_len);
+    }
   } else {
     snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x len=%u",
              prv_sensorinfo_step_name(step), e->status.code, e->len);
@@ -2245,6 +2348,7 @@ static void prv_discovered(void) {
 // ---- Link lifecycle ----
 
 static void prv_link_up(void) {
+  s_sensor_session_current = false;
   minimed_task_timer_stop(TimerPoll);
   minimed_task_timer_stop(TimerDispatch);
   minimed_task_timer_stop(TimerOpTimeout);
@@ -2295,6 +2399,7 @@ static void prv_link_up(void) {
 
 static void prv_link_down(void) {
   s_link_up = false;
+  s_sensor_session_current = false;
   for (unsigned t = 0; t < TimerCount; t++) {
     if (t != TimerReminder) {
       minimed_task_timer_stop(t);
@@ -2367,6 +2472,9 @@ static void prv_gatt_done(const MinimedEvent *e) {
     case TagSessionStartRead:
       prv_sensorinfo_done(e);
       break;
+    case TagSensorStartRead:
+      prv_sensor_start_read_done(e);
+      break;
     case TagProbeSubData:
     case TagProbeSubCp:
     case TagProbeStatusRead:
@@ -2387,6 +2495,11 @@ void minimed_session_init(void) {
   uint32_t set_started_at, last_notification_day;
   minimed_settings_get_set_reminder(&set_started_at, &last_notification_day);
   minimed_set_reminder_init(&s_set_reminder, set_started_at, last_notification_day);
+  uint32_t sensor_start;
+  uint16_t sensor_duration;
+  bool sensor_notified;
+  minimed_settings_get_sensor_reminder(&sensor_start, &sensor_duration, &sensor_notified);
+  minimed_sensor_reminder_init(&s_sensor_reminder, sensor_start, sensor_duration, sensor_notified);
 }
 
 void minimed_session_task_started(void) {

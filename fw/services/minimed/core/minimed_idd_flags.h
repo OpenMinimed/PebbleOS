@@ -19,6 +19,8 @@
 #define MINIMED_IDD_FLAG_THERAPY_ALGORITHM (1ULL << 16) // SmartGuard/temp-target -> status re-read
 #define MINIMED_IDD_FLAG_IOB               (1ULL << 17)
 #define MINIMED_IDD_FLAG_NEW_CGM           (1ULL << 18)
+#define MINIMED_IDD_FLAG_SENSOR_STATUS_MESSAGE (1ULL << 21) // refresh sensor status/session start
+#define MINIMED_IDD_FLAG_SENSOR_CHANGED    (1ULL << 25) // refresh session start
 
 //! Decode a decrypted flag field. Returns the flag word INCLUDING the continuation bits
 //! (15/31), matching the bridge, which echoes the raw field back to Reset Status verbatim.

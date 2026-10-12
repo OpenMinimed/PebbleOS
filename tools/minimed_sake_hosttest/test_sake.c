@@ -18,6 +18,7 @@
 #include "minimed_sake_crypto.h"
 #include "minimed_status.h"
 #include "minimed_set_reminder.h"
+#include "minimed_sensor_reminder.h"
 #include "pebble_glucose_protocol.h"
 
 #include <math.h>
@@ -731,6 +732,71 @@ static void section_set_reminder(void) {
         !minimed_set_reminder_evening_due(&state, thu_evening));
   check("evening notification repeats the next day while unchanged",
         minimed_set_reminder_evening_due(&state, make_local_epoch(2026, 9, 18, 20, 0)));
+}
+
+static void section_sensor_reminder(void) {
+  const uint8_t session_start[] = {0xea, 0x07, 0x09, 0x07, 0x08, 0x05,
+                                   0x0a, 0x80, 0xff, 0x29, 0xe8};
+  const uint8_t expiration[] = {0xe1, 0x95, 0xbe, 0x83, 0x00,
+                                0x00, 0x00, 0x00, 0xd8, 0x27};
+  uint32_t local_start = 0;
+  uint16_t duration = 0;
+  const bool parsed_start = minimed_sensor_reminder_parse_session_start(
+      session_start, sizeof(session_start), &local_start);
+  const time_t local_start_time = (time_t)local_start;
+  const struct tm *parsed_datetime = gmtime(&local_start_time);
+  check("sensor session DateTime parses",
+        parsed_start && parsed_datetime != NULL && parsed_datetime->tm_year == 126 &&
+            parsed_datetime->tm_mon == 8 && parsed_datetime->tm_mday == 7 &&
+            parsed_datetime->tm_hour == 8 && parsed_datetime->tm_min == 5 &&
+            parsed_datetime->tm_sec == 10);
+  check("sensor expiration offset parses as minutes", minimed_sensor_reminder_parse_expiration(
+                                                        expiration, sizeof(expiration), &duration) &&
+                                                        duration == 10200);
+
+  MinimedSensorReminder state;
+  const uint32_t start = make_local_epoch(2026, 9, 7, 8, 5) + 10;
+  minimed_sensor_reminder_init(&state, start, duration, false);
+  const uint32_t expiry = make_local_epoch(2026, 9, 14, 10, 5) + 10;
+  check("sensor EOL uses session start plus expiration offset",
+        minimed_sensor_reminder_expiration(&state) == expiry);
+  uint32_t status_expiry = 0;
+  check("daytime sensor status window is 07:00-09:00",
+        minimed_sensor_reminder_status_window(&state, make_local_epoch(2026, 9, 14, 7, 0),
+                                              &status_expiry) &&
+            status_expiry == expiry &&
+            !minimed_sensor_reminder_status_window(&state, make_local_epoch(2026, 9, 14, 9, 0),
+                                                    &status_expiry));
+  check("daytime sensor notification is due after the one-hour mark",
+        !minimed_sensor_reminder_notification_due(&state, make_local_epoch(2026, 9, 14, 9, 4)) &&
+            minimed_sensor_reminder_notification_due(&state, make_local_epoch(2026, 9, 14, 9, 6)));
+  MinimedSensorReminder morning;
+  minimed_sensor_reminder_init(&morning, make_local_epoch(2026, 9, 7, 7, 30), duration, false);
+  check("notification inside the status window lands at its 09:00 end",
+        !minimed_sensor_reminder_notification_due(&morning, make_local_epoch(2026, 9, 14, 8, 59)) &&
+            minimed_sensor_reminder_notification_due(&morning, make_local_epoch(2026, 9, 14, 9, 0)));
+  minimed_sensor_reminder_mark_notified(&morning);
+  check("sent notification clears the overlapping status reminder",
+        !minimed_sensor_reminder_status_window(&morning,
+                                               make_local_epoch(2026, 9, 14, 8, 59),
+                                               &status_expiry));
+  minimed_sensor_reminder_mark_notified(&state);
+  check("sensor notification is once per session",
+        !minimed_sensor_reminder_notification_due(&state, make_local_epoch(2026, 9, 14, 9, 6)));
+
+  MinimedSensorReminder early;
+  minimed_sensor_reminder_init(&early, make_local_epoch(2026, 9, 7, 2, 0), duration, false);
+  check("early-morning EOL moves status to the prior evening",
+        minimed_sensor_reminder_status_window(&early, make_local_epoch(2026, 9, 13, 18, 0),
+                                              &status_expiry) &&
+            !minimed_sensor_reminder_status_window(&early, make_local_epoch(2026, 9, 13, 20, 0),
+                                                    &status_expiry));
+  check("early-morning notification moves to 20:00 the prior evening",
+        !minimed_sensor_reminder_notification_due(&early, make_local_epoch(2026, 9, 13, 19, 59)) &&
+            minimed_sensor_reminder_notification_due(&early, make_local_epoch(2026, 9, 13, 20, 0)));
+  check("new sensor session rearms its notification",
+        minimed_sensor_reminder_set_session_start(&state, start + 7 * 24 * 60 * 60) &&
+            !state.notified);
 }
 
 static void section_status(void) {
@@ -1615,6 +1681,7 @@ int main(void) {
   section_idd_flags();
   section_status();
   section_set_reminder();
+  section_sensor_reminder();
   section_annunciation();
   section_announce();
   section_predict();

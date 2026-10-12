@@ -43,3 +43,9 @@ void minimed_settings_set_features(uint8_t mask);
 //! Persist the set-reminder start time and last notification date (YYYYMMDD).
 void minimed_settings_get_set_reminder(uint32_t *set_started_at, uint32_t *last_notification_day);
 void minimed_settings_set_set_reminder(uint32_t set_started_at, uint32_t last_notification_day);
+
+//! Persist sensor session start, expiration duration, and whether its notification was sent.
+void minimed_settings_get_sensor_reminder(uint32_t *session_start, uint16_t *duration_minutes,
+                                          bool *notified);
+void minimed_settings_set_sensor_reminder(uint32_t session_start, uint16_t duration_minutes,
+                                          bool notified);
