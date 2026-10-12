@@ -8,6 +8,7 @@
 #include "drivers/rtc.h"
 #include "kernel/event_loop.h"
 #include "minimed_glucose_announce.h"
+#include "minimed_activity.h"
 #include "minimed_graph.h"
 #include "minimed_settings.h"
 #include "pbl/services/comm_session/protocol.h"
@@ -62,7 +63,7 @@ static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 // strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
 // blob). Sized with room to spare -- an undersized buffer is a silent "wf dict fail", not a
 // crash, but it would also mean no data reaches the watchface at all.
-#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 192)
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + MINIMED_ACTIVITY_BLOB_MAX + 192)
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
@@ -101,6 +102,14 @@ static uint16_t s_meal_list_g[MINIMED_MEAL_LIST_MAX];
 static uint8_t s_meal_list_count;
 
 static MinimedGraph s_graph;
+
+// The activity ledger is owned by the read layer (one static, like the bonding DB); the sender
+// keeps only the pointer and serializes at push time on KernelMain, mirroring the graph's
+// lock-free discipline (readers see a consistent-enough snapshot; blobs are re-serialized when
+// dirty rather than trusted across bursts).
+static const MinimedActivity *s_activity_src;
+static bool s_activity_dirty;
+static uint8_t s_activity_blob[MINIMED_ACTIVITY_BLOB_MAX];
 
 // True when a graph point was added since the last push. Serializing the graph on every push
 // (BG/IOB/status) allocates a fresh ~100 B blob in KernelMain each time; under 0x101 bursts that
@@ -340,7 +349,7 @@ static void prv_push_bg_cb(void *unused) {
     target = *fg;
     // Everything we can currently supply.
     caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
-           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST;
+           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | CAP_INSULIN_ACTIVITY;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -361,6 +370,20 @@ static void prv_push_bg_cb(void *unused) {
     graph_len = minimed_graph_serialize(&s_graph, graph_window_secs, graph);
     s_graph_dirty = false;
     graph_present = true;
+  }
+
+  // Activity, same dirty/BG-push discipline as the graph: re-serialize only when the ledger grew
+  // or on a full push. The curve stands alone (no have_bg gate) -- it is meaningful before the
+  // first glucose reading, and a flat provisional curve is itself worth showing.
+  bool activity_present = false;
+  uint16_t activity_len = 0;
+  uint32_t activity_now = 0;
+  if ((caps & CAP_INSULIN_ACTIVITY) && s_activity_src &&
+      (s_activity_dirty || (caps & CAP_BG))) {
+    activity_now = (uint32_t)rtc_get_time();
+    activity_len = minimed_activity_serialize(s_activity_src, activity_now, s_activity_blob);
+    s_activity_dirty = false;
+    activity_present = true;
   }
 
   // Written key by key rather than from a Tuplet array: Tuplet's value union has const members,
@@ -448,6 +471,12 @@ static void prv_push_bg_cb(void *unused) {
   if (graph_present && graph_len > 0) {
     res |= dict_write_data(&iter, KEY_GRAPH_DATA, graph, graph_len);
     n++;
+  }
+  if (activity_present && activity_len > 0) {
+    res |= dict_write_data(&iter, KEY_ACTIVITY_DATA, s_activity_blob, activity_len);
+    res |= dict_write_uint8(&iter, KEY_ACTIVITY_FLAGS,
+                            minimed_activity_provisional(s_activity_src, activity_now) ? 1 : 0);
+    n += 2;
   }
   if (n == 0) {
     PBL_LOG_INFO("wf push: dropped, nothing to send");
@@ -712,5 +741,13 @@ void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend) {
   // Same lock-free discipline as send_bg/send_iob/send_status.
   s_trend_valid = valid;
   s_trend_arrow = trend;
+  s_dirty = true;
+}
+
+void minimed_sake_sender_send_activity(const MinimedActivity *ledger) {
+  // The pointer is the read layer's one static ledger; the data behind it is appended to on the
+  // BT task and read on KernelMain -- the graph's accepted convention.
+  s_activity_src = ledger;
+  s_activity_dirty = true;
   s_dirty = true;
 }

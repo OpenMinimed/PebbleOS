@@ -65,6 +65,14 @@
        // to send/show the result -- CAP_* alone only silences the send.
        // Sent alongside KEY_SETTINGS_ALERTS; same ignore-if-unknown and
        // keep-last-value rules.
+#define KEY_ACTIVITY_DATA 1007     // blob: projected insulin activity, KEY_GRAPH_DATA wire layout
+                                   // ([ref u32][count u16][offset_min u16 xN][value u8 xN]) but the
+                                   // values are 0.05 U/h per LSB (not mg/dL/2). The grid ends
+                                   // 6 h after now, so points past "now" are the forward projection
+                                   // (kernel horizon = 6 h, INSULIN-ACTIVITY.md). Omitted until the
+                                   // first reservoir samples have accumulated.
+#define KEY_ACTIVITY_FLAGS 1008    // uint8: bit 0 = provisional (ledger younger than 6 h, or an
+                                   // unsampled gap inside the kernel horizon is still aging out)
 
 // Alert visibility bitmask for KEY_SETTINGS_ALERTS, watchface -> sender. Configured on the phone
 // (the watchapp's Settings page); the sender falls back to SETTINGS_ALERT_LOW and
@@ -97,6 +105,7 @@
 #define CAP_IOB_TOTAL      0x20000
 #define CAP_HYPO           0x40000 // watchface understands KEY_HYPO_TREAT_PCT
 #define CAP_MEAL_LIST 0x80000 // watchface understands KEY_MEAL_LIST (else only the latest meal)
+#define CAP_INSULIN_ACTIVITY 0x100000 // watchface understands KEY_ACTIVITY_DATA/KEY_ACTIVITY_FLAGS
 
 // Trend arrow indices
 #define TREND_UNKNOWN     0

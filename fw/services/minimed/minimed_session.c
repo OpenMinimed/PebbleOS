@@ -20,6 +20,7 @@
 #include "minimed_sake_sender.h"
 #include "minimed_settings.h"
 #include "minimed_status.h"
+#include "minimed_activity.h"
 #include "minimed_sensor_reminder.h"
 #include "minimed_set_reminder.h"
 #include "minimed_task.h"
@@ -183,6 +184,7 @@ static void prv_status_publish_if_done(uint8_t completed_op);
 
 #define REMINDER_CHECK_SECS 60
 static MinimedSetReminder s_set_reminder;
+static MinimedActivity s_activity;
 static MinimedSensorReminder s_sensor_reminder;
 static bool s_sensor_session_current;
 static bool s_watch_status_sent;
@@ -1155,11 +1157,12 @@ static void prv_handle_notify(MinimedChr chr, const uint8_t *data, uint16_t len,
     if (flags & MINIMED_IDD_FLAG_NEW_CGM)
       req |= PEND_CGM;
     if (flags & (MINIMED_IDD_FLAG_THERAPY_CONTROL | MINIMED_IDD_FLAG_OPERATIONAL |
-                 MINIMED_IDD_FLAG_THERAPY_ALGORITHM | MINIMED_IDD_FLAG_SENSOR_STATUS_MESSAGE |
-                 MINIMED_IDD_FLAG_SENSOR_CHANGED)) {
+                 MINIMED_IDD_FLAG_RESERVOIR | MINIMED_IDD_FLAG_THERAPY_ALGORITHM |
+                 MINIMED_IDD_FLAG_SENSOR_STATUS_MESSAGE | MINIMED_IDD_FLAG_SENSOR_CHANGED)) {
       // Suspend/resume, an operational-state transition (reservoir-change walk: bit 1 is rare,
       // unlike bit 2 which rides every microbolus), or SmartGuard/temp-target changed: re-read
-      // the status pair (bridge bits + bit 1).
+      // the status pair (bridge bits + bit 1 + bit 2, the reservoir sample per microbolus that
+      // the insulin-activity ledger needs, #28).
       req |=
           (HAVE(MinimedChrIddStatus) ? PEND_STATUS : 0) | (HAVE(MinimedChrIddSrcp) ? PEND_TAS : 0);
     }
@@ -1447,6 +1450,15 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
       minimed_set_reminder_observe_reservoir(&s_set_reminder, s_idd_st.reservoir_mu, now)) {
     minimed_settings_set_set_reminder(s_set_reminder.set_started_at, 0);
     minimed_sake_log_evt("set change detected from reservoir increase");
+  }
+  if (s_idd_st.valid) {
+    // The reservoir fall since the previous sample is insulin that left the reservoir: the
+    // delivery ledger behind the insulin-activity curve (INSULIN-ACTIVITY.md, #28). Fed on every
+    // status read, not only on recorded deliveries: a zero-delivery stretch (suspend, low-suspend
+    // basal hold) must still reach the watchface as a flat provisional curve, so "no data yet"
+    // doesn't look like "broken".
+    minimed_activity_observe_reservoir(&s_activity, s_idd_st.reservoir_mu, now);
+    minimed_sake_sender_send_activity(&s_activity);
   }
   minimed_status_update(&s_idd_st, &s_tas, now);
   char label[20];

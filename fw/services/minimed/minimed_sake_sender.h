@@ -6,6 +6,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "minimed_activity.h"
+
 //! Local AppMessage sender: feeds glucose data from the on-watch pump driver to an (unmodified)
 //! watchface by injecting synthetic inbound AppMessages through a phone-less loopback
 //! CommSession -- the same trick the QEMU transport uses. The watchface receives a byte-for-byte
@@ -94,6 +96,11 @@ void minimed_sake_sender_send_pump_connected(bool connected);
 //! watchface can tell "no trend" from "flat" and hide the glyph. Safe to call from the BT host
 //! task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_trend_arrow(bool valid, uint8_t trend);
+
+//! Note that the activity ledger grew (a delivery was recorded). The sender keeps the pointer to
+//! the read layer's ledger and serializes it at push time on KernelMain. Call after every
+//! minimed_activity_observe_reservoir() that returned true. Safe to call from the BT host task.
+void minimed_sake_sender_send_activity(const MinimedActivity *ledger);
 
 //! Build and inject one frame for the state set since the last push. Called once per completed read
 //! op (and on a pump-link transition); no-op when nothing changed.

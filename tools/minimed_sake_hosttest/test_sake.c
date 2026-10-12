@@ -6,6 +6,7 @@
 //              and assert msg0/msg2/msg4 are byte-identical and the handshake
 //              completes against the pump's real recorded msg1/msg3/msg5.
 #include "minimed_annunciation.h"
+#include "minimed_activity.h"
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
 #include "minimed_history.h"
@@ -1546,6 +1547,83 @@ static void section_predict_score(void) {
 // --- Section 12: hypo (treat-or-wait) model ------------------------------------------------------
 // The C port against the numpy model on recorded test-split vectors (hypo_testvec.bin, written by
 // sugar_predictor/export_hypo_c.py). Reuses the predictor's own MinimedPredictWindow.
+static void section_activity(void) {
+  printf("  Section 13: insulin activity ledger and kernel\n");
+  const uint32_t base = 1000000;
+
+  MinimedActivity a;
+  minimed_activity_init(&a);
+  check("empty ledger is provisional", minimed_activity_provisional(&a, base));
+
+  // Baseline, then one microbolus. res <= 0 means unknown and must not move the baseline.
+  check("first sample is a baseline only", !minimed_activity_observe_reservoir(&a, 50000, base));
+  check("unknown reservoir is ignored", !minimed_activity_observe_reservoir(&a, 0, base + 300));
+  check("baseline kept across an unknown sample", a.last_res_mu == 50000);
+  check("a fall records a delivery", minimed_activity_observe_reservoir(&a, 49975, base + 600));
+  check("one ledger entry", a.count == 1 && a.ledger[0].mu == 25);
+
+  // Kernel: peak at tp, forward projection beyond now, zero past td.
+  const uint32_t t0 = base + 600;
+  const float peak = minimed_activity_eval_mu_per_min(&a, t0 + MINIMED_ACTIVITY_TP_MIN * 60);
+  check("curve peaks at tp with d*k(tp)", fabsf(peak - 25.0f * 7201.0f / 1e6f) < 1e-6f);
+  check("forward projection is non-zero",
+        minimed_activity_eval_mu_per_min(&a, t0 + 60 * 60) > 0.0f);
+  check("nothing past td", minimed_activity_eval_mu_per_min(&a, t0 + MINIMED_ACTIVITY_TD_MIN * 60) == 0.0f);
+  check("nothing before the event", minimed_activity_eval_mu_per_min(&a, t0 - 1) == 0.0f);
+
+  // A reservoir increase is a refill/prime: the following deltas are discarded.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  check("increase opens the prime window", !minimed_activity_observe_reservoir(&a, 60000, base + 300));
+  check("delta inside the prime window is discarded",
+        !minimed_activity_observe_reservoir(&a, 59975, base + 450));
+  check("delta after the prime window is recorded",
+        minimed_activity_observe_reservoir(&a, 59950, base + 900));
+  check("priming did not clear the ledger", a.count == 1);
+
+  // A long gap spreads its delta as a flat rate, preserving the total, and goes provisional.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  minimed_activity_observe_reservoir(&a, 48000, base + 1800);
+  int32_t total = 0;
+  for (uint16_t i = 0; i < a.count; i++) total += a.ledger[i].mu;
+  check("gap delta is spread without loss", total == 2000);
+  check("gap spread over the gap cells", a.count == 6);
+  check("a fresh gap makes the curve provisional", minimed_activity_provisional(&a, base + 1800));
+  check("the gap ages out after td",
+        !minimed_activity_provisional(&a, base + 1800 - 1800 + MINIMED_ACTIVITY_TD_MIN * 60 + 1));
+
+  // A ledger older than the provisional window is trusted.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  minimed_activity_observe_reservoir(&a, 49975, base + 300);
+  check("six hours of samples clears provisional",
+        !minimed_activity_provisional(&a, base + MINIMED_ACTIVITY_PROVISIONAL_SECS + 1));
+
+  // Wire format: graph layout, 0.05 U/h per LSB, index BACK is now, forward points past it.
+  minimed_activity_init(&a);
+  uint8_t blob[MINIMED_ACTIVITY_BLOB_MAX];
+  check("no ledger serializes to nothing", minimed_activity_serialize(&a, base, blob) == 0);
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  minimed_activity_observe_reservoir(&a, 49000, base + 300);  // a 1 U bolus
+  const uint16_t blob_len = minimed_activity_serialize(&a, base + 600, blob);
+  check("blob is 6 + 3N bytes", blob_len == 6 + 3 * MINIMED_ACTIVITY_POINTS);
+  check("blob count field", blob[4] == (uint8_t)MINIMED_ACTIVITY_POINTS);
+  const uint32_t ref = (uint32_t)blob[0] | ((uint32_t)blob[1] << 8) | ((uint32_t)blob[2] << 16) |
+                       ((uint32_t)blob[3] << 24);
+  check("blob ref = now - 3 h", ref == base + 600 - MINIMED_ACTIVITY_BACK_POINTS * 300);
+  // A 1000 mu delivery peaks at 1000 * 7201e-6 = 7.201 mU/min = 0.432 U/h = 8.6 LSB.
+  const uint8_t *vals = blob + 6 + 2 * MINIMED_ACTIVITY_POINTS;
+  check("curve value at the kernel peak",
+        vals[MINIMED_ACTIVITY_BACK_POINTS + 10] == (uint8_t)(7201000.0 / 1000000.0 * 1.2 + 0.5));
+  check("curve is zero at the delivery point", vals[MINIMED_ACTIVITY_BACK_POINTS - 1] == 0);
+  check("forward window ends at the kernel horizon",
+        vals[MINIMED_ACTIVITY_POINTS - 1] == 0);
+  check("curve is non-zero mid-forward",
+        vals[MINIMED_ACTIVITY_BACK_POINTS + 24] > 0);
+}
+
 static void section_hypo(void) {
   printf("  Section 12: hypo treat-or-wait model\n");
   // hypo_testvec.bin is recorded from one wearer's data and not committed; without it the vector
@@ -1688,6 +1766,7 @@ int main(void) {
   section_predict_score();
   section_basal_iob();
   section_hypo();
+  section_activity();
   printf("SUMMARY: %d passed, %d failed -> %s\n", g_pass, g_fail,
          g_fail == 0 ? "ALL CHECKS PASSED" : "FAILURES PRESENT");
   return g_fail == 0 ? 0 : 1;

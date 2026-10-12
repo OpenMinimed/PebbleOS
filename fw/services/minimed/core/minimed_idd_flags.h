@@ -14,6 +14,8 @@
 //! Bits acted on by the read path (Documentation/idd-service.md, same set the bridge uses).
 #define MINIMED_IDD_FLAG_THERAPY_CONTROL   (1ULL << 0)  // suspend/resume -> status re-read
 #define MINIMED_IDD_FLAG_OPERATIONAL       (1ULL << 1)  // reservoir-change walk -> status re-read
+#define MINIMED_IDD_FLAG_RESERVOIR (1ULL << 2)         // rides every microbolus -> status re-read
+                                                       // (insulin-activity ledger, #28)
 #define MINIMED_IDD_FLAG_ANNUNCIATION      (1ULL << 3)  // alarm raised/cleared -> history read
 #define MINIMED_IDD_FLAG_HISTORY_EVENT     (1ULL << 7)  // an event was logged -> history read
 #define MINIMED_IDD_FLAG_THERAPY_ALGORITHM (1ULL << 16) // SmartGuard/temp-target -> status re-read

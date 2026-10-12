@@ -15,7 +15,8 @@
 
 #define CAP_ALL                                                                       \
   (CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS | CAP_SENDER_BATTERY | \
-   CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST)
+   CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | \
+   CAP_INSULIN_ACTIVITY)
 
 static uint16_t prv_rd16(const uint8_t *p) {
   return (uint16_t)(p[0] | (p[1] << 8));
