@@ -34,11 +34,12 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   (`tools/minimed/Dockerfile`: the official CI image plus the Python requirements and SDL2, built
   on first use), one build directory per board and slot (`build-asterix`, `build-pt2-slot0`,
   `build-pt2-slot1`). Every run reconfigures, which is quick, so Kconfig changes need no flag.
-- **asterix** (the default): one bundle, no release band. **Does not link on v4.41.0**: stock
-  v4.41.0 already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB,
-  so the region overflows by ~31 KB. `CONFIG_SERVICE_VOICE=n` alone does not link (the voice
-  endpoint, process manager and applib still reference it) and `CONFIG_LTO=y` does not link on
-  this CMake build either, so something has to be cut before asterix builds again.
+- **asterix** (the default): one bundle, no release band, and no voice dictation. Stock v4.41.0
+  already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB, so the
+  build turns the voice endpoint off (`CONFIG_SERVICE_VOICE_ENDPOINT=n`, which takes the voice
+  service and speex with it) and links the stand-ins in `fw/services/minimed/stubs/`
+  (`CONFIG_MINIMED_STUB_VOICE=y`), because upstream calls into voice unconditionally. That lands
+  at 98.8% (about 12 KB left). Dictation then fails as on a watch without a microphone.
 - **obelix** (`--pt2`): two single-slot bundles, release build, release-band check. The rest of
   this section is that recipe.
 

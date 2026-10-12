@@ -114,6 +114,8 @@ config MINIMED_SAKE
       hardware bring-up only; hijacks BLE advertising, so the normal phone
       link is unavailable while enabled. Off by default.
 
+source "fw/services/minimed/stubs/Kconfig"
+
 endif
 
 endmenu

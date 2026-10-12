@@ -9,3 +9,5 @@ pbl_include_directories(. core)
 file(GLOB sources CONFIGURE_DEPENDS *.c core/*.c)
 pbl_library()
 pbl_library_sources(${sources})
+
+pbl_add_subdirectory_ifdef(CONFIG_MINIMED_STUB_VOICE stubs)

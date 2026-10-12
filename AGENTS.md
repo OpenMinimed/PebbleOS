@@ -165,6 +165,9 @@ in mind.
   i.e. QEMU) `minimed_fake_pump.c` replaces the transport and the cipher.
 - `fw/popups/minimed_*` and `fw/apps/system/minimed_sake_app.c`: mode toggle, on-watch log, alert
   popups.
+- `fw/services/minimed/stubs/`: link stand-ins for upstream code a MiniMed build leaves out, each
+  behind its own `CONFIG_MINIMED_STUB_*` flag; the stubbed files themselves stay untouched. Today
+  only voice (`CONFIG_MINIMED_STUB_VOICE`), which asterix needs to fit its flash.
 - Enabled by `CONFIG_MINIMED_SAKE` (`subsys/bluetooth/Kconfig`); everything above is compiled out
   without it. The NimBLE security settings it needs (legacy pairing, two connections) are Kconfig
   defaults in `subsys/bluetooth/Kconfig.defconfig`.
