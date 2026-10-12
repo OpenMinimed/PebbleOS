@@ -185,7 +185,7 @@ static void prv_handle_response_latency_for_le_conn(GAPLEConnection *hdl) {
 
   // actually request the mode if it has changed:
   if (hdl->conn_mgr_info->curr_requested_state != state) {
-    PBL_LOG_INFO("LE: Requesting state <%s> for %d secs, due to <%s>",
+    PBL_LOG_DBG("LE: Requesting state <%s> for %d secs, due to <%s>",
             prv_response_time_state_name(state), secs_til_max_latency,
             prv_consumer_name(responsible_consumer));
     gap_le_connect_params_request(hdl, state);

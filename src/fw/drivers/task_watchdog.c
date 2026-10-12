@@ -232,7 +232,8 @@ void WATCHDOG_FREERTOS_IRQHandler(void) {
     // CPU if not fed at least once every 7 seconds), then just coredump now
     if (s_ticks_since_successful_feed >= (6 * TIMER_INTERRUPT_HZ)) {
 #if !defined(CONFIG_NO_WATCHDOG)
-      reset_due_to_software_failure();
+      prepare_for_software_failure();
+      core_dump_reset(false /* is_forced */);
 #endif
     }
 
@@ -393,7 +394,8 @@ static void prv_task_watchdog_feed(void) {
       prv_capture_stuck_task_info(&reboot_reason);
       reboot_reason_clear();
       reboot_reason_set(&reboot_reason);
-      reset_due_to_software_failure();
+      prepare_for_software_failure();
+      core_dump_reset(false /* is_forced */);
 #endif
     }
     s_last_warning_message_tick_time = s_ticks_since_successful_feed;

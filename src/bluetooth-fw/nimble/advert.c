@@ -445,7 +445,7 @@ static void prv_handle_conn_params_updated_event(struct ble_gap_event *event) {
     return;
   }
 
-  PBL_LOG_INFO("Connection parameters updated: "
+  PBL_LOG_DBG("Connection parameters updated: "
             "itvl=%u ms, latency=%u, spvn timeout=%u ms",
             desc.conn_itvl * BLE_HCI_CONN_ITVL / 1000, desc.conn_latency,
             desc.supervision_timeout * BLE_HCI_CONN_SPVN_TMO_UNITS);
