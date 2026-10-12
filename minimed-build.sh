@@ -68,7 +68,8 @@ done
 [ -n "$desc" ] || { usage >&2; exit 2; }
 
 # Every build must trace back to a commit: refuse a dirty tree unless explicitly bypassed.
-if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain)" ]; then
+# (Untracked files do not count: git describe --dirty ignores them too.)
+if [ "$allow_dirty" != 1 ] && [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "ERROR: working tree has uncommitted changes; commit first (or pass --allow-dirty)." >&2
   exit 1
 fi
