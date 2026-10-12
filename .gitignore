@@ -10,12 +10,14 @@ xcode
 
 *.bin
 !bin/**/*.bin
-# cheap_testvec.bin is the numpy-parity fixture for the c20_h32 predictor host test
-# (test_sake.c's check_cheap_vectors): sugar_predictor/metabonet/export_cheap_fw.py generates it
-# only from MetaboNet's held-out "monitor" subjects, never this wearer's own data (unlike
-# testvec.bin and hypo_testvec.bin below, which are personal and stay out). Without it the C-vs-
-# numpy check silently skips rather than fails, on every machine but the one that generated it.
+# Numpy-parity fixtures for the host tests (test_sake.c); without them the C-vs-numpy checks
+# silently skip rather than fail, on every machine but the one that generated them.
+# cheap_testvec.bin (c20_h32 predictor) comes only from MetaboNet's held-out "monitor" subjects.
+# testvec.bin (predict.c) and hypo_testvec.bin (hypo.c) are this wearer's own pump/CGM history --
+# committed at their explicit request so other builds get the full check too.
 !tools/minimed_sake_hosttest/cheap_testvec.bin
+!tools/minimed_sake_hosttest/testvec.bin
+!tools/minimed_sake_hosttest/hypo_testvec.bin
 *.bin.orig
 *.map
 build/*.elf
@@ -79,11 +81,6 @@ artifacts/
 # Personal compile-time overrides -- see TESTING.md.
 src/bluetooth-fw/nimble/minimed_local_overrides.h
 tools/minimed_sake_hosttest/history.hex
-# testvec.bin (predict.c, fitted to this wearer) and hypo_testvec.bin (export_hypo_c.py's
-# subject="personal") are both generated from this wearer's own pump history: personal health
-# data, not committed. cheap_testvec.bin is population-only and is un-ignored above.
-tools/minimed_sake_hosttest/testvec.bin
-tools/minimed_sake_hosttest/hypo_testvec.bin
 tools/minimed_sake_hosttest/replay
 tools/minimed_sake_hosttest/test_sake
 logs_pull/
