@@ -155,7 +155,7 @@ retrieval path: it prints metrics the firmware already collected to a log we can
 ### 1. The flash log's 1%-step curve — what we have actually used
 
 `Percent: N, V: … mV, I: … uA, T: … mC, charging: …, plugged: …` at **INFO**
-(`src/fw/services/battery/nrf_fuel_gauge/battery_state.c:404`). Above 10% SoC it fires *only* when
+(`fw/services/battery/nrf_fuel_gauge/battery_state.c:404`). Above 10% SoC it fires *only* when
 the integer percent changes, so the log is exactly one line per percent: a complete discharge
 curve, free, on every build, going back to the last flash.
 
@@ -217,7 +217,7 @@ timers were only started by a parameter-*update* event, so a link whose master n
 
 ### 2. The hourly analytics heartbeat — the source of the above, still undecoded on the DLS side
 
-Every hour (`HEARTBEAT_PERIOD_SEC 3600`, `src/fw/services/analytics/analytics.c`) the firmware
+Every hour (`HEARTBEAT_PERIOD_SEC 3600`, `fw/services/analytics/analytics.c`) the firmware
 snapshots ~91 metrics into a 523-byte record and logs it to the **data logging service**
 (`native.c`, tag `DlsSystemTagAnalyticsNativeHeartbeat` = 87). For battery work the payload is
 much richer than the percent line (`include/pbl/services/analytics/analytics.def`):

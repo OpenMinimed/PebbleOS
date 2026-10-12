@@ -132,7 +132,7 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 ## Hardware facts
 
 - Pebble 2 Duo = board **`asterix`** (nRF52840, B&W 144x168). BLE = **NimBLE**
-  (`src/bluetooth-fw/nimble/`), host + controller on the same chip.
+  (`subsys/bluetooth/`), host + controller on the same chip.
 - Pebble Time 2 = `obelix`, Round 2 = `getafix` (SiFli): same NimBLE host, different controller —
   re-verify before trusting.
 
@@ -199,32 +199,29 @@ Details worth knowing:
   no watch. `pebble screenshot` working does **not** mean Developer Connection is on.
 - Useful forensic line at every boot: `debug.c:211 Last launched app: <…>`.
 
-### Host unit tests (`./waf test`) — worth using, three traps
+### Host unit tests (`pbl test`) -- worth using
 
-The firmware has a real clar unit-test suite (327 tests) that runs on the host in ~1 s once built.
-`tests/fw/services/bluetooth/test_bluetooth_persistent_storage.c` in particular covers the bonding
-DB, so bond-storage work can be genuine TDD with no hardware. Run it in Docker like everything else:
+The firmware has a real clar unit-test suite (376 tests) that builds for the host and runs in about
+a minute once built. `tests/fw/services/bluetooth/test_bluetooth_persistent_storage.c` in
+particular covers the bonding DB, so bond-storage work can be genuine TDD with no hardware. Run it
+in the `pebbleos-minimed:v10` image like everything else:
 
-    docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/pebbleos -w /pebbleos \
-      pebbleos-build:local bash -lc "
+    docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp/home -v "$PWD":/pebbleos -w /pebbleos \
+      pebbleos-minimed:v10 bash -lc "
         git config --global --add safe.directory /pebbleos
-        ./waf test -M '.*bluetooth_persistent_storage.*'"
+        pbl test -R bluetooth_persistent_storage"
 
-- **Never run `./waf configure` without `--board`** — it wipes `build/c4che` and de-configures the
-  firmware build. Restore with `./waf configure --board asterix -DCONFIG_MINIMED_SAKE=y`
-  (in Docker, with `/opt/pebbleos-sdk/arm-none-eabi/bin` on PATH); verify with
-  `grep MINIMED build/autoconf.h`.
-- **`-M` is an anchored `re.match` against the test source path.** `-M bluetooth_persistent_storage`
-  matches **nothing** and the run still says "finished successfully" having built no tests. Always
-  wrap it: `-M '.*name.*'`. Drop `-M` entirely for the full suite (~40 s).
-- `./waf test` uses the `test` waf **variant** (`build/test/`), so it does *not* clobber the
-  firmware build and is fine to run with the asterix configure in place. First run ~2 min.
+- `-R REGEX` selects tests by name (it is ctest's flag; everything `pbl test` does not recognise
+  goes to ctest). `pbl test` builds into `build-test/`, so it never touches a firmware build.
+- `--no-images` skips the image fixtures, the slow part of a clean build. The rendering and bitmap
+  suites need them and fail without, so leave it off when running the whole suite.
 
 ### How to build (Docker)
 
-`ghcr.io/coredevices/pebbleos-docker:v6` is the official CI image; it installs deps itself
-(`pip install -r requirements.txt`) inside each container run, so no `docker commit` is needed.
-Submodules must be checked out (`resources/iconography` is required or the resource build dies).
+`./minimed-build.sh` does it all (see TESTING.md). `ghcr.io/coredevices/pebbleos-docker:v10` is the
+official CI image; `tools/minimed/Dockerfile` adds the Python requirements and SDL2 on top as
+`pebbleos-minimed:v10`. Submodules must be checked out (`resources/iconography` is required or the
+resource build dies).
 
 
 ## Code map (branch `spike/minimed-sake`; all committed, nothing pushed)
@@ -260,7 +257,7 @@ New files (all spike-only via wscript/ifdef):
   (type/id/status/silenced) + the type→name table (from PythonPumpConnector AnnunciationType).
   Host-tested. The BLE side lives in `minimed_sake_read.c` (v48): IDD RACP 0x2A52 + History
   Data 0x108 subscription, per-connection "last record" baseline, 0x101-bit-3-triggered
-  catch-up reads, dedup by instance id; notifications via `src/fw/popups/minimed_alert_popup.{c,h}`
+  catch-up reads, dedup by instance id; notifications via `fw/popups/minimed_alert_popup.{c,h}`
   (BT task → KernelMain → `notifications_add_notification`, native popup/vibe, raise-only,
   silenced raises skipped).
 - `minimed_sake_sender.c` — the **watchface local-sender**: loopback CommSession (QEMU-transport
@@ -278,10 +275,10 @@ New files (all spike-only via wscript/ifdef):
 - `minimed_glucose_announce.{c,h}` — pure parser for the capability announcement, which doubles as
   the "is this watchface one of ours?" test. Host-tested (section 9).
 - `pebble_glucose_protocol.h` — verbatim copy of the spec's header (keys + capability bits).
-- `src/fw/popups/minimed_sake_ui.{c,h}` — MiniMed core: log ring buffer, mode flag, stage
+- `fw/popups/minimed_sake_ui.{c,h}` — MiniMed core: log ring buffer, mode flag, stage
   reports; declares the app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`,
   `sender_set_mode`).
-- `src/fw/apps/system/minimed_sake_app.{c,h}` — launcher app (viewer + buttons).
+- `fw/apps/system/minimed_sake_app.{c,h}` — launcher app (viewer + buttons).
 
 Modified:
 
@@ -350,7 +347,7 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    IOB/status/graph. Design: firmware injects **local AppMessages** into the existing
    `../pebble-glucose-watchface`, unmodified — same watchface for phone-bridge and on-watch modes.
    Seam researched (2026-07-22), plan = **copy the QEMU transport pattern**
-   (`src/bluetooth-fw/qemu/qemu_transport.c`, the existing phone-less precedent):
+   (`subsys/bluetooth/qemu_transport.c`, the existing phone-less precedent):
    - Once: `comm_session_open()` a synthetic loopback transport (`TransportDestinationHybrid`,
      `send_next` discards — swallows the app's ACKs) under `bt_lock`.
    - Per BG: build `[PebbleProtocolHeader len,0x0030 BE][CMD_PUSH,txn][watchface UUID][dict]`

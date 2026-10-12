@@ -127,7 +127,7 @@ The single connection slot is what makes every other task on this project expens
 
 - **No live logs.** SPIKE has no real CommSession, so the only debug channel is the 8-line on-watch
   ring buffer — which we read by *filming the screen*. The firmware already supports log dumping
-  over a comm session (`src/fw/debug/debug.c`, `CommSessionInfiniteLogDumping`; what `pebble logs`
+  over a comm session (`fw/debug/debug.c`, `CommSessionInfiniteLogDumping`; what `pebble logs`
   uses), but it needs a phone session that SPIKE cannot currently have. The loopback session is not
   a substitute: its `send_next` discards everything.
 - **Every flash and every watchface `.pbw` install costs a pump un-pair/re-pair** (see "What the
