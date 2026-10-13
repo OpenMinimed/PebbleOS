@@ -2386,7 +2386,7 @@ static void prv_link_up(void) {
   s_push_mode = false; // a reconnect re-subscribes and must re-prove push
   s_idd_st.valid = false;
   s_tas.valid = false;
-  // minimed_status.c state deliberately survives the reconnect (a warm-up countdown keeps
+  // minimed_status.c state deliberately survives the reconnect (a suspend count-up keeps
   // counting through a pump dropout); only the per-cycle parse structs reset here.
   // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
   // monotonic within a sensor session, so keeping it means the first read after a brief dropout is

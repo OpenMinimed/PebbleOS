@@ -879,16 +879,20 @@ static void section_status(void) {
   minimed_status_compose(out, sizeof(out));
   check("load reservoir label", strcmp(out, "LOAD RESERVOIR") == 0);
 
-  // Warm-up: self-timed 2 h countdown, stamped on entry only.
+  // Warm-up: the pump does not say when it ends, so no countdown, only the label.
   minimed_status_reset();
   MinimedIddStatus warm = st;
   warm.sensor_msg = 0x08; // WARM_UP
   minimed_status_update(&warm, &tas, 10000);
   minimed_status_compose(out, sizeof(out));
   check("warm-up label", strcmp(out, "WARM-UP") == 0);
-  minimed_status_update(&warm, &tas, 10000 + 600); // re-read 10 min in: must NOT restart the clock
+  timers = minimed_status_get_timers();
+  check("warm-up has no countdown", timers.start == 0 && timers.end == 0);
+  minimed_status_update(&warm, &tas, 10000 + 600); // re-read 10 min in
   minimed_status_compose(out, sizeof(out));
   check("warm-up label remains stable", strcmp(out, "WARM-UP") == 0);
+  timers = minimed_status_get_timers();
+  check("warm-up still has no countdown", timers.start == 0 && timers.end == 0);
   check("warm-up means BG invalid", minimed_status_bg_invalid());
   minimed_status_update(&st, &tas, 10000 + 700); // sensor live again
   check("warm-up exit clears BG-invalid", !minimed_status_bg_invalid());

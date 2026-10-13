@@ -8,11 +8,6 @@
 #include <stdio.h>
 #include <string.h>
 
-// Guardian 4 warm-up is a fixed ~2 h (bridge measurement 2026-07-20: WARM_UP -> first reading in
-// 1h59m), self-timed because the pump rejects "Get Sensor Warm-up Time Remaining" (0x0403). The
-// countdown is cleared by the first real reading anyway, so a small over-estimate is benign.
-#define WARMUP_DURATION_SECS (2 * 60 * 60)
-
 // Sensor Connectivity State bit 2: no transmitter signal (out of range / in charger).
 #define SENSOR_CONN_GST_SIGNAL_LOST 0x04
 
@@ -65,7 +60,6 @@ typedef enum {
 } MinimedStatusLabel;
 
 static MinimedStatusLabel s_label = LABEL_UNSET;
-static uint32_t s_warmup_expiry; // 0 = not timing
 static uint32_t s_suspend_since; // 0 = not suspended
 static uint32_t s_tt_expiry;     // 0 = no temp target
 static bool s_bg_invalid;
@@ -198,13 +192,6 @@ void minimed_status_update(const MinimedIddStatus *st, const MinimedTas *tas, ui
     return; // both reads failed: keep the last known state
   s_label = prv_map(st, tas);
 
-  // Warm-up: self-timed, stamped on ENTRY only so re-reads don't keep restarting the clock.
-  if (s_label == LABEL_WARMUP) {
-    if (s_warmup_expiry == 0)
-      s_warmup_expiry = now + WARMUP_DURATION_SECS;
-  } else {
-    s_warmup_expiry = 0;
-  }
   // Suspend: count-up from entry.
   if (s_label == LABEL_SUSPENDED) {
     if (s_suspend_since == 0)
@@ -236,7 +223,7 @@ bool minimed_status_compose(char *out, uint16_t cap) {
   if (s_label == LABEL_UNSET)
     return false;
   switch (s_label) {
-    // "SENSOR WARM-UP 1:23" doesn't fit on flint displays, so abbreviate to "WARM-UP".
+    // "SENSOR WARM-UP" doesn't fit on flint displays, so abbreviate to "WARM-UP".
     case LABEL_WARMUP:
       snprintf(out, cap, "WARM-UP");
       break;
@@ -306,9 +293,6 @@ MinimedStatusTimers minimed_status_get_timers() {
     case LABEL_SUSPENDED:
       timers.start = s_suspend_since;
       break;
-    case LABEL_WARMUP:
-      timers.end = s_warmup_expiry;
-      break;
     case LABEL_TEMP_TARGET:
       timers.end = s_tt_expiry;
       break;
@@ -338,7 +322,6 @@ bool minimed_status_sg_above(void) {
 
 void minimed_status_reset(void) {
   s_label = LABEL_UNSET;
-  s_warmup_expiry = 0;
   s_suspend_since = 0;
   s_tt_expiry = 0;
   s_bg_invalid = false;

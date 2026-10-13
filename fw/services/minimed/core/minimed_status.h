@@ -9,7 +9,7 @@
 //! Pure pump-status logic for the on-watch MiniMed pump link: parse the IDD Status characteristic
 //! (0x102) and the Therapy Algorithm States SRCP response (0x03FD -> 0x03FE), map them to the
 //! single status label the watchface shows (key 15), and compose the time-augmented display string
-//! (warm-up countdown, temp-target countdown, suspend count-up). Ported from the bridge's
+//! (temp-target countdown, suspend count-up). Ported from the bridge's
 //! iterated implementation (BridgeForegroundService.readStatus/statusForWatch + StatusLabels.kt,
 //! IddStatus.kt) so both displays behave identically. NimBLE-free -- host-tested in
 //! tools/minimed_sake_hosttest.
@@ -70,9 +70,9 @@ bool minimed_status_parse_tas(const uint8_t *body, uint16_t len, MinimedTas *out
 
 //! Feed the latest reads into the label state. Either input may be invalid -- its clauses just
 //! don't fire; if BOTH are invalid the previous state is kept unchanged (bridge behaviour).
-//! Stamps/clears the countdown epochs: warm-up expiry is set only on *entry* (a fixed self-timed
-//! 2 h -- the pump rejects the warm-up-time-remaining opcode), suspend start on entry, temp-target
-//! expiry restamped from the pump's live remaining-minutes on every read.
+//! Stamps/clears the countdown epochs: suspend start on entry, temp-target expiry restamped from
+//! the pump's live remaining-minutes on every read. The warm-up has no timer: the pump does not
+//! report when it ends (it rejects "Get Sensor Warm-up Time Remaining", 0x0403).
 void minimed_status_update(const MinimedIddStatus *st, const MinimedTas *tas, uint32_t now);
 
 //! Compose the current display string for the watchface. No status to display = "".
@@ -101,5 +101,5 @@ bool minimed_status_bg_invalid(void);
 bool minimed_status_take_bg_became_valid(void);
 
 //! Reset all internal state (label + epochs). For the host tests; the firmware deliberately
-//! keeps state across reconnects so e.g. a warm-up countdown survives a pump dropout.
+//! keeps state across reconnects so e.g. a suspend count-up survives a pump dropout.
 void minimed_status_reset(void);
