@@ -1598,26 +1598,31 @@ static void section_predict_score(void) {
 
 // --- Section 12: hypo (treat-or-wait) model ------------------------------------------------------
 // The C port against the numpy model on recorded test-split vectors (hypo_testvec.bin, written by
-// sugar_predictor/export_hypo_c.py). Reuses the predictor's own MinimedPredictWindow.
+// sugar_predictor/export_hypo_trunk_c.py). Reuses the predictor's own MinimedPredictWindow.
 static void section_hypo(void) {
   printf("  Section 12: hypo treat-or-wait model\n");
-  // hypo_testvec.bin is recorded from one wearer's data and not committed; without it the vector
-  // check is skipped (regenerate with sugar_predictor/export_hypo_c.py and copy it here).
+  // hypo_testvec.bin is recorded from one wearer's data; without it the vector check is skipped
+  // (regenerate with sugar_predictor/export_hypo_trunk_c.py and copy it here).
   FILE *f = fopen("hypo_testvec.bin", "rb");
   if (!f)
     printf("    [skip] hypo_testvec.bin not present: numpy vector check not run\n");
   if (f) {
+    // Per record: bg, ins, carb (48 floats each), then 11 reference floats: [0] unused, [1] time of
+    // day in radians, [2..10] the nine outputs in MinimedHypoPrediction order.
+    enum {
+      NOUT = 9
+    };
+    static const double tol[NOUT] = {1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-3, 1e-3, 1e-3, 1e-1};
     uint32_t n = 0, hist = 0;
     int got = fread(&n, 4, 1, f) == 1 && fread(&hist, 4, 1, f) == 1;
-    int bad = 0;
-    double worst_nadir = 0.0, worst_plow = 0.0, worst_treat = 0.0;
+    double worst[NOUT] = {0};
     for (uint32_t r = 0; got && r < n; r++) {
       MinimedPredictWindow in;
-      float ref[7];
+      float ref[11];
       if (fread(in.bg, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
           fread(in.ins, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
           fread(in.carb, 4, MINIMED_PREDICT_WINDOW, f) != MINIMED_PREDICT_WINDOW ||
-          fread(ref, 4, 7, f) != 7) {
+          fread(ref, 4, 11, f) != 11) {
         got = 0;
         break;
       }
@@ -1625,23 +1630,25 @@ static void section_hypo(void) {
       in.tod_cos = cosf(ref[1]);
       MinimedHypoPrediction out;
       minimed_hypo_eval(&in, 0.3f, &out);
-      const double d_nadir = fabs((double)out.nadir_untreated - ref[2]);
-      const double d_plow = fabs((double)out.p_low - ref[5]);
-      const double d_treat = fabs((double)out.treat_pct - ref[6]);
-      if (d_nadir > worst_nadir)
-        worst_nadir = d_nadir;
-      if (d_plow > worst_plow)
-        worst_plow = d_plow;
-      if (d_treat > worst_treat)
-        worst_treat = d_treat;
-      if (d_nadir > 1e-2 || d_plow > 1e-3 || d_treat > 1e-1)
-        bad++;
+      const double have[NOUT] = {out.nadir_untreated, out.nadir_treated, out.mins_untreated,
+                                 out.mins_treated,    out.mins_saved,    out.p_low,
+                                 out.p_severe,        out.p_over,        out.treat_pct};
+      for (int k = 0; k < NOUT; k++) {
+        const double d = fabs(have[k] - (double)ref[2 + k]);
+        if (d > worst[k])
+          worst[k] = d;
+      }
     }
     fclose(f);
-    check("hypo vectors read", got && n > 0);
-    check("C nadir_untreated matches numpy (worst < 0.01 mg/dL)", bad == 0 && worst_nadir < 1e-2);
-    check("C p_low matches numpy (worst < 0.001)", worst_plow < 1e-3);
-    check("C treat_pct matches numpy (worst < 0.1)", worst_treat < 1e-1);
+    check("hypo vectors read", got && hist == MINIMED_PREDICT_WINDOW && n > 0);
+    check("C nadir_untreated matches numpy (worst < 0.01 mg/dL)", worst[0] < tol[0]);
+    check("C nadir_treated matches numpy (worst < 0.01 mg/dL)", worst[1] < tol[1]);
+    check("C mins_untreated and mins_treated match numpy (worst < 0.01 min)",
+          worst[2] < tol[2] && worst[3] < tol[3] && worst[4] < tol[4]);
+    check("C p_low and p_severe match numpy (worst < 0.001)",
+          worst[5] < tol[5] && worst[6] < tol[6]);
+    check("C p_over matches numpy (worst < 0.001)", worst[7] < tol[7]);
+    check("C treat_pct matches numpy (worst < 0.1)", worst[8] < tol[8]);
   }
 
   // should_evaluate gate: hand-made timelines.
