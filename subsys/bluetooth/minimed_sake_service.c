@@ -521,6 +521,10 @@ static void prv_notify_cb(struct ble_npl_event *ev) {
   minimed_sake_log_evt(line);
 }
 
+uint16_t minimed_sake_port_val_handle(void) {
+  return s_sake_port_val_handle;
+}
+
 void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, bool notify) {
   if (attr_handle != s_sake_port_val_handle || !notify) {
     return;
