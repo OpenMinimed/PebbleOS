@@ -37,7 +37,6 @@ bool minimed_activity_observe_reservoir(MinimedActivity *a, int32_t res_mu, uint
     a->last_res_mu = res_mu;
     a->have_res = true;
     a->last_sample_ts = now;
-    a->first_sample_ts = now;
     return false;
   }
   const int32_t previous = a->last_res_mu;
@@ -56,21 +55,35 @@ bool minimed_activity_observe_reservoir(MinimedActivity *a, int32_t res_mu, uint
   if (now < a->prime_until) return false;  // priming burst still in progress
 
   if (gap_secs > MINIMED_ACTIVITY_GAP_SECS) {
-    // No samples across the span, so the drop cannot be timed: spread it as a flat rate and mark
-    // the curve provisional until the gap is older than the kernel. The ledger is capped at
-    // 256 cells, so a very long gap is spread over the most recent cells only.
+    // No samples across the span, so the drop cannot be timed: spread it as a flat rate. Only a gap
+    // that could have hidden meaningful insulin makes the curve provisional -- with push-driven
+    // sampling, a slow-basal stretch (low overnight basal: a reservoir step every 15-30 min) is a
+    // routine gap carrying a few tens of milliunits, and flagging those kept the curve dotted
+    // permanently (HW, 2026-10-13). The ledger is capped at 256 cells, so a very long gap is
+    // spread over the most recent cells only.
     uint32_t cells = gap_secs / MINIMED_ACTIVITY_STEP_SECS;
     if (cells > MINIMED_ACTIVITY_LEDGER_MAX) cells = MINIMED_ACTIVITY_LEDGER_MAX;
     if (cells == 0) cells = 1;
     const uint32_t start = now - cells * MINIMED_ACTIVITY_STEP_SECS;
-    const int32_t per_cell = delta / (int32_t)cells;
-    const int32_t remainder = delta - per_cell * (int32_t)cells;
+    // Only a plausible basal rate's worth of the delta is spread over the gap. The excess is a
+    // bolus that happened somewhere inside it: stamp it at the sample time (the sample is caused
+    // by the delivery, so now is a good single estimate) instead of smearing it across 15-30 min.
+    int32_t flat_cap =
+        (int32_t)(((int64_t)gap_secs * MINIMED_ACTIVITY_MAX_FLAT_MU_PER_HOUR) / 3600);
+    const int32_t flat = delta < flat_cap ? delta : flat_cap;
+    const int32_t lump = delta - flat;
+    const int32_t per_cell = flat / (int32_t)cells;
+    const int32_t remainder = flat - per_cell * (int32_t)cells;
     for (uint32_t i = 0; i < cells; i++) {
       prv_record(a, start + i * MINIMED_ACTIVITY_STEP_SECS,
                  per_cell + (i == cells - 1 ? remainder : 0));
     }
+    prv_record(a, now, lump);
     const uint32_t until = a->last_sample_ts - gap_secs + MINIMED_ACTIVITY_TD_MIN * 60;
-    if (until > a->provisional_until) a->provisional_until = until;
+    if (gap_secs > MINIMED_ACTIVITY_GAP_ALERT_SECS && delta >= MINIMED_ACTIVITY_GAP_ALERT_MU &&
+        until > a->provisional_until) {
+      a->provisional_until = until;
+    }
     return true;
   }
 
@@ -100,8 +113,7 @@ float minimed_activity_eval_mu_per_min(const MinimedActivity *a, uint32_t t) {
 }
 
 bool minimed_activity_provisional(const MinimedActivity *a, uint32_t now) {
-  if (!a->have_res) return true;
-  if (now - a->first_sample_ts < MINIMED_ACTIVITY_PROVISIONAL_SECS) return true;
+  if (!a->have_res) return true;  // nothing observed at all yet
   return now < a->provisional_until;
 }
 

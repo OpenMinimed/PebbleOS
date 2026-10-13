@@ -1581,24 +1581,49 @@ static void section_activity(void) {
         minimed_activity_observe_reservoir(&a, 59950, base + 900));
   check("priming did not clear the ledger", a.count == 1);
 
-  // A long gap spreads its delta as a flat rate, preserving the total, and goes provisional.
+  // A long gap spreads only a plausible basal rate's worth as flat, and goes provisional when it
+  // is long enough and carried meaningful insulin. Excess above the flat cap is a lump at now.
   minimed_activity_init(&a);
   minimed_activity_observe_reservoir(&a, 50000, base);
-  minimed_activity_observe_reservoir(&a, 48000, base + 1800);
+  minimed_activity_observe_reservoir(&a, 48000, base + 3600); // 2 U over a 60 min gap
   int32_t total = 0;
   for (uint16_t i = 0; i < a.count; i++) total += a.ledger[i].mu;
-  check("gap delta is spread without loss", total == 2000);
-  check("gap spread over the gap cells", a.count == 6);
-  check("a fresh gap makes the curve provisional", minimed_activity_provisional(&a, base + 1800));
+  check("gap delta is recorded without loss", total == 2000);
+  check("a long gap carrying real insulin is provisional",
+        minimed_activity_provisional(&a, base + 3600));
   check("the gap ages out after td",
-        !minimed_activity_provisional(&a, base + 1800 - 1800 + MINIMED_ACTIVITY_TD_MIN * 60 + 1));
+        !minimed_activity_provisional(&a, base + MINIMED_ACTIVITY_TD_MIN * 60 + 1));
+  // The flat part is capped at 1.5 U/h for an hour, so 1500 mu is spread and 500 mu is a lump.
+  check("flat part is capped to a basal rate", a.ledger[a.count - 1].mu == 500);
+  check("the lump is stamped at the sample time", a.ledger[a.count - 1].ts == base + 3600);
 
-  // A ledger older than the provisional window is trusted.
+  // A gap carrying only a few tens of milliunits (slow basal) must NOT go provisional: with
+  // push-driven sampling those gaps are routine, and flagging them kept the curve dotted for good.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  minimed_activity_observe_reservoir(&a, 49900, base + 1800); // 100 mu over a 30 min gap
+  check("a small-delta gap is not provisional",
+        !minimed_activity_provisional(&a, base + 1801));
+
+  // The all-day culprit: a bolus landing right after a slow-basal stretch. It must NOT go
+  // provisional (the gap is short), and the bolus must stay a sharp lump, not be smeared across
+  // the gap as basal.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 50000, base);
+  minimed_activity_observe_reservoir(&a, 45000, base + 1500); // 5 U bolus after a 25 min gap
+  total = 0;
+  for (uint16_t i = 0; i < a.count; i++) total += a.ledger[i].mu;
+  check("a post-gap bolus is recorded whole", total == 5000);
+  check("a post-gap bolus is a lump at now", a.ledger[a.count - 1].mu == 4375);
+  check("a post-gap bolus does not go provisional",
+        !minimed_activity_provisional(&a, base + 1801));
+
+  // A young ledger is solid straight away: the curve starts low and grows as deliveries arrive,
+  // rather than being dotted for the kernel horizon after every reboot.
   minimed_activity_init(&a);
   minimed_activity_observe_reservoir(&a, 50000, base);
   minimed_activity_observe_reservoir(&a, 49975, base + 300);
-  check("six hours of samples clears provisional",
-        !minimed_activity_provisional(&a, base + MINIMED_ACTIVITY_PROVISIONAL_SECS + 1));
+  check("a young ledger is not provisional", !minimed_activity_provisional(&a, base + 301));
 
   // Wire format: graph layout, 0.05 U/h per LSB, index BACK is now, forward points past it.
   minimed_activity_init(&a);

@@ -21,8 +21,17 @@
 #define MINIMED_ACTIVITY_TP_MIN 55              //!< kernel peak
 #define MINIMED_ACTIVITY_TD_MIN 360             //!< kernel duration
 #define MINIMED_ACTIVITY_GAP_SECS 600           //!< a longer sample gap is spread as a flat rate
+#define MINIMED_ACTIVITY_MAX_FLAT_MU_PER_HOUR 1500  //!< above this rate a gap delta cannot all be
+                                                //!< basal: the excess is a bolus, recorded as a
+                                                //!< lump at the sample time rather than smeared
+                                                //!< over the gap (HW: boluses arrive as 0.5 U
+                                                //!< reservoir steps right after slow-basal gaps)
+#define MINIMED_ACTIVITY_GAP_ALERT_SECS 1800    //!< only a long dropout is worth flagging...
+#define MINIMED_ACTIVITY_GAP_ALERT_MU 250       //!< ...and only if it hid meaningful insulin
+                                                //!< (HW 2026-10-13: a 25-min low-basal gap
+                                                //!< before a meal bolus re-armed provisional for
+                                                //!< 6 h, keeping the curve dotted all day)
 #define MINIMED_ACTIVITY_PRIME_SECS 300         //!< deltas discarded after a reservoir increase
-#define MINIMED_ACTIVITY_PROVISIONAL_SECS (6 * 3600)  //!< ledger too young to be trusted
 
 //! Serialized window: 3 h behind, 6 h ahead (= the kernel horizon) plus the point at now.
 #define MINIMED_ACTIVITY_BACK_POINTS 36
@@ -41,7 +50,6 @@ typedef struct {
   int32_t last_res_mu;
   bool have_res;
   uint32_t last_sample_ts;
-  uint32_t first_sample_ts;
   uint32_t prime_until;        //!< discard delivery deltas until this time
   uint32_t provisional_until;  //!< mark the curve provisional until this time
 } MinimedActivity;
@@ -67,6 +75,8 @@ float minimed_activity_eval_mu_per_min(const MinimedActivity *a, uint32_t t);
 #define MINIMED_ACTIVITY_BLOB_MAX (6 + 3 * MINIMED_ACTIVITY_POINTS)
 uint16_t minimed_activity_serialize(const MinimedActivity *a, uint32_t now, uint8_t *out);
 
-//! True while the curve should be marked provisional: either the ledger is younger than 6 h, or a
-//! gap newer than the kernel duration has not yet aged out.
+//! True while the curve should be marked provisional: no reservoir sample yet, or an unsampled
+//! dropout whose insulin could not be timed. A young ledger is NOT provisional (dropped
+//! 2026-10-13): after a reboot the curve simply starts low and grows as deliveries arrive, and the
+//! 6 h of dots was the worst part of the feature in daily use.
 bool minimed_activity_provisional(const MinimedActivity *a, uint32_t now);
