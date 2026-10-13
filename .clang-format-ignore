@@ -9,3 +9,4 @@ tools/clar/*
 tests/fixtures/**
 third_party/nimble/port/include/syscfg/syscfg.h
 tests/vendor/duma/*
+fw/services/minimed/core/pebble_glucose_protocol.h
