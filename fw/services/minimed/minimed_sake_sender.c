@@ -108,9 +108,9 @@ static uint32_t s_bg_entry_ts[MINIMED_BG_ENTRY_LIST_MAX];
 static uint16_t s_bg_entry_mgdl[MINIMED_BG_ENTRY_LIST_MAX];
 static uint8_t s_bg_entry_count;
 
-// A reading seen live is stamped on arrival and replayed by the next backfill on the pump's clock,
-// a little earlier: the same value this close together is the same reading.
-#define BG_ENTRY_SAME_SECS (5 * 60)
+// An entry seen live is stamped on arrival and replayed by the next backfill on the pump's clock,
+// a little earlier: the same value this close together is the same entry.
+#define LIST_SAME_SECS (5 * 60)
 
 static MinimedGraph s_graph;
 
@@ -681,27 +681,26 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl) {
   s_dirty = true;
 }
 
-// Insert into a list kept sorted oldest-first: a duplicate timestamp (a backfill replaying an entry
-// the watch already has) updates that entry in place instead of growing the list, and once full
-// the globally oldest entry is dropped for the new one -- the caller has already filtered to the
-// graph window, so anything that falls off is the least relevant entry, not necessarily the last
-// one added.
-static void prv_list_insert(uint32_t *ts, uint16_t *value, uint8_t *count, uint8_t max,
+// Insert into a list kept sorted oldest-first. The same value within LIST_SAME_SECS of an entry is
+// that entry again (a backfill replaying what the watch already has) and leaves the list as it is.
+// Once full the globally oldest entry is dropped for the new one -- the caller has already filtered
+// to the graph window, so anything that falls off is the least relevant entry, not necessarily the
+// last one added. False if the list is unchanged.
+static bool prv_list_insert(uint32_t *ts, uint16_t *value, uint8_t *count, uint8_t max,
                             uint32_t timestamp, uint16_t v) {
   uint8_t at = *count;
   for (uint8_t i = 0; i < *count; i++) {
-    if (ts[i] == timestamp) {
-      value[i] = v;
-      return;
+    const uint32_t gap = ts[i] > timestamp ? ts[i] - timestamp : timestamp - ts[i];
+    if (value[i] == v && gap <= LIST_SAME_SECS) {
+      return false;
     }
-    if (ts[i] > timestamp) {
+    if (at == *count && ts[i] > timestamp) {
       at = i;
-      break;
     }
   }
   if (*count == max) {
     if (at == 0) {
-      return; // older than everything already kept: the list is unchanged
+      return false; // older than everything already kept
     }
     memmove(&ts[0], &ts[1], (at - 1) * sizeof(ts[0]));
     memmove(&value[0], &value[1], (at - 1) * sizeof(value[0]));
@@ -713,12 +712,15 @@ static void prv_list_insert(uint32_t *ts, uint16_t *value, uint8_t *count, uint8
   }
   ts[at] = timestamp;
   value[at] = v;
+  return true;
 }
 
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   // Same lock-free discipline as the other setters.
-  prv_list_insert(s_meal_list_ts, s_meal_list_g, &s_meal_list_count, MINIMED_MEAL_LIST_MAX,
-                  timestamp, grams);
+  if (!prv_list_insert(s_meal_list_ts, s_meal_list_g, &s_meal_list_count, MINIMED_MEAL_LIST_MAX,
+                       timestamp, grams)) {
+    return;
+  }
 
   // Legacy single-meal fields: the newest entry, i.e. the tail of the sorted list.
   s_meal_grams = s_meal_list_g[s_meal_list_count - 1];
@@ -729,16 +731,10 @@ void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
 
 void minimed_sake_sender_send_bg_entry(uint16_t mgdl, uint32_t timestamp) {
   // Same lock-free discipline as the other setters.
-  for (uint8_t i = 0; i < s_bg_entry_count; i++) {
-    const uint32_t gap =
-        s_bg_entry_ts[i] > timestamp ? s_bg_entry_ts[i] - timestamp : timestamp - s_bg_entry_ts[i];
-    if (s_bg_entry_mgdl[i] == mgdl && gap <= BG_ENTRY_SAME_SECS) {
-      return;
-    }
+  if (prv_list_insert(s_bg_entry_ts, s_bg_entry_mgdl, &s_bg_entry_count, MINIMED_BG_ENTRY_LIST_MAX,
+                      timestamp, mgdl)) {
+    s_dirty = true;
   }
-  prv_list_insert(s_bg_entry_ts, s_bg_entry_mgdl, &s_bg_entry_count, MINIMED_BG_ENTRY_LIST_MAX,
-                  timestamp, mgdl);
-  s_dirty = true;
 }
 
 void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_pct) {

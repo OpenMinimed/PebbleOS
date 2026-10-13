@@ -51,9 +51,10 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl);
 //! A meal's carbohydrate amount, from the pump's history. `timestamp` is when the record was
 //! logged. Kept in a small ring (MINIMED_MEAL_LIST_MAX, sorted oldest-first, oldest evicted once
 //! full) and pushed as KEY_MEAL_LIST for a watchface that announced CAP_MEAL_LIST, and as the
-//! newest entry's KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP for one that only announced CAP_MEAL. Call
-//! once per meal (live or backfilled; a duplicate timestamp updates that entry rather than adding
-//! one). Safe to call from the BT host task; the actual send runs on KernelMain.
+//! newest entry's KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP for one that only announced CAP_MEAL. The same
+//! amount again within 5 minutes is taken as the same meal: a live one is stamped on arrival, its
+//! backfill replay on the pump's clock. Safe to call from the BT host task; the actual send runs on
+//! KernelMain.
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
 
 //! A fingerstick BG entered on the pump, from its history. Kept like the meals
