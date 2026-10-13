@@ -1204,6 +1204,25 @@ static void section_announce(void) {
   check("announcement without GRAPH_HOURS accepted",
         minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.graph_hours == 0);
 
+  // The capabilities the glucose watchface announces, every protocol bit it understands. A bit the
+  // parser does not know makes the watchface look foreign, and the sender then ignores it.
+  {
+    const uint32_t all = CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS |
+                         CAP_SENDER_BATTERY | CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION |
+                         CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | CAP_PUMP_LINK_STATE |
+                         CAP_BG_ENTRIES;
+    dict_begin(2);
+    dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+    dict_put_uint(KEY_CAPABILITIES, all, 4);
+    check("an announcement with every capability bit is accepted",
+          minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.caps == all);
+    dict_begin(2);
+    dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+    dict_put_uint(KEY_CAPABILITIES, CAP_BG | CAP_PUMP_LINK_STATE | CAP_BG_ENTRIES, 4);
+    check("the pump-link-state and fingerstick bits are accepted",
+          minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+  }
+
   // Narrower encodings of the same number are the same number.
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
