@@ -553,12 +553,9 @@ static void prv_parse_iob(void) {
   // for recovering the pump's decay curve (true-IOB investigation, 2026-08-17).
   PBL_LOG_INFO("minimed: IOB %ld mu", (long)iob_mu);
 
-  // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
+  // Round milliunits to 0.1 IU. Integer math (no float printf on the watch). Not in the on-watch
+  // log: one line a minute pushed everything else out of it.
   int32_t tenths = (iob_mu + 50) / 100;
-  char line[64];
-  snprintf(line, sizeof(line), "*** IOB %ld.%ld U ***", (long)(tenths / 10), (long)(tenths % 10));
-  minimed_sake_log(line);
-
   char iob_str[12]; // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
   snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_sender_send_iob(iob_str); // forward to the watchface (no-op if it isn't running)
@@ -570,10 +567,6 @@ static void prv_parse_iob(void) {
     const int32_t total_tenths = (iob_mu + basal_mu + 50) / 100;
     PBL_LOG_INFO("minimed: total IOB %ld mu = pump %ld + basal %ld", (long)(iob_mu + basal_mu),
                  (long)iob_mu, (long)basal_mu);
-    snprintf(line, sizeof(line), "tot %ld.%ld=%ld.%ld+%ld.%ld", (long)(total_tenths / 10),
-             (long)(total_tenths % 10), (long)(tenths / 10), (long)(tenths % 10),
-             (long)((basal_mu + 50) / 1000), (long)(((basal_mu + 50) / 100) % 10));
-    minimed_sake_log(line);
     snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(total_tenths / 10),
              (long)(total_tenths % 10));
     minimed_sake_sender_send_total_iob(iob_str);
