@@ -34,3 +34,6 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
 //! by the v29 advert diagnostics to label a connection PUMP vs phone. NimBLE resolves the pump's
 //! RPA to this identity via the bond IRK, so it matches in both DUAL and NORMAL.
 bool minimed_sake_addr_is_pump(const ble_addr_t *addr);
+
+//! Value handle of the SAKE Port characteristic; 0 until the service is registered.
+uint16_t minimed_sake_port_val_handle(void);

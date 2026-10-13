@@ -20,6 +20,7 @@
 #include <system/passert.h>
 
 #ifdef CONFIG_MINIMED_SAKE
+#include "minimed_sake_service.h"
 #include "popups/minimed_sake_ui.h"
 #endif
 
@@ -354,6 +355,17 @@ static int prv_nimble_store_read_cccd(const struct ble_store_key_cccd *key_cccd,
     ret = BLE_HS_ENOENT;
     goto unlock;
   }
+
+#ifdef CONFIG_MINIMED_SAKE
+  // Never restore the pump's SAKE Port subscription from the bond. The pump subscribes again on
+  // every reconnect and that write is what starts the handshake: it raises the subscribe event
+  // that sends the wake-up. Restored, the subscription makes the pump's write a no-change, which
+  // NimBLE does not report, so the only wake-up goes out before the pump is ready.
+  if (s->value_cccd.chr_val_handle == minimed_sake_port_val_handle()) {
+    ret = BLE_HS_ENOENT;
+    goto unlock;
+  }
+#endif
 
   *value_cccd = s->value_cccd;
   ret = 0;
