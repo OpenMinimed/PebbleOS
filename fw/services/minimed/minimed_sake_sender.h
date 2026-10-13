@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "pebble_glucose_protocol.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -81,11 +83,11 @@ void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uin
 //! marshals to KernelMain internally.
 void minimed_sake_sender_set_mode(bool open);
 
-//! Report the pump link state for the watchface's connection indicator (KEY_PUMP_CONNECTED).
-//! `connected` mirrors minimed_sake_pump_connected() and should be pushed on every transition, not
-//! just polled -- offline is the default until the first "connected" call. Safe to call from the
-//! BT host task; the actual send runs on KernelMain.
-void minimed_sake_sender_send_pump_connected(bool connected);
+//! Report the pump link state (PUMP_LINK_* in pebble_glucose_protocol.h) for the watchface's
+//! connection indicator: KEY_PUMP_LINK_STATE, and KEY_PUMP_CONNECTED for watchfaces that only know
+//! that one. Push it on every transition, not just when polled; PUMP_LINK_OFFLINE is the default
+//! until the first call. Safe to call from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_pump_link_state(uint8_t state);
 
 //! Latest trend arrow (one of the TREND_* constants in pebble_glucose_protocol.h), decoded from
 //! the pump's CGM Trend Information field -- never derived on the watch. `valid` is false when

@@ -79,7 +79,8 @@ static char s_iob_total_str[IOB_STR_MAX];
 static char s_status_str[STATUS_STR_MAX]; // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
-static bool s_pump_connected; // false (offline) is the correct default until the pump connects
+static uint8_t
+    s_pump_link_state; // PUMP_LINK_OFFLINE is the correct default until the pump connects
 static bool s_pred_valid;
 static uint16_t s_pred_mgdl;
 static bool s_meal_valid;
@@ -340,7 +341,7 @@ static void prv_push_bg_cb(void *unused) {
     target = *fg;
     // Everything we can currently supply.
     caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
-           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST;
+           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | CAP_PUMP_LINK_STATE;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -394,10 +395,14 @@ static void prv_push_bg_cb(void *unused) {
       n++;
     }
   }
+  // Neither is gated on have_bg: offline is a real value from boot, not a placeholder waiting on
+  // the pump's first reading.
   if (caps & CAP_PUMP_CONNECTED) {
-    // Not gated on have_bg: offline (0) is a real value from boot, not a placeholder waiting on
-    // the pump's first reading.
-    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_connected ? 1 : 0);
+    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_link_state != PUMP_LINK_OFFLINE);
+    n++;
+  }
+  if (caps & CAP_PUMP_LINK_STATE) {
+    res |= dict_write_uint8(&iter, KEY_PUMP_LINK_STATE, s_pump_link_state);
     n++;
   }
   if (have_bg && (caps & CAP_TREND_ARROW) && s_trend_valid) {
@@ -633,10 +638,10 @@ void minimed_sake_sender_commit(void) {
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
-void minimed_sake_sender_send_pump_connected(bool connected) {
+void minimed_sake_sender_send_pump_link_state(uint8_t state) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
-  s_pump_connected = connected;
+  s_pump_link_state = state;
   s_dirty = true;
 }
 

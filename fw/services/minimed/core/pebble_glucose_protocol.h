@@ -56,6 +56,15 @@
                                    // to send/show the result -- CAP_* alone only silences the send.
                                    // Sent alongside KEY_SETTINGS_ALERTS; same ignore-if-unknown and
                                    // keep-last-value rules.
+#define KEY_PUMP_LINK_STATE 1007 // uint8, PUMP_LINK_* below: how far the pump link is. A
+                                 // watchface that announces CAP_PUMP_LINK_STATE gets this next to
+                                 // KEY_PUMP_CONNECTED, which stays 1 from PUMP_LINK_UP on.
+
+// Values of KEY_PUMP_LINK_STATE. A link that is up but has not finished the pump's handshake
+// delivers no data yet, so it should not look like a working connection.
+#define PUMP_LINK_OFFLINE 0 // no pump link
+#define PUMP_LINK_UP 1      // link up, handshake not done (yet)
+#define PUMP_LINK_READY 2   // handshake done, data flows
 
 // Alert visibility bitmask for KEY_SETTINGS_ALERTS, watchface -> sender. Configured on the phone
 // (the watchapp's Settings page); the sender falls back to SETTINGS_ALERT_LOW and
@@ -86,6 +95,7 @@
 #define CAP_IOB_TOTAL 0x20000
 #define CAP_HYPO 0x40000       // watchface understands KEY_HYPO_TREAT_PCT
 #define CAP_MEAL_LIST 0x80000  // watchface understands KEY_MEAL_LIST (else only the latest meal)
+#define CAP_PUMP_LINK_STATE 0x100000 // watchface understands KEY_PUMP_LINK_STATE
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0
