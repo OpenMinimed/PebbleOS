@@ -59,6 +59,8 @@
 #define KEY_PUMP_LINK_STATE 1007 // uint8, PUMP_LINK_* below: how far the pump link is. A
                                  // watchface that announces CAP_PUMP_LINK_STATE gets this next to
                                  // KEY_PUMP_CONNECTED, which stays 1 from PUMP_LINK_UP on.
+#define KEY_BG_ENTRY_LIST 1008 // blob: fingerstick BGs entered on the pump, inside the graph window.
+                               // [count u8][(timestamp u32 LE)(mg/dL u16 LE)] x count, oldest first
 
 // Values of KEY_PUMP_LINK_STATE. A link that is up but has not finished the pump's handshake
 // delivers no data yet, so it should not look like a working connection.
@@ -96,6 +98,7 @@
 #define CAP_HYPO 0x40000       // watchface understands KEY_HYPO_TREAT_PCT
 #define CAP_MEAL_LIST 0x80000  // watchface understands KEY_MEAL_LIST (else only the latest meal)
 #define CAP_PUMP_LINK_STATE 0x100000 // watchface understands KEY_PUMP_LINK_STATE
+#define CAP_BG_ENTRIES 0x200000      // watchface understands KEY_BG_ENTRY_LIST
 
 // Trend arrow indices
 #define TREND_UNKNOWN 0

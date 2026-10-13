@@ -56,6 +56,13 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl);
 //! one). Safe to call from the BT host task; the actual send runs on KernelMain.
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
 
+//! A fingerstick BG entered on the pump, from its history. Kept like the meals
+//! (MINIMED_BG_ENTRY_LIST_MAX, sorted oldest-first) and pushed as KEY_BG_ENTRY_LIST for a watchface
+//! that announced CAP_BG_ENTRIES. The same value again within 5 minutes is taken as the same
+//! reading: a live one is stamped on arrival, its backfill replay on the pump's clock. Safe to call
+//! from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_bg_entry(uint16_t mgdl, uint32_t timestamp);
+
 //! The hypo (treat-or-wait) model's recommendation for the current falling low, 0-100 (see
 //! sugar_predictor/INTEGRATION.md's treat_pct), plus p_low_pct (P(nadir < 70), 0-100) as the
 //! confidence number the watchface displays next to its TREAT/WATCH decision -- treat_pct alone

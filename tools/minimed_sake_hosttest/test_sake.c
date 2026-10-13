@@ -602,6 +602,36 @@ static void section_backfill(void) {
         minimed_history_parse_meal(real59, sizeof(real59), &m) && m.grams == 59 &&
             minimed_history_parse_meal(real65, sizeof(real65), &m) && m.grams == 65 &&
             minimed_history_parse_meal(real0, sizeof(real0), &m) && m.grams == 0);
+  // BG Reading records (0xf007): a fingerstick, an SFLOAT in kg/L. Real records from a pump's
+  // event log: 346 mg/dL (0xb15a), 74 mg/dL (0xb04a), and the Calibration Complete (0xf008) that
+  // followed the 346, which is not a BG Reading.
+  static const uint8_t bg346[] = {0x07, 0xf0, 0x95, 0x3d, 0x0a, 0x00,
+                                  0xe5, 0x00, 0x04, 0x00, 0x5a, 0xb1};
+  static const uint8_t bg74[] = {0x07, 0xf0, 0xb8, 0x40, 0x0a, 0x00,
+                                 0x3a, 0x07, 0x1f, 0x00, 0x4a, 0xb0};
+  static const uint8_t cal346[] = {0x08, 0xf0, 0x99, 0x3d, 0x0a, 0x00,
+                                   0xf1, 0x00, 0x04, 0x00, 0x5a, 0xb1};
+  MinimedHistBgReading bgr;
+  check("BG reading record parses to mg/dL",
+        minimed_history_parse_bg_reading(bg346, sizeof(bg346), &bgr) && bgr.seq == 671125 &&
+            bgr.mgdl == 346);
+  check("a second BG reading parses",
+        minimed_history_parse_bg_reading(bg74, sizeof(bg74), &bgr) && bgr.mgdl == 74);
+  check("a calibration record is not a BG reading",
+        !minimed_history_parse_bg_reading(cal346, sizeof(cal346), &bgr));
+  check("BG reading too short is rejected", !minimed_history_parse_bg_reading(bg346, 11, &bgr));
+  static const uint8_t bg_zero[] = {0x07, 0xf0, 0x01, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x00, 0x00, 0xb0};
+  check("a zero BG reading is rejected",
+        !minimed_history_parse_bg_reading(bg_zero, sizeof(bg_zero), &bgr));
+  MinimedHistClock bg_clk = {.have_ref = true, .ref = {.seq = 671000, .secs = 829000000}};
+  MinimedHistEvent bg_ev;
+  check("a BG reading decodes as an event timed by its Relative Offset",
+        minimed_history_decode(&bg_clk, bg346, sizeof(bg346), 50, 400, &bg_ev) &&
+            bg_ev.kind == MinimedHistEventBgReading && bg_ev.value == 346.0f &&
+            bg_ev.secs == 829000000 + 0x00e5);
+  check("a calibration record decodes as nothing",
+        !minimed_history_decode(&bg_clk, cal346, sizeof(cal346), 50, 400, &bg_ev));
   // Real insulin records from a pump's event log.
   static const uint8_t micro1[] = {0x01, 0xf0, 0xac, 0x4d, 0x0b, 0x00, 0x1d,
                                    0x06, 0x5e, 0x7d, 0x00, 0x00, 0xfd};

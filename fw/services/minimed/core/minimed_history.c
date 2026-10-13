@@ -14,12 +14,15 @@
 #define BASAL_CONTEXT_PRESENT    0x01
 #define BASAL_CONTEXT_ALGORITHM  0x55
 #define EVENT_MEAL               0xf005
+#define EVENT_BG_READING         0xf007
 #define EVENT_NGP_REFERENCE_TIME 0xf00e
 // Recording reason(1) + date time: year(2) month(1) day(1) hours(1) minutes(1) seconds(1)
 #define REF_MIN_LEN          (REC_HEADER_LEN + 8)
 #define EVENT_SG_MEASUREMENT 0xf00c
 // Food amount(2)
 #define MEAL_MIN_LEN (REC_HEADER_LEN + 2)
+// Time offset(2) + BG value(2), an SFLOAT in kg/L.
+#define BG_READING_MIN_LEN (REC_HEADER_LEN + 4)
 
 // Anything from here up is a code, not a glucose value (real values are at most 400 mg/dL).
 #define SG_SPECIAL_MIN 0x0300
@@ -143,15 +146,16 @@ bool minimed_history_parse_sg(const uint8_t *rec, uint16_t len, MinimedHistSg *o
   return true;
 }
 
-// IEEE-11073 SFLOAT (MedFloat16) to whole units, rounded half up. False for the NaN/NRes/Inf
-// codes and for negative values.
-static bool prv_sfloat_to_units(uint16_t raw, uint32_t *out) {
+// IEEE-11073 SFLOAT (MedFloat16) times 10^shift, to whole units, rounded half up. False for the
+// NaN/NRes/Inf codes and for negative values.
+static bool prv_sfloat_to_units(uint16_t raw, int shift, uint32_t *out) {
   const uint16_t m12 = raw & 0x0FFF;
   if (m12 >= 0x07FE && m12 <= 0x0802)
     return false;
   int exp = (raw >> 12) & 0x0F;
   if (exp & 0x8)
     exp -= 0x10;
+  exp += shift;
   int32_t mant = m12;
   if (mant & 0x800)
     mant -= 0x1000;
@@ -172,11 +176,24 @@ bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMea
   if (len < MEAL_MIN_LEN || prv_u16(rec) != EVENT_MEAL)
     return false;
   uint32_t grams;
-  if (!prv_sfloat_to_units(prv_u16(rec + 8), &grams))
+  if (!prv_sfloat_to_units(prv_u16(rec + 8), 0, &grams))
     return false;
   out->seq = (uint32_t)rec[2] | ((uint32_t)rec[3] << 8) | ((uint32_t)rec[4] << 16) |
              ((uint32_t)rec[5] << 24);
   out->grams = (uint16_t)grams;
+  return true;
+}
+
+bool minimed_history_parse_bg_reading(const uint8_t *rec, uint16_t len, MinimedHistBgReading *out) {
+  if (len < BG_READING_MIN_LEN || prv_u16(rec) != EVENT_BG_READING)
+    return false;
+  uint32_t mgdl;
+  // kg/L to mg/dL is a factor of 10^5.
+  if (!prv_sfloat_to_units(prv_u16(rec + 10), 5, &mgdl) || mgdl == 0)
+    return false;
+  out->seq = (uint32_t)rec[2] | ((uint32_t)rec[3] << 8) | ((uint32_t)rec[4] << 16) |
+             ((uint32_t)rec[5] << 24);
+  out->mgdl = (uint16_t)mgdl;
   return true;
 }
 
@@ -215,6 +232,7 @@ bool minimed_history_decode(MinimedHistClock *clk, const uint8_t *rec, uint16_t 
 
   MinimedHistSg sg;
   MinimedHistMeal meal;
+  MinimedHistBgReading bg;
   MinimedHistInsulin ins;
   if (minimed_history_parse_sg(rec, len, &sg)) {
     if (sg.offset_min < 0)
@@ -233,6 +251,13 @@ bool minimed_history_decode(MinimedHistClock *clk, const uint8_t *rec, uint16_t 
     out->seq = meal.seq;
     out->secs = rel_secs;
     out->value = (float)meal.grams;
+    return true;
+  }
+  if (minimed_history_parse_bg_reading(rec, len, &bg)) {
+    out->kind = MinimedHistEventBgReading;
+    out->seq = bg.seq;
+    out->secs = rel_secs;
+    out->value = (float)bg.mgdl;
     return true;
   }
   if (minimed_history_parse_insulin(rec, len, &ins)) {

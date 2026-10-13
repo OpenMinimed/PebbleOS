@@ -811,8 +811,14 @@ static void prv_predict_live_event(const MinimedHistEvent *ev) {
 // after the last one), so each is timed by when we learn of it -- seconds after it happened.
 static void prv_live_record(uint8_t rec_len) {
   MinimedHistMeal meal;
+  MinimedHistBgReading bg;
   MinimedHistInsulin ins;
   MinimedHistEvent ev = {0};
+  if (minimed_history_parse_bg_reading(s_hist, rec_len, &bg)) {
+    PBL_LOG_INFO("minimed: fingerstick %u mg/dL seq=%lu", (unsigned)bg.mgdl, (unsigned long)bg.seq);
+    minimed_sake_sender_send_bg_entry(bg.mgdl, (uint32_t)rtc_get_time());
+    return;
+  }
   if (minimed_history_parse_meal(s_hist, rec_len, &meal)) {
     if (meal.grams == 0)
       return; // the pump logs a Meal record for a bolus without carbs too
@@ -934,6 +940,9 @@ static void prv_backfill_finish(void) {
         // Every meal in the window, not just the newest -- the sender keeps all of them for the
         // watchface's meal list (KEY_MEAL_LIST) and the newest as the legacy single-meal fields.
         minimed_sake_sender_send_meal((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
+        break;
+      case MinimedHistEventBgReading:
+        minimed_sake_sender_send_bg_entry((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
         break;
       default:
         break;

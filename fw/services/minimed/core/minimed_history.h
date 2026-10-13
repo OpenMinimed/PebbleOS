@@ -54,6 +54,18 @@ typedef struct {
 //! (a MedFloat16 NaN/reserved value or a negative amount).
 bool minimed_history_parse_meal(const uint8_t *rec, uint16_t len, MinimedHistMeal *out);
 
+//! BG Reading (0xf007): a fingerstick blood glucose entered on the pump. The pump usually logs a
+//! Calibration Complete (0xf008) with the same value right after it; that one is not decoded, so a
+//! reading is not counted twice.
+typedef struct {
+  uint32_t seq;
+  uint16_t mgdl;
+} MinimedHistBgReading;
+
+//! Decode a BG Reading record, converting the pump's kg/L to mg/dL. False if it is another event
+//! type, truncated, or carries no usable value.
+bool minimed_history_parse_bg_reading(const uint8_t *rec, uint16_t len, MinimedHistBgReading *out);
+
 //! Insulin the pump logged as delivered. The pump has no single "insulin delivered" event: a bolus
 //! is one record, closed-loop basal is a stream of small microboluses, and manual-mode basal is a
 //! rate that holds until the next rate change.
@@ -98,6 +110,7 @@ typedef enum {
   MinimedHistEventMicro,   //!< an Auto Basal microbolus, the algorithm's basal: `value` U
   MinimedHistEventBasal,   //!< a basal rate from now on: `value` U/h, 0 when the algorithm sets it
   MinimedHistEventCarbs,   //!< a meal: `value` grams (never 0)
+  MinimedHistEventBgReading, //!< a fingerstick BG: `value` mg/dL (never 0)
 } MinimedHistEventKind;
 
 typedef struct {
