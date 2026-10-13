@@ -1343,6 +1343,15 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
   if (minimed_status_compose(label, sizeof(label))) {
     const MinimedStatusTimers timers = minimed_status_get_timers();
     minimed_sake_sender_send_status(label, timers.start, timers.end);
+    static char s_logged_label[20];
+    static MinimedStatusTimers s_logged_timers;
+    if (strcmp(label, s_logged_label) != 0 || timers.start != s_logged_timers.start ||
+        timers.end != s_logged_timers.end) {
+      PBL_LOG_INFO("minimed: status '%s' start=%lu end=%lu now=%lu", label,
+                   (unsigned long)timers.start, (unsigned long)timers.end, (unsigned long)now);
+      strcpy(s_logged_label, label);
+      s_logged_timers = timers;
+    }
     char line[32];
     snprintf(line, sizeof(line), "st: %s", label[0] != '\0' ? label : "(normal)");
     minimed_sake_log(line);
@@ -1722,7 +1731,7 @@ static void prv_sensorinfo_log_value(const char *name, const uint8_t *raw, uint1
 static void prv_sensorinfo_read(uint8_t step) {
   if (step >= SI_STEP_COUNT) {
     s_sensorinfo_done = true;
-    minimed_sake_log("sensor probe done");
+    minimed_sake_log_evt("sensor probe done");
     return;
   }
   s_sensorinfo_step = step;
@@ -1730,14 +1739,14 @@ static void prv_sensorinfo_read(uint8_t step) {
   bool started;
   if (step == SI_STEP_SESSION_START) {
     if (!HAVE(MinimedChrCgmSessionStart)) {
-      minimed_sake_log("sensor: no sess start chr");
+      minimed_sake_log_evt("sensor: no sess start chr");
       prv_sensorinfo_read(step + 1);
       return;
     }
     started = minimed_transport_read(MinimedChrCgmSessionStart, TagSessionStartRead, &status);
   } else if (step == SI_STEP_EXPIRATION) {
     if (!HAVE(MinimedChrSensorExpiration)) {
-      minimed_sake_log("sensor: no sensor exp chr");
+      minimed_sake_log_evt("sensor: no sensor exp chr");
       prv_sensorinfo_read(step + 1);
       return;
     }
@@ -1751,7 +1760,7 @@ static void prv_sensorinfo_read(uint8_t step) {
   if (!started) {
     snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s rc=0x%04x",
              prv_sensorinfo_step_name(step), status.code);
-    minimed_sake_log(s_sensorinfo_line);
+    minimed_sake_log_evt(s_sensorinfo_line);
     prv_sensorinfo_read(step + 1); // keep sweeping; failure of one step is not fatal
   }
 }
@@ -1762,16 +1771,16 @@ static void prv_sensorinfo_done(const MinimedEvent *e) {
     if (!e->status.ok) {
       snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: exp sub err=0x%04x",
                e->status.code);
-      minimed_sake_log(s_sensorinfo_line);
+      minimed_sake_log_evt(s_sensorinfo_line);
     }
     prv_sensorinfo_read(SI_STEP_IDD_FEATURES);
     return;
   }
   if (e->status.ok && e->len >= 1) {
     prv_sensorinfo_log_value(prv_sensorinfo_step_name(step), e->data, e->len);
-  } else if (e->status.code != 0) {
-    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x",
-             prv_sensorinfo_step_name(step), e->status.code);
+  } else {
+    snprintf(s_sensorinfo_line, sizeof(s_sensorinfo_line), "sensor: %s err=0x%04x len=%u",
+             prv_sensorinfo_step_name(step), e->status.code, e->len);
     PBL_LOG_INFO("SAKE: %s", s_sensorinfo_line);
     if (e->tag == TagSessionStartRead) {
       prv_sensorinfo_read(SI_STEP_COUNT);
@@ -1784,7 +1793,7 @@ static void prv_sensorinfo_done(const MinimedEvent *e) {
 static void prv_sensorinfo_timer(void) {
   if (s_sensorinfo_done)
     return;
-  minimed_sake_log("sensor probe start");
+  minimed_sake_log_evt("sensor probe start");
   prv_sensorinfo_read(SI_STEP_RUN_TIME);
 }
 

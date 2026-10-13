@@ -535,6 +535,13 @@ static void prv_handle_mtu_change_event(struct ble_gap_event *event) {
     return;
   }
 
+#ifdef CONFIG_MINIMED_SAKE
+  if (event->mtu.conn_handle == s_sake_conn_handle) {
+    char line[32];
+    snprintf(line, sizeof(line), "mtu %u ch%u", event->mtu.value, event->mtu.channel_id);
+    minimed_sake_log_evt(line);
+  }
+#endif
   struct pbl_bt_gatt_device_mtu_update_event mtu_update_event = {.mtu = event->mtu.value};
   nimble_addr_to_pebble_addr(&desc.peer_id_addr, &mtu_update_event.dev_address);
   pbl_bt_cb_gatt_handle_mtu_update(&mtu_update_event);
@@ -548,6 +555,14 @@ static void prv_handle_subscription_event(struct ble_gap_event *event) {
               event->subscribe.prev_notify, event->subscribe.cur_notify,
               event->subscribe.prev_indicate, event->subscribe.cur_indicate);
 #ifdef CONFIG_MINIMED_SAKE
+  if (event->subscribe.conn_handle == s_sake_conn_handle) {
+    // Reason 1 = the pump wrote the CCCD, 3 = restored from the bond on encryption.
+    char line[32];
+    snprintf(line, sizeof(line), "sub a%u r%u n%u>%u i%u>%u", event->subscribe.attr_handle,
+             event->subscribe.reason, event->subscribe.prev_notify, event->subscribe.cur_notify,
+             event->subscribe.prev_indicate, event->subscribe.cur_indicate);
+    minimed_sake_log_evt(line);
+  }
   minimed_sake_handle_subscribe(event->subscribe.conn_handle, event->subscribe.attr_handle,
                                 event->subscribe.cur_notify);
 #endif
@@ -586,12 +601,26 @@ static void prv_handle_notification_rx_event(struct ble_gap_event *event) {
 static void prv_handle_notification_tx_event(struct ble_gap_event *event) {
   PBL_LOG_DBG("notification tx event; status=%d attr_handle=%d indication=%d\n",
               event->notify_tx.status, event->notify_tx.attr_handle, event->notify_tx.indication);
+#ifdef CONFIG_MINIMED_SAKE
+  if (event->notify_tx.conn_handle == s_sake_conn_handle) {
+    char line[32];
+    snprintf(line, sizeof(line), "ntx a%u st%d i%u", event->notify_tx.attr_handle,
+             event->notify_tx.status, event->notify_tx.indication);
+    minimed_sake_log_evt(line);
+  }
+#endif
 }
 
 static int prv_handle_pairing_request_event(struct ble_gap_event *event) {
   struct ble_gap_conn_desc desc;
   struct ble_store_value_sec value_sec;
   int rc;
+
+#ifdef CONFIG_MINIMED_SAKE
+  if (event->pairing_request.conn_handle == s_sake_conn_handle) {
+    minimed_sake_log_evt("pump pair req");
+  }
+#endif
 
   if (pairability_is_enabled()) {
     return 0;

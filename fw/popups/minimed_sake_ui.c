@@ -108,7 +108,7 @@ void minimed_sake_log(const char *msg) {
 // on every reconnect, so a night of dropouts is a night of buzzing -- and these are raw vibes_*
 // calls that ignore Quiet Time. The on-watch log is the debugging channel.
 void minimed_sake_report(MinimedSakeStage stage) {
-  minimed_sake_log(prv_stage_text(stage));
+  minimed_sake_log_evt(prv_stage_text(stage));
 }
 
 MinimedSakeMode minimed_sake_get_mode(void) {
