@@ -1647,6 +1647,38 @@ static void section_activity(void) {
         vals[MINIMED_ACTIVITY_POINTS - 1] == 0);
   check("curve is non-zero mid-forward",
         vals[MINIMED_ACTIVITY_BACK_POINTS + 24] > 0);
+
+  // Continuing-basal guess: with steady delivery, the forward half rises to the delivered rate
+  // (a constant rate's steady-state activity is that rate). 25 mu every 5 min = 300 mu/h.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 100000, base);
+  for (int i = 1; i <= 24; i++) {  // an hour of 0.025 U microboluses every 5 min
+    minimed_activity_observe_reservoir(&a, 100000 - 25 * i, base + i * 300);
+  }
+  const uint32_t now2 = base + 24 * 300;
+  minimed_activity_serialize(&a, now2, blob);
+  const uint8_t *v2 = blob + 6 + 2 * MINIMED_ACTIVITY_POINTS;
+  // Late in the forward half the committed part has decayed and the plateau is the assumed rate:
+  // 300 mu/h = 5 mU/min = 6 LSB. Allow a couple of LSB for the kernel tail still landing.
+  const int far = MINIMED_ACTIVITY_BACK_POINTS + 72 - 2;
+  check("forward plateau reaches the delivery rate", v2[far] >= 5 && v2[far] <= 8);
+
+  // Suspend: the forward guess is exactly zero, so the curve only decays.
+  minimed_activity_set_suspended(&a, true);
+  minimed_activity_serialize(&a, now2, blob);
+  check("suspend zeroes the forward plateau", v2[far] == 0);
+  minimed_activity_set_suspended(&a, false);
+
+  // A bolus lump must not inflate the assumed rate: the estimate excludes bolus-sized entries.
+  minimed_activity_init(&a);
+  minimed_activity_observe_reservoir(&a, 100000, base);
+  for (int i = 1; i <= 12; i++) {
+    minimed_activity_observe_reservoir(&a, 100000 - 25 * i, base + i * 300);
+  }
+  minimed_activity_observe_reservoir(&a, 100000 - 25 * 12 - 5000, base + 13 * 300); // 5 U bolus
+  const uint32_t now3 = base + 13 * 300;
+  minimed_activity_serialize(&a, now3, blob);
+  check("a bolus does not inflate the assumed rate", v2[far] <= 8);
 }
 
 static void section_hypo(void) {

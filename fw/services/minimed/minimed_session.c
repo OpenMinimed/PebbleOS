@@ -1458,6 +1458,9 @@ static void prv_status_publish_if_done(uint8_t completed_op) {
     // basal hold) must still reach the watchface as a flat provisional curve, so "no data yet"
     // doesn't look like "broken".
     minimed_activity_observe_reservoir(&s_activity, s_idd_st.reservoir_mu, now);
+    // A paused pump delivers nothing, so the forward projection assumes zero delivery instead of
+    // extrapolating the recent rate.
+    minimed_activity_set_suspended(&s_activity, s_idd_st.therapy == MINIMED_THERAPY_PAUSE);
     minimed_sake_sender_send_activity(&s_activity);
   }
   minimed_status_update(&s_idd_st, &s_tas, now);

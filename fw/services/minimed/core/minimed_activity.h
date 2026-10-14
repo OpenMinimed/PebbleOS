@@ -32,6 +32,9 @@
                                                 //!< before a meal bolus re-armed provisional for
                                                 //!< 6 h, keeping the curve dotted all day)
 #define MINIMED_ACTIVITY_PRIME_SECS 300         //!< deltas discarded after a reservoir increase
+#define MINIMED_ACTIVITY_RATE_WINDOW_SECS 3600  //!< window for the assumed continuing basal rate
+#define MINIMED_ACTIVITY_NONBASAL_MU 300        //!< an entry above this is a bolus, not basal
+                                                //!< (excluded from the rate estimate)
 
 //! Serialized window: 3 h behind, 6 h ahead (= the kernel horizon) plus the point at now.
 #define MINIMED_ACTIVITY_BACK_POINTS 36
@@ -50,8 +53,10 @@ typedef struct {
   int32_t last_res_mu;
   bool have_res;
   uint32_t last_sample_ts;
+  uint32_t first_sample_ts;
   uint32_t prime_until;        //!< discard delivery deltas until this time
   uint32_t provisional_until;  //!< mark the curve provisional until this time
+  bool suspended;              //!< therapy paused: assume zero continuing delivery
 } MinimedActivity;
 
 void minimed_activity_init(MinimedActivity *a);
@@ -63,15 +68,18 @@ void minimed_activity_init(MinimedActivity *a);
 //! delivered is still in the body).
 bool minimed_activity_observe_reservoir(MinimedActivity *a, int32_t res_mu, uint32_t now);
 
-//! Insulin action at `t`, in milli-IU per minute. Sum over the ledger of d * k(t - ts).
+//! Insulin action at `t`, in milli-IU per minute. Sum over the ledger of d * k(t - ts). This is
+//! the committed curve: no future delivery is assumed. serialize() adds the continuing-basal term.
 float minimed_activity_eval_mu_per_min(const MinimedActivity *a, uint32_t t);
 
 //! Serialize the sampled curve in the KEY_GRAPH_DATA wire layout (little-endian):
 //! [ref_ts u32][count u16][offset_min u16 xN][activity u8 xN], where activity is 0.05 U/h per
 //! LSB (12.75 U/h ceiling). The points sit on the 5-minute grid ending at `now` + 6 h, so the
 //! point at index MINIMED_ACTIVITY_BACK_POINTS is exactly now and the rest are the forward
-//! projection. Returns the byte count, or 0 with no ledger (nothing real to draw -- omit the
-//! key, as with the BG graph).
+//! projection. Points after `now` include a best guess that delivery continues at the recent
+//! basal rate (synthetic deliveries convolved like real ones, so it is continuous with the past
+//! rather than a step); a suspend zeroes that term. Returns the byte count, or 0 with no ledger
+//! (nothing real to draw -- omit the key, as with the BG graph).
 #define MINIMED_ACTIVITY_BLOB_MAX (6 + 3 * MINIMED_ACTIVITY_POINTS)
 uint16_t minimed_activity_serialize(const MinimedActivity *a, uint32_t now, uint8_t *out);
 
@@ -80,3 +88,7 @@ uint16_t minimed_activity_serialize(const MinimedActivity *a, uint32_t now, uint
 //! 2026-10-13): after a reboot the curve simply starts low and grows as deliveries arrive, and the
 //! 6 h of dots was the worst part of the feature in daily use.
 bool minimed_activity_provisional(const MinimedActivity *a, uint32_t now);
+
+//! Tell the model whether therapy is paused (IDD therapy state PAUSE). A suspend is assumed to
+//! continue exactly: the forward half then carries only what is already in the body.
+void minimed_activity_set_suspended(MinimedActivity *a, bool suspended);

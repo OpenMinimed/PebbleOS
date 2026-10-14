@@ -37,6 +37,7 @@ bool minimed_activity_observe_reservoir(MinimedActivity *a, int32_t res_mu, uint
     a->last_res_mu = res_mu;
     a->have_res = true;
     a->last_sample_ts = now;
+    a->first_sample_ts = now;
     return false;
   }
   const int32_t previous = a->last_res_mu;
@@ -117,6 +118,58 @@ bool minimed_activity_provisional(const MinimedActivity *a, uint32_t now) {
   return now < a->provisional_until;
 }
 
+void minimed_activity_set_suspended(MinimedActivity *a, bool suspended) {
+  a->suspended = suspended;
+}
+
+// Kernel weight for an age dt (seconds), interpolated between 5-minute table points. Units:
+// 1e-6 per minute, matching the table.
+static int32_t prv_kernel(int64_t dt_secs) {
+  const uint16_t n = MINIMED_ACTIVITY_TD_MIN / 5 + 1;
+  if (dt_secs < 0 || dt_secs >= (int64_t)MINIMED_ACTIVITY_TD_MIN * 60) return 0;
+  const uint32_t step = (uint32_t)dt_secs / MINIMED_ACTIVITY_STEP_SECS;
+  const uint32_t frac = (uint32_t)dt_secs % MINIMED_ACTIVITY_STEP_SECS;
+  uint32_t k = s_kernel[step];
+  if (step + 1 < n && frac != 0) {
+    k = (k * (MINIMED_ACTIVITY_STEP_SECS - frac) + s_kernel[step + 1] * frac) /
+        MINIMED_ACTIVITY_STEP_SECS;
+  }
+  return (int32_t)k;
+}
+
+// Best guess at the ongoing basal delivery rate (milli-IU per hour) from the ledger's recent small
+// deltas. Bolus-sized entries are excluded so a meal dose doesn't inflate the forward plateau, and
+// the window is scaled by how much history actually exists so a young ledger still gives a rate.
+static int32_t prv_rate_estimate(const MinimedActivity *a, uint32_t now) {
+  if (!a->have_res) return 0;
+  const uint32_t from = now - MINIMED_ACTIVITY_RATE_WINDOW_SECS;
+  int64_t sum = 0;
+  for (uint16_t i = 0; i < a->count; i++) {
+    const uint16_t idx =
+        (uint16_t)((a->head + MINIMED_ACTIVITY_LEDGER_MAX - 1 - i) % MINIMED_ACTIVITY_LEDGER_MAX);
+    const MinimedActivityEntry *e = &a->ledger[idx];
+    if (e->ts <= now && e->ts >= from && e->mu <= MINIMED_ACTIVITY_NONBASAL_MU) sum += e->mu;
+  }
+  uint32_t span = now - a->first_sample_ts;
+  if (span < MINIMED_ACTIVITY_GAP_SECS) return 0;  // too little history to estimate from
+  if (span > MINIMED_ACTIVITY_RATE_WINDOW_SECS) span = MINIMED_ACTIVITY_RATE_WINDOW_SECS;
+  return (int32_t)(sum * 3600 / span);
+}
+
+// Activity at `t` from assuming delivery continues at `rate_mu_per_h` from `now` onward: synthetic
+// 5-minute deliveries convolved with the same kernel. Convolving them (rather than adding a
+// constant) keeps the curve continuous with the past: it starts near zero at now and rises to the
+// steady-state rate as the real deliveries behind it decay. Returns milli-IU per minute.
+static float prv_continued_mu_per_min(int32_t rate_mu_per_h, uint32_t now, uint32_t t) {
+  if (rate_mu_per_h <= 0 || t <= now) return 0.0f;
+  const int32_t mu_per_step = rate_mu_per_h / 12;  // 5 minutes at the hourly rate
+  int64_t sum = 0;
+  for (uint32_t s = now; s + MINIMED_ACTIVITY_STEP_SECS <= t; s += MINIMED_ACTIVITY_STEP_SECS) {
+    sum += (int64_t)mu_per_step * prv_kernel((int64_t)t - (int64_t)s);
+  }
+  return (float)sum / 1000000.0f;
+}
+
 uint16_t minimed_activity_serialize(const MinimedActivity *a, uint32_t now, uint8_t *out) {
   if (!a->have_res) return 0;
   const uint32_t ref =
@@ -128,12 +181,15 @@ uint16_t minimed_activity_serialize(const MinimedActivity *a, uint32_t now, uint
   out[4] = (uint8_t)MINIMED_ACTIVITY_POINTS;
   out[5] = (uint8_t)(MINIMED_ACTIVITY_POINTS >> 8);
   uint8_t *vals = out + 6 + 2 * MINIMED_ACTIVITY_POINTS;
+  const int32_t rate = a->suspended ? 0 : prv_rate_estimate(a, now);
   for (uint16_t i = 0; i < MINIMED_ACTIVITY_POINTS; i++) {
     const uint16_t off_min = (uint16_t)(i * 5);
     out[6 + 2 * i] = (uint8_t)off_min;
     out[7 + 2 * i] = (uint8_t)(off_min >> 8);
     // 0.05 U/h per LSB = 50 mU/h = 50/60 mU/min, so LSB = activity * 60/50 = activity * 6/5.
-    const float act = minimed_activity_eval_mu_per_min(a, ref + i * MINIMED_ACTIVITY_STEP_SECS);
+    const uint32_t ts = ref + i * MINIMED_ACTIVITY_STEP_SECS;
+    float act = minimed_activity_eval_mu_per_min(a, ts);
+    act += prv_continued_mu_per_min(rate, now, ts);
     int32_t v = (int32_t)(act * 1.2f + 0.5f);
     vals[i] = (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
   }
