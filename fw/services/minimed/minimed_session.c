@@ -539,7 +539,7 @@ static void prv_parse_and_show(void) {
 
 // Parse a reassembled SRCP IOB response and forward it to the watchface. On a parse failure log
 // the leading bytes so an on-watch capture shows exactly what the pump returned (the first HW use
-// of encrypt-for-pump could reveal a framing/E2E surprise -- see PROGRESS.md risk register).
+// of encrypt-for-pump could reveal a framing/E2E surprise -- see .agents/PROGRESS.md risk register).
 static void prv_parse_iob(void) {
   int32_t iob_mu;
   if (!minimed_iob_parse_response(s_srcp, s_srcp_len, &iob_mu)) {

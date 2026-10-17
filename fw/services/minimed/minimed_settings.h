@@ -7,7 +7,7 @@
 #include <stdint.h>
 
 //! Firmware-side home for settings the phone configures through the watchface's Settings page
-//! (Clay), as opposed to a plain `#define` flipped in a personal build -- see TESTING.md's old
+//! (Clay), as opposed to a plain `#define` flipped in a personal build -- see `.agents/TESTING.md`'s
 //! "Local compile-time overrides" section, now replaced by this for anything a user (not just a
 //! developer) should be able to change. Persisted so a reboot/reflash keeps the choice; RAM-cached
 //! so the annunciation handler (BT host task) never touches flash on the hot path.

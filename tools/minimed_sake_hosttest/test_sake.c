@@ -638,7 +638,7 @@ static void section_idd_flags(void) {
   printf("--- IDD Status Changed flags ---\n");
   uint8_t out[6];
 
-  // The vector observed on this pump overnight 2026-07-26/27 (PROGRESS.md item 3b).
+  // The vector observed on this pump overnight 2026-07-26/27 (.agents/PROGRESS.md item 3b).
   const uint8_t observed[] = {0xef, 0x81, 0x4f, 0x00};
   check("parse of observed HW vector ef814f00",
         minimed_idd_flags_parse(observed, sizeof(observed)) == 0x004f81efULL);
