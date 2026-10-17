@@ -11,6 +11,7 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 | [`WATCHFACE.md`](WATCHFACE.md) | The launch-crash saga (dormant) and the launch-gap gotcha |
 | [`TESTING.md`](TESTING.md) | The build/flash/test loop, pump and watchface test procedures |
 | [`VERSIONS.md`](VERSIONS.md) | Every build vN, newest first, plus the chronological dev log |
+| [`INSULIN-ACTIVITY.md`](INSULIN-ACTIVITY.md) | Insulin activity curve: approved design, not yet implemented (issue #28) |
 | [`../Documentation/`](../Documentation/) | Pump protocol source of truth — update eagerly |
 
 ## Context & scope (read first)
@@ -542,6 +543,16 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
      senders should not assume the announcement gets re-sent on session open. See item 10.
    - **Margin semantics:** resolved. The protocol now allows a sender to include a reasonable
      margin before the requested `GRAPH_HOURS` window; PebbleOS uses 30 minutes.
+
+12. **Insulin activity curve — DESIGNED 2026-09-19, not started.** Forward-projected insulin
+    activity (U/h) on the watchface, to time a suspend or temp target against planned exercise.
+    Full design in [`INSULIN-ACTIVITY.md`](INSULIN-ACTIVITY.md) and on
+    [issue #28](https://github.com/OpenMinimed/PebbleOS/issues/28). Ledger comes from **reservoir
+    differencing** (0.025 IU resolution, micro-boluses individually visible), display kernel is the
+    Loop/oref exponential for Fiasp, not the pump's own AIT-clipped IOB curve. Next action is a
+    ~5-line phase-1 logging build: add bit 2 (Reservoir Status Changed, which "rides every
+    microbolus") to the status-read trigger set at `minimed_sake_read.c:563`, then soak a week.
+    Subsumes the bolus-only limitation behind item #22's total-IOB question.
 
 ## References
 
