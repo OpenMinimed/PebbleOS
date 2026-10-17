@@ -155,7 +155,7 @@ vocabulary). Quick facts kept here:
 - No local toolchain; build in Docker image **`ghcr.io/coredevices/pebbleos-docker:v6`** (official CI
   image, not the old `pebbleos-build:local`). `minimed-build.sh` wraps the whole Docker invocation.
 - Everything is behind Kconfig `CONFIG_MINIMED_SAKE`; boots NORMAL (ordinary Pebble).
-  MiniMed app: SELECT = NORMAL⇄DUAL, DOWN = forget pump, Back = exit.
+  MiniMed app: a menu with Log, Mode (NORMAL⇄DUAL), Pump alerts, Hypo model and Forget pump.
 - Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`, 24/24) before reflashing.
 
 ### PT2 (obelix) port — verified build recipe

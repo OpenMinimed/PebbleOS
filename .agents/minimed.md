@@ -26,18 +26,23 @@ in mind.
 - `fw/services/minimed/`: the firmware service.
   - `minimed_task.c`: the dedicated `PebbleTask_Minimed` (priority 1, deliberately not under the
     task watchdog), its event queue and timers.
-  - `minimed_session.c`: the pump session (exchange serialiser, setup chain, backfill, models,
-    alerts). Event-driven; never calls NimBLE.
+  - `minimed_session.c`: the pump session (exchange serialiser, setup chain, backfill, alerts,
+    reminders). Event-driven; never calls NimBLE.
+  - `minimed_forecast.c` and `minimed_hypo_check.c`: the 30-minute forecast and the hypo model,
+    fed by the session. Each can be compiled out (`CONFIG_MINIMED_PREDICTOR`,
+    `CONFIG_MINIMED_HYPO`, in `fw/services/minimed/Kconfig`); the session then calls empty
+    inline stand-ins from their headers. Total IOB's basal part (`core/minimed_basal_iob.c`) does
+    not depend on either.
   - `minimed_transport.h`: GATT client ops on named characteristics, results posted as events.
     Mirrors the SDK's `ble_client_*` API on purpose.
   - `minimed_sake_sender.c`: the watchface sink (loopback CommSession, one push per completed op).
-  - `minimed_settings.c`: user settings set from the watchface's Clay page.
+  - `minimed_settings.c`: user settings, set in the MiniMed app's menu.
 - `subsys/bluetooth/`: only what needs NimBLE. `minimed_transport_nimble.c` (the transport),
   `minimed_sake_service.c` (SAKE GATT server, handshake, advertising payload, pairing window),
   hooks in `advert.c`, `init.c`, `nimble_store.c`. On radio-less boards (`CONFIG_BT_HCI_FAKE`,
   i.e. QEMU) `minimed_fake_pump.c` replaces the transport and the cipher.
-- `fw/popups/minimed_*` and `fw/apps/system/minimed_sake_app.c`: mode toggle, on-watch log, alert
-  popups.
+- `fw/popups/minimed_*` and `fw/apps/system/minimed_sake_app.c`: the MiniMed app's menu (log,
+  mode, settings, forget pump) and the alert popups.
 - `fw/services/minimed/stubs/`: link stand-ins for upstream code a MiniMed build leaves out, each
   behind its own `CONFIG_MINIMED_STUB_*` flag; the stubbed files themselves stay untouched. Today
   only voice (`CONFIG_MINIMED_STUB_VOICE`), which asterix needs to fit its flash.

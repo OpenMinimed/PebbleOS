@@ -38,7 +38,8 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB, so the
   build turns the voice endpoint off (`CONFIG_SERVICE_VOICE_ENDPOINT=n`, which takes the voice
   service and speex with it) and links the stand-ins in `fw/services/minimed/stubs/`
-  (`CONFIG_MINIMED_STUB_VOICE=y`), because upstream calls into voice unconditionally. With the
+  (`CONFIG_MINIMED_STUB_VOICE`, on by itself in such a build), because upstream calls into voice
+  unconditionally. With the
   set and sensor reminders it lands at 99.1% (about 9 KB left). Dictation then fails as on a watch
   without a microphone.
 - **obelix** (`--pt2`): two single-slot bundles, release build, release-band check. The rest of
@@ -47,12 +48,15 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ### User-facing settings
 
 Anything a user (not just a developer) should be able to change lives in
-`minimed_settings.{c,h}`, persisted to flash and set from the watchface's Settings page in the
-Pebble mobile app (Clay; see `pebble-glucose-watchface/src/pkjs`) rather than a compile flag.
-Which pump alert categories pop up on the watch (issue #15) is the first example. Adding a new
-one: add a bit to `pebble_glucose_protocol.h`'s `KEY_SETTINGS_ALERTS`-style key (or a new key, if
-it's not a bitmask), read it in `minimed_glucose_announce.c`, cache/persist it in
-`minimed_settings.c`, and add a Clay item to `config.js` on the watchface side.
+`minimed_settings.{c,h}`, persisted to flash and set from the MiniMed app's menu
+(`fw/apps/system/minimed_sake_app.c`). Adding a new on/off feature: add a `MINIMED_FEATURE_*`
+bit (features default on, since the stored mask is the switched-off ones), check it with
+`minimed_settings_feature_enabled()`, and add a row to `s_root_items`.
+
+Features too large for asterix's flash also get a Kconfig symbol in `fw/services/minimed/Kconfig`
+(today `CONFIG_MINIMED_PREDICTOR` and `CONFIG_MINIMED_HYPO`, both default on). Turn one off for
+a build by adding `-DCONFIG_MINIMED_<NAME>=n` to that target's `CORE_CFG` in `minimed-build.sh`.
+Check what a build got with `grep MINIMED build-asterix/.config`.
 
 Some behaviour is still gated behind a plain `#define` rather than Kconfig, for things that are
 genuinely a developer/debug knob rather than a user preference. To flip one of those on a personal
@@ -143,7 +147,7 @@ ever bites, persisting the pump identity is the fix.
 
 Two things learned doing this the first time, both worth repeating:
 
-- **Forget the pump with the app's DOWN button, never from the Bluetooth menu.** The menu deletes
+- **Forget the pump with the app's Forget pump item, never from the Bluetooth menu.** The menu deletes
   the SM bond but not the app's paired flag, so the watch advertises FE81 with no bond behind it
   and the pump cannot find it. v36 shows this state directly: `MODE: SPIKE (FE81)` above `pmp0`.
 - **Turn phone Bluetooth off while first-pairing the pump.** There is still one connection slot,
@@ -168,17 +172,17 @@ Order matters, because pairing the phone deletes the pump bond but not vice vers
    it loops `connected` → `reason 0x13` or the phone says "error pairing", forget the watch on the
    phone and re-pair. Don't bother protecting the pump bond here — you're about to lose it anyway.
 2. **Sideload** the `.pbz` (steps above). The watch reboots.
-3. **Pump second.** SPIKE mode, press **DOWN** (forget pump). This is required, not optional: the
+3. **Pump second.** SPIKE mode, choose **Forget pump** in the app. This is required, not optional: the
    pump's SM bond is gone but the watch's own paired flag lives in a separate settings file
    (`minimedsake`) and still says paired, so it would advertise FE81 with no bond — the classic
-   FE81/FE82 mismatch below. DOWN drops it to FE82 first-pair. Then on the pump, remove the old
+   FE81/FE82 mismatch below. Forget pump drops it to FE82 first-pair. Then on the pump, remove the old
    entry and add **"Mobile Pebble"**.
 4. Wait for `HANDSHAKE OK!`, confirm BG (and IOB), and note the `prm …` line.
 5. **Only then** run the phone-bond test (SPIKE→NORMAL toggles). Don't reboot the watch or re-pair
    the phone mid-test — either one costs you step 3 again.
 
 Worth fixing eventually: the watch could clear its own paired flag at boot when no pump bond exists,
-which would make step 3's DOWN unnecessary and auto-heal the FE81/FE82 mismatch permanently. (v36's
+which would make step 3's Forget pump unnecessary and auto-heal the FE81/FE82 mismatch permanently. (v36's
 bond inventory line now *detects* that mismatch — `FE81` with `pmp0` — but deliberately does not
 auto-heal it; making the state visible came first.)
 
@@ -193,7 +197,7 @@ it fires for any device — so judge by the SAKE-specific lines, not by `connect
 Because the old bug was timing-dependent (only bit when advertising was already on air at the
 toggle), one clean cycle proves nothing — run several, and provoke the bad timing.
 
-1. Clean start: pump paired + BG in SPIKE; phone paired in NORMAL. (Use DOWN + re-add "Mobile PB"
+1. Clean start: pump paired + BG in SPIKE; phone paired in NORMAL. (Use Forget pump + re-add "Mobile PB"
    to reconcile the pump if it's mismatched; forget/re-pair the phone once if needed.)
 2. Toggle to NORMAL. Watch the log ~2 min. **PASS: no fresh SAKE-specific lines appear** (old lines
    lingering on the 8-line buffer from the last SPIKE session don't count — watch for *new* ones).
@@ -217,7 +221,7 @@ Bluetooth → forget the listed pump; on the phone, reconnect / re-pair once. Th
 1. **Flash v23** (see "Flash" below). Boots NORMAL.
 2. Open the SAKE app: expect `paired (persisted): FE81`. Confirm the **phone is connected** and
    the watch's Settings → Bluetooth shows the **phone**.
-3. SELECT → `MODE: SPIKE`. Phone BT can stay on — the toggle drops the phone link (single slot)
+3. Mode → `MODE: SPIKE`. Phone BT can stay on — the toggle drops the phone link (single slot)
    and switches to the Medtronic advert. Pump reconnects: `adv EN FE81 t3` → `connected` →
    `HANDSHAKE OK!` → `*** BG N.N ***`.
 4. **The key check:** SELECT → back to `MODE: NORMAL`. Within ~a minute the **phone reconnects on
@@ -337,7 +341,7 @@ HW-verified (v32). The second — the pump's bond **deleting** the phone's, so t
 and looped connect/terminate(`0x13`) — is fixed in v33 and still unverified. This is the test.
 
 1. Flash, then do the FULL first-time pairing **once**: phone in NORMAL, then pump in SPIKE
-   (DOWN to forget, then add "Mobile Pebble" on the pump). This one re-pair is expected.
+   (Forget pump, then add "Mobile Pebble" on the pump). This one re-pair is expected.
 2. Cycle: SPIKE → wait for `HANDSHAKE OK!` → back to NORMAL. The phone should reconnect within
    ~a minute with **no re-pair prompt** and no `0x13` loop. In the log: `pump conn in NORMAL ->
    drop` for the pump (v32 doing its job), then `connected` + `conn phone m=N` that **stays**.
@@ -357,19 +361,19 @@ is LESC working; a silent Just Works pair means the reconfig didn't take.
 The watch's paired flag and the pump's bond can disagree, and neither auto-corrects:
 
 - Watch log shows `adv EN FE81 …` but the pump can't find it → pump side is unpaired.
-  **Press DOWN (forget pump)** on the watch → drops to FE82 → then add "Mobile PB" on the pump.
+  **Choose Forget pump** in the MiniMed app → drops to FE82 → then add "Mobile PB" on the pump.
 - **`adv EN FE81 t3` → `connected` → (silence) → `disc reason=0x08` (supervision timeout),
   looping, never reaching the handshake.** This is the mismatch's other face: the watch still
   advertises FE81 and believes it's paired, but has **no LTK** for the pump (e.g. its bond was
   deleted while the paired flag stayed set), so the pump connects, can't encrypt, and the link
-  just times out. **Fix: DOWN (forget pump) on the watch, then remove/re-add "Mobile PB" on the
+  just times out. **Fix: Forget pump in the MiniMed app, then remove/re-add "Mobile PB" on the
   pump** — a clean FE82 first-pair. (Don't misread this as a link/radio problem.)
 - **Trap that causes the above:** forgetting the pump via the watch's **Settings → Bluetooth**
   menu deletes the SM bond but does **not** clear the spike app's persisted paired flag, leaving
-  exactly this FE81-without-a-key mismatch. Always forget the pump with the app's **DOWN**
-  button, which clears both.
+  exactly this FE81-without-a-key mismatch. Always forget the pump with the app's **Forget pump**
+  item, which clears both.
 - Watch on FE82 but a bonded pump ignores it → remove/re-add the device on the pump.
-- Rule of thumb: **pump can't see watch → make both do first-pair** (DOWN on watch + remove/add on pump).
+- Rule of thumb: **pump can't see watch → make both do first-pair** (Forget pump on watch + remove/add on pump).
 
 ## Reading logs
 

@@ -40,10 +40,10 @@ still — so **Stand-By Mode is off** (2026-09-06). Notes for anyone reconsideri
 
 - **FE81/FE82 pairing-state reconciliation.** The watch's paired flag and the pump's bond can
   disagree, and neither auto-corrects: if the watch advertises FE81 (log `adv EN FE81 …`) but the
-  pump can't find it, the pump's side is unpaired → press **DOWN (forget pump)** on the watch to
+  pump can't find it, the pump's side is unpaired → choose **Forget pump** in the MiniMed app to
   drop to FE82, then add "Mobile PB" on the pump. Conversely, a watch on FE82 that a bonded pump
   ignores means re-pair on the pump. Rule of thumb: **pump can't see watch → make both do
-  first-pair (DOWN on watch + remove/add on pump).** A smarter auto-fallback (try FE82 if FE81
+  first-pair (Forget pump on watch + remove/add on pump).** A smarter auto-fallback (try FE82 if FE81
   draws no connection for N s) is a possible future improvement.
 
 ## Known papercut: phone steals the SPIKE slot (diagnosed 2026-07-28, no firmware bug)
