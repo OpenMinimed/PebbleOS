@@ -28,6 +28,12 @@ static char s_joined[SAKE_LOG_LINES * SAKE_LOG_WIDTH];
 
 static MinimedSakeMode s_mode = MinimedSakeModeNormal;
 
+// Forecast score for the app's pinned score line. Written by the session (MiniMed task) via
+// minimed_sake_set_pred_score; a torn read at worst mixes the two sets of values, like s_joined.
+static uint32_t s_pred_rmse_x10;
+static uint32_t s_pred_cf_x10;
+static uint32_t s_pred_count;
+
 static void prv_rebuild_joined(void) {
   size_t off = 0;
   s_joined[0] = '\0';
@@ -117,6 +123,18 @@ MinimedSakeMode minimed_sake_get_mode(void) {
 
 const char *minimed_sake_get_log(void) {
   return s_joined;
+}
+
+void minimed_sake_set_pred_score(uint32_t rmse_x10, uint32_t cf_x10, uint32_t count) {
+  s_pred_rmse_x10 = rmse_x10;
+  s_pred_cf_x10 = cf_x10;
+  s_pred_count = count;
+}
+
+void minimed_sake_get_pred_score(uint32_t *rmse_x10, uint32_t *cf_x10, uint32_t *count) {
+  *rmse_x10 = s_pred_rmse_x10;
+  *cf_x10 = s_pred_cf_x10;
+  *count = s_pred_count;
 }
 
 // Watchdog recovery: the pump link went silent. Keep the mode DUAL and run the NORMAL kill-switch

@@ -11,7 +11,6 @@
 #include "applib/ui/recognizer/swipe.h"
 #include "applib/ui/ui.h"
 #include "kernel/pbl_malloc.h"
-#include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "popups/minimed_sake_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
@@ -22,22 +21,12 @@
 
 #define SAKE_APP_REFRESH_MS 400
 
-//! Re-read the bond inventory every Nth refresh. Reading it opens the bonding settings file, so
-//! doing it at the full 400 ms rate would mean flash reads 2.5x a second for the whole time this
-//! app is foreground. Bond state changes only on a pair/forget, so a few seconds of lag on a
-//! diagnostic line costs nothing.
-#define SAKE_APP_BOND_REFRESH_EVERY 10
-
 typedef struct {
   Window window;
   TextLayer text;
   AppTimer *timer;
   Recognizer *swipe_recognizer;
   char buf[640];
-  uint8_t bond_refresh_countdown;
-  uint8_t bond_gateway;
-  uint8_t bond_non_gateway;
-  uint8_t bond_deleted;
 } MinimedSakeAppData;
 
 static void prv_refresh(MinimedSakeAppData *data) {
@@ -49,19 +38,22 @@ static void prv_refresh(MinimedSakeAppData *data) {
   const char *ver = TINTIN_METADATA.version_short;
   const bool has_ver = (ver[0] != '\0');
 
-  // Bond inventory: gw = phone bonds, pmp = pump (non-gateway) bonds, del = non-gateway bonds
-  // deleted since boot. "FE81" above with pmp0 is the FE81/FE82 mismatch; pmp0 with del1 means
-  // something pruned the pump bond; pmp0 with del0 means it was never stored.
-  if (data->bond_refresh_countdown == 0) {
-    bt_persistent_storage_get_ble_bonding_counts(&data->bond_gateway, &data->bond_non_gateway,
-                                                 &data->bond_deleted);
-    data->bond_refresh_countdown = SAKE_APP_BOND_REFRESH_EVERY;
+  // Forecast score since boot, pinned here because the session's "rmse ..." ring line scrolls out
+  // of the 14-line log on the next reconnect. rmse = forecast RMSE, cf = carry-forward baseline
+  // RMSE, both in tenths of mg/dL; n = scored forecasts; "rmse n0" before the first score.
+  uint32_t rmse_x10, cf_x10, n;
+  minimed_sake_get_pred_score(&rmse_x10, &cf_x10, &n);
+  char score[48];
+  if (n == 0) {
+    snprintf(score, sizeof(score), "rmse n0");
+  } else {
+    snprintf(score, sizeof(score), "rmse%lu.%lu cf%lu.%lu n%lu", (unsigned long)(rmse_x10 / 10),
+             (unsigned long)(rmse_x10 % 10), (unsigned long)(cf_x10 / 10),
+             (unsigned long)(cf_x10 % 10), (unsigned long)n);
   }
-  data->bond_refresh_countdown--;
 
-  snprintf(data->buf, sizeof(data->buf), "%s%s%s\nbond gw%u pmp%u del%u\n%s", has_ver ? ver : "",
-           has_ver ? " " : "", mode, data->bond_gateway, data->bond_non_gateway, data->bond_deleted,
-           minimed_sake_get_log());
+  snprintf(data->buf, sizeof(data->buf), "%s%s%s\n%s\n%s", has_ver ? ver : "", has_ver ? " " : "",
+           mode, score, minimed_sake_get_log());
   text_layer_set_text(&data->text, data->buf);
 }
 

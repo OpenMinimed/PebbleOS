@@ -55,6 +55,16 @@ void minimed_sake_log_evt(const char *msg);
 //! Snapshot of the joined log text for the app to render. Points at a static buffer.
 const char *minimed_sake_get_log(void);
 
+//! Latest 30-minute forecast score, for the app's pinned score line: RMSE of the forecast and of
+//! the carry-forward baseline (cf), both in tenths of mg/dL, and the number of scored forecasts
+//! since boot (n). All zero before the first score. Written by the pump session (MiniMed task),
+//! read by the app task; a refresh that catches a mid-write read mixes the two sets of values,
+//! which is fine for a debug line.
+void minimed_sake_set_pred_score(uint32_t rmse_x10, uint32_t cf_x10, uint32_t count);
+
+//! Copy out the values from the latest minimed_sake_set_pred_score call.
+void minimed_sake_get_pred_score(uint32_t *rmse_x10, uint32_t *cf_x10, uint32_t *count);
+
 //! Implemented in the BT layer (advert.c): drop the active pump/phone link if any, so advertising
 //! restarts under the current mode. Declared here so the core toggle can call it.
 void minimed_sake_force_readvertise(void);

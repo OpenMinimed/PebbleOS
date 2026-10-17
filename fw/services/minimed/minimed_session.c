@@ -761,6 +761,8 @@ static void prv_predict_reading(int32_t mgdl) {
   const bool scored = minimed_predict_score_actual(&s_pred_score, s_reading_ts, mgdl, &err);
   const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
   const uint32_t b = minimed_predict_score_rmse_x10(&s_pred_score, true);
+  // Same numbers for the app's pinned score line: its own ring line scrolls away on a reconnect.
+  minimed_sake_set_pred_score(r, b, s_pred_score.count);
   if (scored) {
     PBL_LOG_INFO(
         "minimed: predict score n=%lu err=%+ld rmse=%lu.%lu carry-forward=%lu.%lu mg/dL "
