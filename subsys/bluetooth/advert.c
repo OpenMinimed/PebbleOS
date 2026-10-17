@@ -72,7 +72,7 @@ void minimed_sake_clear_link_state(void) {
   s_rejected_pump_conn = BLE_HS_CONN_HANDLE_NONE;
   // The pump link is guaranteed dead here (see callers), so the watchface's indicator must not be
   // left showing a stale "connected" from before the restart/toggle.
-  minimed_sake_sender_send_pump_connected(false);
+  minimed_sake_sender_send_pump_link_state(PUMP_LINK_OFFLINE);
   minimed_sake_sender_commit();
 }
 
@@ -230,7 +230,7 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
     // bookkeeping there, and routing the pump would flip its single-connection state and free the
     // advert scheduler incorrectly.
     s_sake_conn_handle = event->connect.conn_handle;
-    minimed_sake_sender_send_pump_connected(true);
+    minimed_sake_sender_send_pump_link_state(PUMP_LINK_UP);
     minimed_sake_sender_commit();
     minimed_sake_report(MinimedSakeStageConnected);
     {
@@ -261,7 +261,8 @@ static void prv_handle_connection_event(struct ble_gap_event *event) {
   // connected forever. Handle reuse is possible now that there are two connection slots.
   if (event->connect.conn_handle == s_sake_conn_handle) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-    minimed_sake_sender_send_pump_connected(false); // the pump link this handle meant is gone
+    minimed_sake_sender_send_pump_link_state(
+        PUMP_LINK_OFFLINE); // the pump link this handle meant is gone
     minimed_sake_sender_commit();
   }
   if (event->connect.conn_handle == s_rejected_pump_conn) {
@@ -372,7 +373,7 @@ static void prv_handle_disconnection_event(struct ble_gap_event *event) {
   if (conn_handle == s_sake_conn_handle ||
       minimed_sake_addr_is_pump(&event->disconnect.conn.peer_id_addr)) {
     s_sake_conn_handle = BLE_HS_CONN_HANDLE_NONE;
-    minimed_sake_sender_send_pump_connected(false);
+    minimed_sake_sender_send_pump_link_state(PUMP_LINK_OFFLINE);
     minimed_sake_sender_commit();
     minimed_transport_nimble_link_down(); // stop the session; the link is gone
     {

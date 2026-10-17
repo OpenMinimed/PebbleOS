@@ -20,6 +20,7 @@
 #include "comm/ble/gap_le_advert.h"
 #include "comm/bt_lock.h"
 #include "kernel/event_loop.h"
+#include "minimed_sake_sender.h"
 #include "minimed_task.h"
 #include "minimed_transport.h"
 #include "minimed_transport_nimble.h"
@@ -415,6 +416,8 @@ static int prv_sake_port_access(uint16_t conn_handle, uint16_t attr_handle,
       }
     }
     minimed_sake_report(MinimedSakeStageHandshakeComplete);
+    minimed_sake_sender_send_pump_link_state(PUMP_LINK_READY);
+    minimed_sake_sender_commit();
     minimed_transport_nimble_link_up(conn_handle); // the session starts its GATT client reads
     // The pump is bonded now: close the pump-pairing window (back to strict LESC for the phone)
     // and re-air the pump advert as FE81.
@@ -531,6 +534,9 @@ void minimed_sake_handle_subscribe(uint16_t conn_handle, uint16_t attr_handle, b
   }
 
   minimed_sake_report(MinimedSakeStageSubscribed);
+  // A new handshake starts: no data until it completes, whatever the link did before.
+  minimed_sake_sender_send_pump_link_state(PUMP_LINK_UP);
+  minimed_sake_sender_commit();
   // Start a fresh handshake for this subscription -- the pump restarts from stage 0 on every
   // pairing attempt, so re-init the server (and draw new server key material) each time.
   if (s_keydb_ok) {

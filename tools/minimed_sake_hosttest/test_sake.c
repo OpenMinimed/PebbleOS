@@ -602,6 +602,36 @@ static void section_backfill(void) {
         minimed_history_parse_meal(real59, sizeof(real59), &m) && m.grams == 59 &&
             minimed_history_parse_meal(real65, sizeof(real65), &m) && m.grams == 65 &&
             minimed_history_parse_meal(real0, sizeof(real0), &m) && m.grams == 0);
+  // BG Reading records (0xf007): a fingerstick, an SFLOAT in kg/L. Real records from a pump's
+  // event log: 346 mg/dL (0xb15a), 74 mg/dL (0xb04a), and the Calibration Complete (0xf008) that
+  // followed the 346, which is not a BG Reading.
+  static const uint8_t bg346[] = {0x07, 0xf0, 0x95, 0x3d, 0x0a, 0x00,
+                                  0xe5, 0x00, 0x04, 0x00, 0x5a, 0xb1};
+  static const uint8_t bg74[] = {0x07, 0xf0, 0xb8, 0x40, 0x0a, 0x00,
+                                 0x3a, 0x07, 0x1f, 0x00, 0x4a, 0xb0};
+  static const uint8_t cal346[] = {0x08, 0xf0, 0x99, 0x3d, 0x0a, 0x00,
+                                   0xf1, 0x00, 0x04, 0x00, 0x5a, 0xb1};
+  MinimedHistBgReading bgr;
+  check("BG reading record parses to mg/dL",
+        minimed_history_parse_bg_reading(bg346, sizeof(bg346), &bgr) && bgr.seq == 671125 &&
+            bgr.mgdl == 346);
+  check("a second BG reading parses",
+        minimed_history_parse_bg_reading(bg74, sizeof(bg74), &bgr) && bgr.mgdl == 74);
+  check("a calibration record is not a BG reading",
+        !minimed_history_parse_bg_reading(cal346, sizeof(cal346), &bgr));
+  check("BG reading too short is rejected", !minimed_history_parse_bg_reading(bg346, 11, &bgr));
+  static const uint8_t bg_zero[] = {0x07, 0xf0, 0x01, 0x00, 0x00, 0x00,
+                                    0x00, 0x00, 0x00, 0x00, 0x00, 0xb0};
+  check("a zero BG reading is rejected",
+        !minimed_history_parse_bg_reading(bg_zero, sizeof(bg_zero), &bgr));
+  MinimedHistClock bg_clk = {.have_ref = true, .ref = {.seq = 671000, .secs = 829000000}};
+  MinimedHistEvent bg_ev;
+  check("a BG reading decodes as an event timed by its Relative Offset",
+        minimed_history_decode(&bg_clk, bg346, sizeof(bg346), 50, 400, &bg_ev) &&
+            bg_ev.kind == MinimedHistEventBgReading && bg_ev.value == 346.0f &&
+            bg_ev.secs == 829000000 + 0x00e5);
+  check("a calibration record decodes as nothing",
+        !minimed_history_decode(&bg_clk, cal346, sizeof(cal346), 50, 400, &bg_ev));
   // Real insulin records from a pump's event log.
   static const uint8_t micro1[] = {0x01, 0xf0, 0xac, 0x4d, 0x0b, 0x00, 0x1d,
                                    0x06, 0x5e, 0x7d, 0x00, 0x00, 0xfd};
@@ -879,16 +909,20 @@ static void section_status(void) {
   minimed_status_compose(out, sizeof(out));
   check("load reservoir label", strcmp(out, "LOAD RESERVOIR") == 0);
 
-  // Warm-up: self-timed 2 h countdown, stamped on entry only.
+  // Warm-up: the pump does not say when it ends, so no countdown, only the label.
   minimed_status_reset();
   MinimedIddStatus warm = st;
   warm.sensor_msg = 0x08; // WARM_UP
   minimed_status_update(&warm, &tas, 10000);
   minimed_status_compose(out, sizeof(out));
   check("warm-up label", strcmp(out, "WARM-UP") == 0);
-  minimed_status_update(&warm, &tas, 10000 + 600); // re-read 10 min in: must NOT restart the clock
+  timers = minimed_status_get_timers();
+  check("warm-up has no countdown", timers.start == 0 && timers.end == 0);
+  minimed_status_update(&warm, &tas, 10000 + 600); // re-read 10 min in
   minimed_status_compose(out, sizeof(out));
   check("warm-up label remains stable", strcmp(out, "WARM-UP") == 0);
+  timers = minimed_status_get_timers();
+  check("warm-up still has no countdown", timers.start == 0 && timers.end == 0);
   check("warm-up means BG invalid", minimed_status_bg_invalid());
   minimed_status_update(&st, &tas, 10000 + 700); // sensor live again
   check("warm-up exit clears BG-invalid", !minimed_status_bg_invalid());
@@ -1169,6 +1203,25 @@ static void section_announce(void) {
   dict_put_uint(KEY_CAPABILITIES, CAP_BG, 4);
   check("announcement without GRAPH_HOURS accepted",
         minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.graph_hours == 0);
+
+  // The capabilities the glucose watchface announces, every protocol bit it understands. A bit the
+  // parser does not know makes the watchface look foreign, and the sender then ignores it.
+  {
+    const uint32_t all = CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS |
+                         CAP_SENDER_BATTERY | CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION |
+                         CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | CAP_PUMP_LINK_STATE |
+                         CAP_BG_ENTRIES;
+    dict_begin(2);
+    dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+    dict_put_uint(KEY_CAPABILITIES, all, 4);
+    check("an announcement with every capability bit is accepted",
+          minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.caps == all);
+    dict_begin(2);
+    dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+    dict_put_uint(KEY_CAPABILITIES, CAP_BG | CAP_PUMP_LINK_STATE | CAP_BG_ENTRIES, 4);
+    check("the pump-link-state and fingerstick bits are accepted",
+          minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
+  }
 
   // Narrower encodings of the same number are the same number.
   dict_begin(2);

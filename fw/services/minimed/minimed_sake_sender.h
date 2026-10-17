@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "pebble_glucose_protocol.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -49,10 +51,18 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl);
 //! A meal's carbohydrate amount, from the pump's history. `timestamp` is when the record was
 //! logged. Kept in a small ring (MINIMED_MEAL_LIST_MAX, sorted oldest-first, oldest evicted once
 //! full) and pushed as KEY_MEAL_LIST for a watchface that announced CAP_MEAL_LIST, and as the
-//! newest entry's KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP for one that only announced CAP_MEAL. Call
-//! once per meal (live or backfilled; a duplicate timestamp updates that entry rather than adding
-//! one). Safe to call from the BT host task; the actual send runs on KernelMain.
+//! newest entry's KEY_MEAL_CARBS/KEY_MEAL_TIMESTAMP for one that only announced CAP_MEAL. The same
+//! amount again within 5 minutes is taken as the same meal: a live one is stamped on arrival, its
+//! backfill replay on the pump's clock. Safe to call from the BT host task; the actual send runs on
+//! KernelMain.
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp);
+
+//! A fingerstick BG entered on the pump, from its history. Kept like the meals
+//! (MINIMED_BG_ENTRY_LIST_MAX, sorted oldest-first) and pushed as KEY_BG_ENTRY_LIST for a watchface
+//! that announced CAP_BG_ENTRIES. The same value again within 5 minutes is taken as the same
+//! reading: a live one is stamped on arrival, its backfill replay on the pump's clock. Safe to call
+//! from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_bg_entry(uint16_t mgdl, uint32_t timestamp);
 
 //! The hypo (treat-or-wait) model's recommendation for the current falling low, 0-100 (see
 //! sugar_predictor/INTEGRATION.md's treat_pct), plus p_low_pct (P(nadir < 70), 0-100) as the
@@ -81,11 +91,11 @@ void minimed_sake_sender_send_status(const char *status_str, uint32_t start, uin
 //! marshals to KernelMain internally.
 void minimed_sake_sender_set_mode(bool open);
 
-//! Report the pump link state for the watchface's connection indicator (KEY_PUMP_CONNECTED).
-//! `connected` mirrors minimed_sake_pump_connected() and should be pushed on every transition, not
-//! just polled -- offline is the default until the first "connected" call. Safe to call from the
-//! BT host task; the actual send runs on KernelMain.
-void minimed_sake_sender_send_pump_connected(bool connected);
+//! Report the pump link state (PUMP_LINK_* in pebble_glucose_protocol.h) for the watchface's
+//! connection indicator: KEY_PUMP_LINK_STATE, and KEY_PUMP_CONNECTED for watchfaces that only know
+//! that one. Push it on every transition, not just when polled; PUMP_LINK_OFFLINE is the default
+//! until the first call. Safe to call from the BT host task; the actual send runs on KernelMain.
+void minimed_sake_sender_send_pump_link_state(uint8_t state);
 
 //! Latest trend arrow (one of the TREND_* constants in pebble_glucose_protocol.h), decoded from
 //! the pump's CGM Trend Information field -- never derived on the watch. `valid` is false when

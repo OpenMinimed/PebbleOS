@@ -58,11 +58,11 @@ static const Uuid s_no_claim_uuid = UUID_SYSTEM;
 // Sized with slack so a future key or two still parses rather than being read as a foreign app.
 #define ANNOUNCE_DICT_MAX 64
 
-// Largest dictionary we serialize. The graph blob dominates; the rest is the BG/IOB/status
-// strings, the timestamp, and a 7-byte Tuple header each (worst case 1 + 11 + 15 + 15 + 27 + 7 +
-// blob). Sized with room to spare -- an undersized buffer is a silent "wf dict fail", not a
-// crash, but it would also mean no data reaches the watchface at all.
-#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 192)
+// Largest dictionary we serialize. The graph blob dominates; the rest is every other key with a
+// 7-byte Tuple header each: the strings, timestamps and small values come to about 200 bytes, the
+// meal and fingerstick lists to 56 each. Sized with room to spare -- an undersized buffer is a
+// silent "wf dict fail", not a crash, but it would also mean no data reaches the watchface at all.
+#define WF_DICT_MAX (MINIMED_GRAPH_BLOB_MAX + 384)
 
 // All state below is only touched on KernelMain (every entry point marshals there), except the
 // string/timestamp pair which is written before the marshal -- see minimed_sake_sender_send_bg.
@@ -79,7 +79,8 @@ static char s_iob_total_str[IOB_STR_MAX];
 static char s_status_str[STATUS_STR_MAX]; // "" = normal (watchface hides the band)
 static uint32_t s_status_start;
 static uint32_t s_status_end;
-static bool s_pump_connected; // false (offline) is the correct default until the pump connects
+static uint8_t
+    s_pump_link_state; // PUMP_LINK_OFFLINE is the correct default until the pump connects
 static bool s_pred_valid;
 static uint16_t s_pred_mgdl;
 static bool s_meal_valid;
@@ -99,6 +100,17 @@ static uint8_t s_hypo_p_low;  // P(nadir < 70), 0-100; the watchface's displayed
 static uint32_t s_meal_list_ts[MINIMED_MEAL_LIST_MAX];
 static uint16_t s_meal_list_g[MINIMED_MEAL_LIST_MAX];
 static uint8_t s_meal_list_count;
+
+// Fingerstick BGs still inside the graph window -- KEY_BG_ENTRY_LIST. Same ordering and eviction
+// as the meal list.
+#define MINIMED_BG_ENTRY_LIST_MAX 8
+static uint32_t s_bg_entry_ts[MINIMED_BG_ENTRY_LIST_MAX];
+static uint16_t s_bg_entry_mgdl[MINIMED_BG_ENTRY_LIST_MAX];
+static uint8_t s_bg_entry_count;
+
+// An entry seen live is stamped on arrival and replayed by the next backfill on the pump's clock,
+// a little earlier: the same value this close together is the same entry.
+#define LIST_SAME_SECS (5 * 60)
 
 static MinimedGraph s_graph;
 
@@ -294,6 +306,24 @@ static void prv_inject(uint16_t payload_len) {
 // Every push carries every announced field, not just the one that changed. The protocol allows
 // sending only what is new, but this transport is a memcpy rather than a radio, so re-sending the
 // whole frame costs nothing and keeps the watchface correct after a relaunch.
+// A list blob for KEY_MEAL_LIST / KEY_BG_ENTRY_LIST: [count u8][(timestamp u32 LE)(value u16 LE)].
+static DictionaryResult prv_write_list(DictionaryIterator *iter, uint32_t key, const uint32_t *ts,
+                                       const uint16_t *value, uint8_t count) {
+  static_assert(MINIMED_BG_ENTRY_LIST_MAX <= MINIMED_MEAL_LIST_MAX);
+  uint8_t blob[1 + MINIMED_MEAL_LIST_MAX * 6];
+  blob[0] = count;
+  for (uint8_t i = 0; i < count; i++) {
+    uint8_t *p = blob + 1 + i * 6;
+    p[0] = (uint8_t)ts[i];
+    p[1] = (uint8_t)(ts[i] >> 8);
+    p[2] = (uint8_t)(ts[i] >> 16);
+    p[3] = (uint8_t)(ts[i] >> 24);
+    p[4] = (uint8_t)value[i];
+    p[5] = (uint8_t)(value[i] >> 8);
+  }
+  return dict_write_data(iter, key, blob, 1 + count * 6);
+}
+
 static void prv_push_bg_cb(void *unused) {
   // Coalesce bursts (see PUSH_COALESCE_MS). The injected frame would otherwise pile up in the
   // watchface's app-inbox when the watchface is busy or not foreground.
@@ -340,7 +370,8 @@ static void prv_push_bg_cb(void *unused) {
     target = *fg;
     // Everything we can currently supply.
     caps = CAP_BG | CAP_IOB | CAP_STATUS | CAP_PUMP_CONNECTED | CAP_TREND_ARROW | CAP_MEAL |
-           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST;
+           CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | CAP_PUMP_LINK_STATE |
+           CAP_BG_ENTRIES;
     graph_window_secs = MINIMED_GRAPH_MAX_HOURS * 60 * 60;
     send_graph = true;
   }
@@ -394,10 +425,14 @@ static void prv_push_bg_cb(void *unused) {
       n++;
     }
   }
+  // Neither is gated on have_bg: offline is a real value from boot, not a placeholder waiting on
+  // the pump's first reading.
   if (caps & CAP_PUMP_CONNECTED) {
-    // Not gated on have_bg: offline (0) is a real value from boot, not a placeholder waiting on
-    // the pump's first reading.
-    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_connected ? 1 : 0);
+    res |= dict_write_uint8(&iter, KEY_PUMP_CONNECTED, s_pump_link_state != PUMP_LINK_OFFLINE);
+    n++;
+  }
+  if (caps & CAP_PUMP_LINK_STATE) {
+    res |= dict_write_uint8(&iter, KEY_PUMP_LINK_STATE, s_pump_link_state);
     n++;
   }
   if (have_bg && (caps & CAP_TREND_ARROW) && s_trend_valid) {
@@ -427,20 +462,12 @@ static void prv_push_bg_cb(void *unused) {
     n += 2;
   }
   if (s_meal_list_count > 0 && (caps & CAP_MEAL_LIST)) {
-    uint8_t meal_blob[1 + MINIMED_MEAL_LIST_MAX * 6];
-    meal_blob[0] = s_meal_list_count;
-    for (uint8_t i = 0; i < s_meal_list_count; i++) {
-      const uint32_t ts = s_meal_list_ts[i];
-      const uint16_t g = s_meal_list_g[i];
-      uint8_t *p = meal_blob + 1 + i * 6;
-      p[0] = (uint8_t)ts;
-      p[1] = (uint8_t)(ts >> 8);
-      p[2] = (uint8_t)(ts >> 16);
-      p[3] = (uint8_t)(ts >> 24);
-      p[4] = (uint8_t)g;
-      p[5] = (uint8_t)(g >> 8);
-    }
-    res |= dict_write_data(&iter, KEY_MEAL_LIST, meal_blob, 1 + s_meal_list_count * 6);
+    res |= prv_write_list(&iter, KEY_MEAL_LIST, s_meal_list_ts, s_meal_list_g, s_meal_list_count);
+    n++;
+  }
+  if (s_bg_entry_count > 0 && (caps & CAP_BG_ENTRIES)) {
+    res |=
+        prv_write_list(&iter, KEY_BG_ENTRY_LIST, s_bg_entry_ts, s_bg_entry_mgdl, s_bg_entry_count);
     n++;
   }
   // Omit the graph key entirely until there is a point to plot -- a zero-length byte array would
@@ -633,10 +660,10 @@ void minimed_sake_sender_commit(void) {
   launcher_task_add_callback(prv_push_bg_cb, NULL);
 }
 
-void minimed_sake_sender_send_pump_connected(bool connected) {
+void minimed_sake_sender_send_pump_link_state(uint8_t state) {
   // Same lock-free discipline as send_bg/send_iob/send_status: written here (BT host task or
   // KernelMain, depending on caller), read on KernelMain during the push.
-  s_pump_connected = connected;
+  s_pump_link_state = state;
   s_dirty = true;
 }
 
@@ -654,50 +681,60 @@ void minimed_sake_sender_send_prediction(bool valid, int32_t mgdl) {
   s_dirty = true;
 }
 
+// Insert into a list kept sorted oldest-first. The same value within LIST_SAME_SECS of an entry is
+// that entry again (a backfill replaying what the watch already has) and leaves the list as it is.
+// Once full the globally oldest entry is dropped for the new one -- the caller has already filtered
+// to the graph window, so anything that falls off is the least relevant entry, not necessarily the
+// last one added. False if the list is unchanged.
+static bool prv_list_insert(uint32_t *ts, uint16_t *value, uint8_t *count, uint8_t max,
+                            uint32_t timestamp, uint16_t v) {
+  uint8_t at = *count;
+  for (uint8_t i = 0; i < *count; i++) {
+    const uint32_t gap = ts[i] > timestamp ? ts[i] - timestamp : timestamp - ts[i];
+    if (value[i] == v && gap <= LIST_SAME_SECS) {
+      return false;
+    }
+    if (at == *count && ts[i] > timestamp) {
+      at = i;
+    }
+  }
+  if (*count == max) {
+    if (at == 0) {
+      return false; // older than everything already kept
+    }
+    memmove(&ts[0], &ts[1], (at - 1) * sizeof(ts[0]));
+    memmove(&value[0], &value[1], (at - 1) * sizeof(value[0]));
+    at--;
+  } else {
+    memmove(&ts[at + 1], &ts[at], (*count - at) * sizeof(ts[0]));
+    memmove(&value[at + 1], &value[at], (*count - at) * sizeof(value[0]));
+    (*count)++;
+  }
+  ts[at] = timestamp;
+  value[at] = v;
+  return true;
+}
+
 void minimed_sake_sender_send_meal(uint16_t grams, uint32_t timestamp) {
   // Same lock-free discipline as the other setters.
-  //
-  // Insert into the ring, kept sorted oldest-first: a duplicate timestamp (a backfill replaying a
-  // meal the watch already has) updates that entry in place instead of growing the ring, and once
-  // full the globally oldest entry is dropped for the new one -- the caller has already filtered
-  // to the graph window, so anything that falls off here is the least relevant meal, not
-  // necessarily the last one added.
-  uint8_t at = s_meal_list_count;
-  for (uint8_t i = 0; i < s_meal_list_count; i++) {
-    if (s_meal_list_ts[i] == timestamp) {
-      s_meal_list_g[i] = grams;
-      at = MINIMED_MEAL_LIST_MAX; // updated in place, nothing to insert
-      break;
-    }
-    if (s_meal_list_ts[i] > timestamp) {
-      at = i;
-      break;
-    }
-  }
-  if (at < MINIMED_MEAL_LIST_MAX) {
-    uint8_t count = s_meal_list_count;
-    if (count == MINIMED_MEAL_LIST_MAX) {
-      if (at == 0) {
-        return; // older than everything already kept: the ring is unchanged
-      }
-      memmove(&s_meal_list_ts[0], &s_meal_list_ts[1], (at - 1) * sizeof(s_meal_list_ts[0]));
-      memmove(&s_meal_list_g[0], &s_meal_list_g[1], (at - 1) * sizeof(s_meal_list_g[0]));
-      at--;
-    } else {
-      memmove(&s_meal_list_ts[at + 1], &s_meal_list_ts[at],
-              (count - at) * sizeof(s_meal_list_ts[0]));
-      memmove(&s_meal_list_g[at + 1], &s_meal_list_g[at], (count - at) * sizeof(s_meal_list_g[0]));
-      s_meal_list_count++;
-    }
-    s_meal_list_ts[at] = timestamp;
-    s_meal_list_g[at] = grams;
+  if (!prv_list_insert(s_meal_list_ts, s_meal_list_g, &s_meal_list_count, MINIMED_MEAL_LIST_MAX,
+                       timestamp, grams)) {
+    return;
   }
 
-  // Legacy single-meal fields: the newest entry, i.e. the tail of the sorted ring.
+  // Legacy single-meal fields: the newest entry, i.e. the tail of the sorted list.
   s_meal_grams = s_meal_list_g[s_meal_list_count - 1];
   s_meal_timestamp = s_meal_list_ts[s_meal_list_count - 1];
   s_meal_valid = true;
   s_dirty = true;
+}
+
+void minimed_sake_sender_send_bg_entry(uint16_t mgdl, uint32_t timestamp) {
+  // Same lock-free discipline as the other setters.
+  if (prv_list_insert(s_bg_entry_ts, s_bg_entry_mgdl, &s_bg_entry_count, MINIMED_BG_ENTRY_LIST_MAX,
+                      timestamp, mgdl)) {
+    s_dirty = true;
+  }
 }
 
 void minimed_sake_sender_send_hypo(bool valid, uint8_t treat_pct, uint8_t p_low_pct) {

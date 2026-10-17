@@ -553,12 +553,9 @@ static void prv_parse_iob(void) {
   // for recovering the pump's decay curve (true-IOB investigation, 2026-08-17).
   PBL_LOG_INFO("minimed: IOB %ld mu", (long)iob_mu);
 
-  // Round milliunits to 0.1 IU. Integer math (no float printf on the watch).
+  // Round milliunits to 0.1 IU. Integer math (no float printf on the watch). Not in the on-watch
+  // log: one line a minute pushed everything else out of it.
   int32_t tenths = (iob_mu + 50) / 100;
-  char line[64];
-  snprintf(line, sizeof(line), "*** IOB %ld.%ld U ***", (long)(tenths / 10), (long)(tenths % 10));
-  minimed_sake_log(line);
-
   char iob_str[12]; // matches bg_str sizing; the sender clamps to its own IOB_STR_MAX
   snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(tenths / 10), (long)(tenths % 10));
   minimed_sake_sender_send_iob(iob_str); // forward to the watchface (no-op if it isn't running)
@@ -570,10 +567,6 @@ static void prv_parse_iob(void) {
     const int32_t total_tenths = (iob_mu + basal_mu + 50) / 100;
     PBL_LOG_INFO("minimed: total IOB %ld mu = pump %ld + basal %ld", (long)(iob_mu + basal_mu),
                  (long)iob_mu, (long)basal_mu);
-    snprintf(line, sizeof(line), "tot %ld.%ld=%ld.%ld+%ld.%ld", (long)(total_tenths / 10),
-             (long)(total_tenths % 10), (long)(tenths / 10), (long)(tenths % 10),
-             (long)((basal_mu + 50) / 1000), (long)(((basal_mu + 50) / 100) % 10));
-    minimed_sake_log(line);
     snprintf(iob_str, sizeof(iob_str), "%ld.%ld", (long)(total_tenths / 10),
              (long)(total_tenths % 10));
     minimed_sake_sender_send_total_iob(iob_str);
@@ -811,8 +804,14 @@ static void prv_predict_live_event(const MinimedHistEvent *ev) {
 // after the last one), so each is timed by when we learn of it -- seconds after it happened.
 static void prv_live_record(uint8_t rec_len) {
   MinimedHistMeal meal;
+  MinimedHistBgReading bg;
   MinimedHistInsulin ins;
   MinimedHistEvent ev = {0};
+  if (minimed_history_parse_bg_reading(s_hist, rec_len, &bg)) {
+    PBL_LOG_INFO("minimed: fingerstick %u mg/dL seq=%lu", (unsigned)bg.mgdl, (unsigned long)bg.seq);
+    minimed_sake_sender_send_bg_entry(bg.mgdl, (uint32_t)rtc_get_time());
+    return;
+  }
   if (minimed_history_parse_meal(s_hist, rec_len, &meal)) {
     if (meal.grams == 0)
       return; // the pump logs a Meal record for a bolus without carbs too
@@ -934,6 +933,9 @@ static void prv_backfill_finish(void) {
         // Every meal in the window, not just the newest -- the sender keeps all of them for the
         // watchface's meal list (KEY_MEAL_LIST) and the newest as the legacy single-meal fields.
         minimed_sake_sender_send_meal((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
+        break;
+      case MinimedHistEventBgReading:
+        minimed_sake_sender_send_bg_entry((uint16_t)(s_backfill_evalue[i] + 0.5f), ets);
         break;
       default:
         break;
@@ -2386,7 +2388,7 @@ static void prv_link_up(void) {
   s_push_mode = false; // a reconnect re-subscribes and must re-prove push
   s_idd_st.valid = false;
   s_tas.valid = false;
-  // minimed_status.c state deliberately survives the reconnect (a warm-up countdown keeps
+  // minimed_status.c state deliberately survives the reconnect (a suspend count-up keeps
   // counting through a pump dropout); only the per-cycle parse structs reset here.
   // s_last_offset/s_have_offset deliberately survive a reconnect: the pump's Time Offset is
   // monotonic within a sensor session, so keeping it means the first read after a brief dropout is
