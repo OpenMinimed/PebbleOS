@@ -1,71 +1,49 @@
 #!/usr/bin/env bash
 # One-shot build/version/deploy for the MiniMed firmware.
-#
-#   ./minimed-build.sh <desc>              build + share to the phone (default board: asterix)
-#   ./minimed-build.sh <desc> --pt2        build for obelix / Pebble Time 2 instead
-#   ./minimed-build.sh <desc> --no-push    skip the share (just build the versioned .pbz files)
-#   ./minimed-build.sh <desc> --allow-dirty  bypass the clean-tree check below
-#
-# Build artifacts (the .pbz/.elf/.loghash.json filenames) are named after `git describe --dirty
-# --always`, not a version counter: the tree must be committed before building (--allow-dirty
-# bypasses this) so a build's identity always matches something in git history. Separately, the
-# bare short commit hash (TINTIN_METADATA.version_short, see fw/system/version.c) is what the
-# boot log and the MiniMed app top line show at runtime -- no build-script flag needed for that
-# part, it's baked in at configure time regardless of how the build was invoked. The two will
-# usually share the same hash suffix, but describe's shape can vary (see TESTING.md); the runtime
-# one is the unconditional source of truth for "what commit is this watch actually running".
-#
-# The firmware is built with CMake (`pbl configure/build/bundle`) inside the pebbleos-minimed
-# image (tools/minimed/Dockerfile, built on first use), one build directory per board and slot:
-# build-pt2-slot0, build-pt2-slot1, build-asterix. Only the finished artifacts land in build/.
-#
-# Two boards, two recipes. They differ in more than the --board flag, hence the profile block
-# below rather than one parametrised path:
-#
-# asterix (Pebble 2 Duo, nRF52840) -- the default, Morten's watch:
-#   - Single bundle. asterix has one firmware slot, so there is no slot dance.
-#   - Non-release build against the locally built image.
-#   - Voice dictation is left out to fit: stock v4.41.0 already fills 97% of the 992 KB flash
-#     region and the pump link adds ~59 KB. Upstream calls into voice unconditionally, so
-#     CONFIG_MINIMED_STUB_VOICE links stand-ins from fw/services/minimed/stubs/ in its place.
-#
-# obelix@pvt (Pebble Time 2, SiFli SF32LB52) -- palmarci's watch, --pt2:
-# (see PROGRESS.md "PT2 port" for the full post-mortem)
-#   - Release build (CONFIG_RELEASE=y). The very first black-screens were caused by this flag
-#     being silently dropped, making non-release builds that hung the obelix display/boot path.
-#   - Separate, correctly-linked slot0 AND slot1 bundles. The Pebble app resolves a sideload to
-#     the slot NOT currently running (updateToSlot = 1 - runningSlot) and its safety check requires
-#     firmware.slot == updateToSlot, so a single slot0-only pbz "does not parse" whenever the watch
-#     is running slot0. Building each slot as its OWN single-bundle pbz gives a file the app always
-#     accepts. Do NOT dual-slot repack: the earlier repack baked the SAME slot0-linked image into
-#     both slots, and the mislinked slot1 copy black-screened.
-#   - Release band (0x01) with a release-form version, so it boots over the current stock
-#     (4.36.2). A plain annotated git tag like v4.41.9 gives the app a parseable versionTag.
-#     Dev band (0x80) is NOT used: a dev-form git describe breaks the app's manifest parse.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-profile=asterix
-push=1
+profile=""
+push=0
 allow_dirty=0
 desc=""
 usage() {
-  echo "Build MiniMed Pebble firmware, save the ELF/dict, and push it to the phone."
-  echo
-  echo "usage: $0 <desc> [--pt2] [--no-push] [--allow-dirty]"
+  cat <<'EOF'
+usage: minimed-build.sh [-h] -t TARGET [--push] [--allow-dirty] [desc]
+
+Build MiniMed Pebble firmware, archive ELF/dict, and optionally push to phone.
+
+positional arguments:
+  desc                  Optional description suffix for build artifacts
+
+options:
+  -h, --help            Show this help message and exit
+  -t, --target TARGET   Target board:
+                          asterix  Pebble 2 Duo (nRF52840)
+                          obelix   Pebble Time 2 (SiFli SF32LB52)
+                          getafix  Pebble Round 2 (SiFli SF32LB52)
+  --push                Push built .pbz to phone via adb or kdeconnect
+  --allow-dirty         Allow building with uncommitted changes
+EOF
 }
-for arg in "$@"; do
-  case "$arg" in
+while [ $# -gt 0 ]; do
+  case "$1" in
     -h|--help)          usage; exit 0 ;;
-    --no-push)          push=0 ;;
-    --pt2|--obelix)     profile=obelix ;;
-    --asterix)          profile=asterix ;;
-    --allow-dirty)      allow_dirty=1 ;;
-    -*)                 echo "unknown flag: $arg" >&2; exit 2 ;;
-    *)                  desc="$arg" ;;
+    -t|--target)        profile="$2"; shift 2 ;;
+    --push)             push=1; shift ;;
+    --allow-dirty)      allow_dirty=1; shift ;;
+    -*)                 echo "unknown flag: $1" >&2; exit 2 ;;
+    *)                  desc="$1"; shift ;;
   esac
 done
-[ -n "$desc" ] || { usage >&2; exit 2; }
+[ -n "$profile" ] || { echo "ERROR: --target is required" >&2; usage >&2; exit 2; }
+
+case "$profile" in
+  asterix|obelix|getafix) ;;
+  *) echo "ERROR: unknown target '$profile' (expected asterix, obelix, or getafix)" >&2; exit 2 ;;
+esac
+
+DESC_SUFFIX=${desc:+-${desc}}
 
 # Every build must trace back to a commit: refuse a dirty tree unless explicitly bypassed.
 # (Untracked files do not count: git describe --dirty ignores them too.)
@@ -81,6 +59,12 @@ if [ "$profile" = obelix ]; then
   SLOTS=(0 1)
   NEED_TAG=1
   VERIFY_BAND=1
+elif [ "$profile" = getafix ]; then
+  BOARD=getafix@dvt2                            # Pebble Round 2 (SiFli), DVT2 revision
+  CORE_CFG="-DCONFIG_RELEASE=y -DCONFIG_MINIMED_SAKE=y"
+  SLOTS=(0 1)
+  NEED_TAG=1
+  VERIFY_BAND=1
 else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
   CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n -DCONFIG_MINIMED_STUB_VOICE=y"
@@ -88,11 +72,15 @@ else
   NEED_TAG=0
   VERIFY_BAND=0
 fi
-BOARD_NORM=${BOARD//@/_}                        # obelix_pvt (the bundle name has no @revision)
+BOARD_NORM=${BOARD//@/_}                        # obelix_pvt, getafix_dvt2 (the bundle name has no @revision)
 RELEASE_TAG=${RELEASE_TAG:-v4.41.9}              # release-form tag stamped into the bundle
 
 # BOARD_SHORT keeps the build/ listing unambiguous when the same desc is built for both watches.
-[ "$profile" = obelix ] && BOARD_SHORT=pt2 || BOARD_SHORT=asterix
+case "$profile" in
+  obelix) BOARD_SHORT=pt2 ;;
+  getafix) BOARD_SHORT=getafix ;;
+  *) BOARD_SHORT=asterix ;;
+esac
 
 # Identity BEFORE the release-tag dance below: once HEAD carries that tag, git describe collapses
 # to just the tag name (no hash, no commit count), which is the whole identity.
@@ -108,7 +96,7 @@ if [ "$NEED_TAG" = 1 ]; then
   # Ensure a release-form annotated tag exists on HEAD so `git describe` in the build resolves to
   # something the Pebble app parses (vX.Y.Z / -beta / -rc) AND that encodes as release band.
   # If RELEASE_TAG exists on an older commit, move it to HEAD (the bundle carries the HEAD build).
-  git tag -f -a "$RELEASE_TAG" -m "MiniMed PT2 build" HEAD >/dev/null 2>&1
+  git tag -f -a "$RELEASE_TAG" -m "MiniMed $profile build" HEAD >/dev/null 2>&1
   git describe --dirty
 fi
 
@@ -117,7 +105,7 @@ fi
 build_slot() {
   local slot=${1:-}
   local dir="build-${BOARD_SHORT}${slot:+-slot$slot}"
-  echo ">> building ${slot:+slot$slot }($DESCRIBE-$desc) in $dir..." >&2
+  echo ">> building ${slot:+slot$slot }(${DESCRIBE}${DESC_SUFFIX}) in $dir..." >&2
   docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp/home \
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       mkdir -p \$HOME
@@ -127,10 +115,13 @@ build_slot() {
   echo "$dir"
 }
 
-# Only obelix boots via the Pebble app's release-band check; asterix takes whatever we build.
+# Only obelix/getafix boot via the Pebble app's release-band check; asterix takes whatever.
 verify_bundle() {
   local out=$1
   [ "$VERIFY_BAND" = 1 ] || return 0
+  if [ "$allow_dirty" = 1 ]; then
+    return 0
+  fi
   local version_tag band_hex maj min pat
   version_tag=$(unzip -p "$out" manifest.json | python3 -c "import json,sys; print(json.load(sys.stdin)['firmware']['versionTag'])")
   read -r band_hex maj min pat <<<"$(python3 -c "
@@ -155,7 +146,7 @@ print(f'{(prio>>56)&0xff:02x} {(prio>>48)&0xff} {(prio>>40)&0xff} {(prio>>32)&0x
 # per-build, per-slot copy with full debug info for analyze_coredump.py/addr2line.
 archive_elf() {
   local dir=$1 slot=${2:-}
-  local elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}${slot:+_slot${slot}}.elf"
+  local elf="build/elfs/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}${slot:+_slot${slot}}.elf"
   mkdir -p build/elfs
   cp "$dir/pebbleos.elf" "$elf"
   echo ">> archived: $elf"
@@ -167,7 +158,7 @@ if [ ${#SLOTS[@]} -eq 0 ]; then
   dir=$(build_slot)
   archive_elf "$dir"
   fresh=$(ls -t "$dir"/normal_"${BOARD_NORM}"_*.pbz | head -1)
-  out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.pbz"
+  out="build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.pbz"
   cp "$fresh" "$out"
   verify_bundle "$out"
   echo ">> $out"
@@ -177,7 +168,7 @@ else
     dir=$(build_slot "$slot")
     archive_elf "$dir" "$slot"
     fresh=$(ls -t "$dir"/normal_"${BOARD_NORM}"_*slot"${slot}".pbz | head -1)
-    out="build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}_slot${slot}.pbz"
+    out="build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}_slot${slot}.pbz"
     cp "$fresh" "$out"
     verify_bundle "$out"
     outs+=("$out")
@@ -188,7 +179,7 @@ fi
 # hashes change between builds, so without the matching dict tools/dump_flash_logs.py cannot read
 # back a log written by an older firmware. (SAME dict for both slots.)
 if [ -f "$dir/pebbleos_loghash_dict.json" ]; then
-  cp "$dir/pebbleos_loghash_dict.json" "build/minimed-${BOARD_SHORT}-${DESCRIBE}-${desc}.loghash.json"
+  cp "$dir/pebbleos_loghash_dict.json" "build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.loghash.json"
 fi
 
 if [ "$push" = 1 ]; then
@@ -217,7 +208,7 @@ if [ "$push" = 1 ]; then
         echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
       fi
     else
-      echo ">> skip share: no adb device and no reachable kdeconnect device (use --no-push to silence)"
+      echo ">> skip share: no adb device and no reachable kdeconnect device"
     fi
   fi
 fi
