@@ -20,10 +20,12 @@ This fork adds a direct Bluetooth LE link from the watch to a Medtronic MiniMed 
 
 - Blood glucose (SG), trend arrow, insulin-on-board, and pump/SmartGuard status
 - Pump-connection state and low-battery/annunciation alerts
-- A dual-slot build for Pebble Time 2 (`obelix`) alongside the original `asterix` target
+- A dual-slot build for Pebble Time 2 (`obelix`) and Pebble Round 2 (`getafix`) alongside the
+  original `asterix` target
 - Companion watchface: [mortenfyhn/pebble-glucose-watchface](https://github.com/mortenfyhn/pebble-glucose-watchface)
 
-Start with `PROGRESS.md` (architecture/status), `TESTING.md` (build + flash loop),
+Start with `AGENTS.md` (the fork handbook: build, flash, emulator and conventions), then the fork
+notes under `.agents/`: `PROGRESS.md` (architecture/status), `TESTING.md` (build + flash loop),
 `VERSIONS.md` (build/version history), `BATTERY.md`, `CONNECTIVITY.md`, and `WATCHFACE.md`.
 
 - 🐛 [This fork's issue tracker](https://github.com/OpenMinimed/PebbleOS/issues)

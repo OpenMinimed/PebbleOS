@@ -4,6 +4,11 @@ Run the MiniMed pipeline on the Pebble 2 Duo directly, no phone. Spinoff of the 
 phone-bridge project (`../minimed-pebble-bridge`). This file is the stable map: current state,
 how to build and test, the code map, and what is left. Topic detail lives in its own file.
 
+Mode naming: older entries below and the log vocabulary say **SPIKE** for the pump mode. The
+toggle is NORMAL⇄DUAL since v59: NORMAL is phone-only (a full BT stack restart, the kill switch)
+and DUAL holds the phone and the pump at once. Read every "SPIKE" here as DUAL. The current build,
+flash, emulator and log commands are in `../AGENTS.md`; this file keeps the state and the history.
+
 | File | What is in it |
 |---|---|
 | [`BATTERY.md`](BATTERY.md) | Drain measurements, how to run a battery test, ranked hypotheses, remaining experiments |
@@ -11,7 +16,7 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 | [`WATCHFACE.md`](WATCHFACE.md) | The launch-crash saga (dormant) and the launch-gap gotcha |
 | [`TESTING.md`](TESTING.md) | The build/flash/test loop, pump and watchface test procedures |
 | [`VERSIONS.md`](VERSIONS.md) | Every build vN, newest first, plus the chronological dev log |
-| [`../Documentation/`](../Documentation/) | Pump protocol source of truth — update eagerly |
+| [`../Documentation/`](../Documentation/) | Pump protocol source of truth - update eagerly |
 
 ## Context & scope (read first)
 
@@ -148,30 +153,31 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 
 ## Build / flash / test
 
-**→ See `TESTING.md`** for the full loop (`./minimed-build.sh <desc>` builds+versions+adb-pushes;
-BT sideload steps; pump + watchface test procedures; the FE81/FE82 reconciliation fix; log
-vocabulary). Quick facts kept here:
+**→ See `TESTING.md`** for the full loop and `../AGENTS.md` for the build, flash, emulator and log
+commands. Quick facts kept here:
 
-- No local toolchain; build in Docker image **`ghcr.io/coredevices/pebbleos-docker:v6`** (official CI
-  image, not the old `pebbleos-build:local`). `minimed-build.sh` wraps the whole Docker invocation.
+- No local toolchain; build in Docker image **`pebbleos-minimed:v10`** (the official CI image plus
+  the Python requirements and SDL2; see `tools/minimed/Dockerfile`). `minimed-build.sh` wraps the
+  whole invocation and takes the target: `-t asterix`, `-t obelix` or `-t getafix`.
 - Everything is behind Kconfig `CONFIG_MINIMED_SAKE`; boots NORMAL (ordinary Pebble).
   MiniMed app: SELECT = NORMAL⇄DUAL, DOWN = forget pump, Back = exit.
-- Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`, 24/24) before reflashing.
+- Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`) before reflashing.
 
 ### PT2 (obelix) port — verified build recipe
 
-The spike now builds and boots on the Pebble Time 2 (`obelix@pvt`, SiFli SF32LB52). The working
-recipe is exacting; see `TESTING.md` for the full failure table. Essentials:
+The spike now builds and boots on the Pebble Time 2 (`obelix@pvt`, SiFli SF32LB52) and the Pebble
+Round 2 (`getafix@dvt2`). The working recipe is exacting; see `TESTING.md` for the full failure
+table. Essentials:
 
 - Build **release** (`CONFIG_RELEASE=y`) and produce ONE correctly-linked single-slot bundle per
   slot — no dual-slot repack, no manifest rewrite. `minimed-build.sh` emits `_slot0.pbz` and
-  `_slot1.pbz` and shares both.
-- Keep a **release-form annotated git tag** (default `v4.36.9`) on HEAD so the manifest versionTag
+  `_slot1.pbz` and shares both with `--push`.
+- Keep a **release-form annotated git tag** (default `v4.41.9`) on HEAD so the manifest versionTag
   parses in the Pebble app and encodes as release band.
 - The app targets the slot NOT running (`1 - runningSlot`) and requires `firmware.slot` to match,
   so flash whichever slot bundle the app asks for — the "does not parse" that appeared after a
   working slot0 flash was this slot race, not a build regression.
-- Verify band 0x01 and version > stock (4.36.2) before flashing.
+- Verify band 0x01 and a version above the script's stock floor (v4.36.2) before flashing.
 
 ### After-the-fact logs from a SPIKE session (`tools/dump_flash_logs.py`)
 
@@ -211,7 +217,7 @@ Details worth knowing:
 
 ### Host unit tests (`pbl test`) -- worth using
 
-The firmware has a real clar unit-test suite (376 tests) that builds for the host and runs in about
+The firmware has a real clar unit-test suite that builds for the host and runs in about
 a minute once built. `tests/fw/services/bluetooth/test_bluetooth_persistent_storage.c` in
 particular covers the bonding DB, so bond-storage work can be genuine TDD with no hardware. Run it
 in the `pebbleos-minimed:v10` image like everything else:
@@ -234,7 +240,10 @@ official CI image; `tools/minimed/Dockerfile` adds the Python requirements and S
 resource build dies).
 
 
-## Code map (branch `spike/minimed-sake`; all committed, nothing pushed)
+## Code map (pre-rebuild layout, 2026-07 to 2026-10)
+
+This is the layout the MiniMed work was developed in before the 2026-10 rebuild onto v4.41.1: the
+old waf build and the old file names. For the current layout see the code map in `../AGENTS.md`.
 
 New files (all spike-only via wscript/ifdef):
 
@@ -338,14 +347,14 @@ Topic-specific ones have moved: the watchface launch-gap crash is in
 and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
 
 - **The host tests are blind to locks — `stubs_mutex.h` makes `mutex_lock()` a no-op.** So a
-  lock-ordering or reentrancy bug passes all 327 tests and then hangs the watch. Specifically: the
+  lock-ordering or reentrancy bug passes the whole suite and then hangs the watch. Specifically: the
   bonding DB's `s_db_mutex` is **non-recursive** (`mutex_create()`, not `mutex_create_recursive()`),
   and `prv_file_each` holds it across the *entire* iteration — so calling any
   `bt_persistent_storage_*` reader from inside a `for_each_ble_pairing` callback self-deadlocks.
   This was caught by review in v36 before flashing (it would have frozen the watch on opening
   Settings → Bluetooth). Do per-bond lookups in a **second pass** after the iteration returns;
   `prv_add_ble_remotes` in `settings/bluetooth.c` is the worked example.
-- clangd floods spike files with false errors (missing NimBLE include paths). Trust `./waf build`.
+- clangd floods spike files with false errors (missing NimBLE include paths). Trust `pbl build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 
 ## Remaining work (usability order)

@@ -4,6 +4,10 @@ Every spike build, newest first, then the chronological dev/test log. This is a 
 archive — you rarely need it in context. Current state is in `PROGRESS.md`; the per-topic
 files are listed there.
 
+Entries from before the 2026-10 rebuild (`describe` strings, `vNN` bundle names, commit hashes)
+resolve against the tag `archive/pre-rebuild-v4.41.0` and the archived branches
+`archive-v4.36.2` / `archive-v4.24.0`, not against the current tree.
+
 ## Versioning (since 2026-09-11)
 
 `minimed-build.sh` refuses to build a dirty tree, not a version counter, and names bundles

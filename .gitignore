@@ -74,11 +74,10 @@ docs/_apidoc
 doxygen-awesome-css/
 artifacts/
 
-.claude/settings.local.json
 .envrc
 .direnv
 
-# Personal compile-time overrides -- see TESTING.md.
+# Personal compile-time overrides -- see .agents/TESTING.md.
 subsys/bluetooth/minimed_local_overrides.h
 tools/minimed_sake_hosttest/history.hex
 tools/minimed_sake_hosttest/replay

@@ -14,35 +14,38 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
 ## Build + deploy (one command)
 
 ```sh
-./minimed-build.sh <desc>              # asterix (Pebble 2 Duo) -> build/minimed-<board>-<describe>-<desc>.pbz
-./minimed-build.sh <desc> --pt2        # obelix (Pebble Time 2) -> ..._slot0.pbz + ..._slot1.pbz
-./minimed-build.sh <desc> --no-push    # skip the share (just build the versioned .pbz)
-./minimed-build.sh <desc> --allow-dirty  # bypass the clean-tree check (normally required)
+./minimed-build.sh -t asterix <desc>   # Pebble 2 Duo -> build/minimed-asterix-<describe>-<desc>.pbz
+./minimed-build.sh -t obelix <desc>    # Pebble Time 2 -> ..._slot0.pbz + ..._slot1.pbz
+./minimed-build.sh -t getafix <desc>   # Pebble Round 2 -> ..._slot0.pbz + ..._slot1.pbz
+# --push shares the bundles to the phone; --allow-dirty bypasses the clean-tree check
 ```
 
 - Refuses to build on a dirty tree (build identity = commit, so it must be committed first;
-  `--allow-dirty` bypasses this). Writes `build/minimed-<board>-<describe>-<desc>.pbz`, where
-  `<describe>` is `git describe --dirty --always` (e.g. `v4.36.2-138-g6c6260855`). That's the
+  `--allow-dirty` bypasses this). Writes `build/minimed-<board>-<describe>-<desc>[_slotN].pbz`,
+  where `<board>` is the script's short board name (`asterix`, `pt2` for obelix, `getafix`) and
+  `<describe>` is `git describe --dirty --always` (e.g. `v4.41.1-95-g38a8012b2`). That's the
   build-script/filename identity; separately, the running firmware's boot log and the MiniMed app
   top line always show the bare short commit hash (`Commit: <hash>`,
   `TINTIN_METADATA.version_short`) regardless of how the build was invoked — the two usually share
   the same hash suffix, but the runtime one is the unconditional source of truth for "what commit
   is this watch actually running" (describe's shape can collapse to just a tag name with no hash
-  at all if `HEAD` is sitting exactly on one, e.g. rebuilding an unchanged commit on the PT2 path).
-- Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect.
+  at all if `HEAD` is sitting exactly on one, e.g. rebuilding an unchanged commit on the obelix path).
+- Shares to the phone over **adb** (`/sdcard/Download`), falling back to kdeconnect, only when
+  `--push` is given.
 - Builds with CMake (`pbl configure/build/bundle`) in the `pebbleos-minimed:v10` Docker image
   (`tools/minimed/Dockerfile`: the official CI image plus the Python requirements and SDL2, built
   on first use), one build directory per board and slot (`build-asterix`, `build-pt2-slot0`,
-  `build-pt2-slot1`). Every run reconfigures, which is quick, so Kconfig changes need no flag.
-- **asterix** (the default): one bundle, no release band, and no voice dictation. Stock v4.41.0
-  already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB, so the
+  `build-pt2-slot1`, `build-getafix-slot0`, `build-getafix-slot1`). Every run reconfigures, which
+  is quick, so Kconfig changes need no flag.
+- **asterix**: one bundle, no release band, and no voice dictation. Stock upstream v4.41.x already
+  fills about 97% of the 992 KB flash region and the pump link adds roughly 59 KB, so the
   build turns the voice endpoint off (`CONFIG_SERVICE_VOICE_ENDPOINT=n`, which takes the voice
   service and speex with it) and links the stand-ins in `fw/services/minimed/stubs/`
   (`CONFIG_MINIMED_STUB_VOICE=y`), because upstream calls into voice unconditionally. With the
-  set and sensor reminders it lands at 99.1% (about 9 KB left). Dictation then fails as on a watch
-  without a microphone.
-- **obelix** (`--pt2`): two single-slot bundles, release build, release-band check. The rest of
-  this section is that recipe.
+  set and sensor reminders it lands at about 99% (roughly 10 KB left). Dictation then fails as on
+  a watch without a microphone.
+- **obelix** and **getafix**: two single-slot bundles, release build, release-band check. The rest
+  of this section is that recipe.
 
 ### User-facing settings
 
@@ -66,7 +69,7 @@ Settings page above); the mechanism remains for the next one.
 
 The only images that **parse in the Pebble app** AND **boot on the PT2** are RAW single-slot
 bundles built **release** (`CONFIG_RELEASE=y`) from a **release-form git tag** — one bundle per
-slot. `minimed-build.sh` builds and shares both `_slot0.pbz` and `_slot1.pbz`.
+slot. `minimed-build.sh` builds both `_slot0.pbz` and `_slot1.pbz` (and shares them with `--push`).
 
 **Slot race (why a working file suddenly "does not parse"):** the app resolves a sideload to the
 slot *not* currently running (`updateToSlot = 1 - runningSlot`) and its safety check requires
@@ -84,8 +87,9 @@ error. Hence: keep both slot builds on the phone and flash the one the app asks 
 
 So: **one correctly-linked bundle per slot, release build, release-form tag. Do not repack, do
 not rewrite the manifest, do not run non-release.** `minimed-build.sh` moves the annotated tag
-`RELEASE_TAG` (default `v4.36.9`) to HEAD each run, builds slot0 and slot1 separately, verifies each
-is release band 0x01 with version > stock (4.36.2), and shares both over kdeconnect.
+`RELEASE_TAG` (default `v4.41.9`) to HEAD each run, builds slot0 and slot1 separately, and verifies
+each is release band 0x01 with a version above stock before it is pushed (`--allow-dirty` skips that
+check). The same recipe applies to getafix.
 
 ## Flash (BT sideload — no dev kit)
 
