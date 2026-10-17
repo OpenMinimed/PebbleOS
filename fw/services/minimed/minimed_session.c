@@ -108,7 +108,7 @@ static const uint8_t SRCP_GET_TAS[] = {0xFD, 0x03};
 #define FALLBACK_AFTER_SECS (6 * 60)
 static bool s_push_mode; // false until the first indication of this connection proves push
 
-// Exchange serialiser (spec: docs/superpowers/specs/2026-07-27-pump-push-design.md). The pump
+// Exchange serialiser (v40 0x101 push reads). The pump
 // exchanges (CGM poll, SRCP IOB read, IDD Status read, SRCP TAS read, SRCP Reset Status) each
 // span a request plus its response, share the reassembly buffers, and can be triggered
 // asynchronously by 0x101 pushes -- so exactly one is in flight at a time. s_op holds the
@@ -370,7 +370,7 @@ static int32_t prv_decode_medfloat16(uint16_t raw) {
 }
 
 // Bucket a CGM trend rate (tenths of mg/dL/min) into one of the protocol's TREND_* arrows. Per the
-// golden reference (medtronic_new/PythonPumpConnector cgm/measurement.py, quoting the 780G
+// golden reference (PythonPumpConnector cgm/measurement.py, quoting the 780G
 // manual): 1 arrow for 1-2 mg/dL/min, 2 arrows for 2-3, 3 arrows for more than 3 -- the pump's own
 // display never distinguishes further, so the top bucket maps to DOUBLE_*, not TRIPLE_* (the
 // protocol defines TRIPLE_* for other data sources with finer resolution; the pump just doesn't

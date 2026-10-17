@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Dump a PythonPumpConnector history.db as one hex record per line, in log order.
 
-    ./export_history_db.py ../../../medtronic_new/PythonPumpConnector/database/history.db > history.hex
+    ./export_history_db.py /path/to/PythonPumpConnector/database/history.db > history.hex
 
 `make replay HISTORY=history.hex` then runs the firmware's history decoding and glucose predictor
 over it and scores the 30-minute predictions against the readings that followed.

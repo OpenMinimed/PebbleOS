@@ -5,7 +5,7 @@
 # Compiles the SAME module source that the firmware compiles (all of
 # fw/services/minimed/core, which has no PebbleOS or NimBLE dependency) so
 # there is a single source of truth. -DSAKE_TEST_HOOKS exposes the internal CMAC / SeqCrypt for
-# the KATs. See ../../SPIKE-HANDOFF.md (Spike 2).
+# the KATs. See .agents/PROGRESS.md (code map) for the current layout.
 
 MOD := ../../fw/services/minimed/core
 CFLAGS := -std=c99 -Wall -Wextra -O2 -DSAKE_TEST_HOOKS -I$(MOD)
