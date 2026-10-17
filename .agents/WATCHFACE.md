@@ -4,9 +4,11 @@ The on-watch firmware injects AppMessages into `../pebble-glucose-watchface`
 ([mortenfyhn/pebble-glucose-watchface](https://github.com/mortenfyhn/pebble-glucose-watchface),
 fork used for this repo's watchface-side changes:
 [palmarci/pebble-glucose-watchface](https://github.com/palmarci/pebble-glucose-watchface))
-unmodified. This file holds the launch-crash saga (currently dormant) and the launch-gap gotcha
-behind it. Firmware architecture is in `PROGRESS.md`; the wire format is
-`../pebble-glucose-protocol/PROTOCOL.md`.
+unmodified. This file holds the watchface-side integration facts: how a launch that shows the
+failure screen is usually an app **fetch** failure, the on-watch sender's launch-gap gotcha, the
+window-appear re-announce, and the dormant v34/v35 launch-crash saga (kept for its ruled-out list).
+Firmware architecture is in `PROGRESS.md`; the wire format is
+`../pebble-glucose-protocol/PROTOCOL.md`. See also `TESTING.md` for the display checks.
 
 ## The watchface re-announces on window appear, not just on launch (2026-09-26)
 
@@ -22,11 +24,12 @@ face is current by the time it is visible. Verified on hardware: the round-trip 
 ## The "failed screen" is usually an app FETCH failure, not a crash (root-caused 2026-08-03)
 
 **Symptom:** launching the watchface shows a progress bar (it normally launches with no visible
-bar at all), then the Pebble failure screen. In NORMAL it launches fine; in SPIKE it does not.
+bar at all), then the Pebble failure screen. With a phone session it launches fine; without one it
+does not.
 
 **Cause:** the progress bar is the app-*fetch* UI (`app_fetch_ui.c`). The watchface binary was not
-resident on the watch, so launching it made the watch ask the phone to send it — and SPIKE has no
-phone. The log is unambiguous:
+resident on the watch, so launching it made the watch ask the phone to send it — and the pump-only
+mode of the time had no phone session to answer. The log is unambiguous:
 
     Sent request for app with uuid: {567a3f6e-…} and app_id: 41   (app_fetch_endpoint/service.c:269)
     Put bytes failure                                             (…:166)
@@ -38,10 +41,11 @@ flush** (`app_db.c:383` `AppDB Flush initiated`) — a full app re-sync, which i
 when the firmware changes. App *metadata* survives (`Found 2 apps. Next ID: 41`), so the launcher
 still lists the watchface; only the binary is missing.
 
-**So, after every flash: launch the watchface once in NORMAL, with the phone connected, before
-toggling to SPIKE.** That fetches and caches the binary and SPIKE works from then on. This is the
-same "workaround" that seemed to fix the 2026-07-26 crash — because it was never a workaround, it
-was the fix.
+**So, after every flash: launch the watchface once with the phone connected.** NORMAL is the
+verified path; since v62 the phone session also survives in DUAL, so it should work there too (not
+re-verified — if the app cannot see the watch, toggle NORMAL first). That fetches and caches the
+binary. This is the same "workaround" that seemed to fix the 2026-07-26 crash — because it was never
+a workaround, it was the fix.
 
 **Grep for it before assuming a crash:** a real crash logs `Watchface crashed (id=…)`
 (`app_manager.c:502`) and the fault handler logs `PC:`/`LR:` (`fault_handling.c:105-108`). If those
@@ -54,47 +58,48 @@ is when the app would have been fetched once with a phone attached and stayed re
 
 ## Gotcha: the on-watch sender crashes an under-hardened watchface on launch (FIXED 2026-07-23)
 
-  local sender injects a BG AppMessage with ~zero latency (loopback), unlike a phone whose reply
-  carries BLE round-trip delay. If the watchface opens its AppMessage inbox before `window_load`
-  creates its layers (it does), a message landing in that launch gap hits any *unguarded*
-  `text_layer_set_text(NULL, …)` → `PBL_ASSERTN` hard fault → "slow load then sad-watch", but
-  ONLY in SPIKE (NORMAL has no sender, so it looked like a corrupt install). Fix lives in the
-  **watchface** (`pebble-glucose-watchface/src/c/main.c`): NULL-guard the bg/ago/iob text-layer
-  updates like the graph/status layers already are; `window_load` re-renders them so no data is
-  lost. Not a firmware bug — no flash needed, just rebuild+reinstall the `.pbw`. Symmetric latent
-  risk on the time/date layers (tick subscribed before window_load) left unguarded for now (a tick
-  in the sub-ms launch gap is very unlikely); guard them too if it ever recurs.
+The local sender injects a BG AppMessage with ~zero latency (loopback), unlike a phone whose reply
+carries BLE round-trip delay. If the watchface opens its AppMessage inbox before `window_load`
+creates its layers (it does), a message landing in that launch gap hits any *unguarded*
+`text_layer_set_text(NULL, …)` → `PBL_ASSERTN` hard fault → "slow load then sad-watch". It showed
+up only with the sender present, i.e. only in DUAL (NORMAL has no sender, so it looked like a
+corrupt install). The fix lives in the **watchface**
+(`pebble-glucose-watchface/src/c/main.c`): NULL-guard the bg/ago/iob text-layer updates as the
+graph/status layers already were; `window_load` re-renders them so no data is lost. Not a firmware
+bug — no flash needed, just rebuild and reinstall the `.pbw`. The symmetric latent risk on the
+time/date layers (tick subscribed before `window_load`) is now guarded too, though a tick landing in
+the sub-millisecond launch gap is very unlikely.
 
-## OPEN→DORMANT: watchface launch crash — does NOT reproduce on v36 (2026-07-26 evening)
+## DORMANT (historical): watchface launch crash on v34/v35 — not reproducible on v36 (2026-07-26)
 
 **Could not be reproduced on v36 at all.** Tested in this order: launched in NORMAL (fine, shows
-time, "need companion app" toast as expected with no sender); toggled to SPIKE with it running
-(fine — graph appeared immediately, then live BG); left the watchface and returned while in SPIKE
-(fine); switched to another watchface and back (fine). Every one of these crashed reliably on
-v34/v35.
+time, "need companion app" toast as expected with no sender); mode-toggled with it running (fine —
+graph appeared immediately, then live BG); left the watchface and returned while connected (fine);
+switched to another watchface and back (fine). Every one of these crashed reliably on v34/v35.
 
-Nothing in v36 touches the sender, the watchface, or AppMessage, so the most probable explanation
-is the one the audit flagged: **bad persisted state**. `load_state()` runs at every launch and was
-reading a v33-era save with v34 code; once the watchface finally ran to completion it rewrote that
-save in the current format, and the trigger disappeared. That also explains why the audit could
-prove the injected dictionary well-formed while the crash stayed real, and why TEST_MODE never
-caught it (`load_state()` is compiled out under TEST_MODE, and `new_data_callback` is never
-exercised there — so the emulator run covered neither function that actually runs at launch).
+Nothing in v36 touches the sender, the watchface, or AppMessage, so the likeliest explanation at the
+time was **bad persisted state**: `load_state()` runs at every launch and was reading a v33-era save
+with v34 code; once the watchface finally ran to completion it rewrote that save in the current
+format and the trigger disappeared. That also explains why the audit could prove the injected
+dictionary well-formed while the crash stayed real, and why TEST_MODE never caught it
+(`load_state()` is compiled out under TEST_MODE, and `new_data_callback` is never exercised there —
+so the emulator run covered neither function that actually runs at launch). The other candidate,
+found later, is the **app-fetch failure** described above; both remain unproven, and the evidence is
+gone either way (the crash logs have rotated out of the flash log, and older generations were
+written by v35, whose loghash dictionary differs, so they no longer dehash).
 
-Not proven, because the evidence is gone: the historical crash logs have rotated out of the flash
-log, and older generations were written by v35 whose loghash dictionary differs, so they no longer
-dehash. **If it ever returns, it is now cheap to catch** — see the flash-log tooling below; the
-fault handler logs `PC:`/`LR:` (`fault_handling.c:105-108`) and `app_manager.c:502` logs
-`Watchface crashed (id=…)`, all of which go to flash. Reproduce in SPIKE, toggle to NORMAL, dump.
+**If it ever returns, it is cheap to catch** — the fault handler logs `PC:`/`LR:`
+(`fault_handling.c:105-108`) and `app_manager.c:502` logs `Watchface crashed (id=…)`, all of which
+go to flash. Reproduce in DUAL, then dump (`dump_flash_logs.py` works mid-session since v62).
 
 Kept below for the record, since the ruled-out list is still valid and the audit's conclusions
 stand:
 
-## OPEN (historical): watchface crashed ("failed" screen) on launch under v34/v35 (2026-07-26)
+## Historical: watchface crashed ("failed" screen) on launch under v34/v35 (2026-07-26)
 
-BG + IOB read correctly and show in the SAKE Spike app, but launching the real watchface gives the
-Pebble app-crash screen — the same symptom as the 2026-07-23 launch-gap crash (see Gotchas), which
-was supposedly fixed. **Unresolved. Do not repeat these dead ends:**
+BG + IOB read correctly and showed in the on-watch app, but launching the real watchface gave the
+Pebble failure screen — the same symptom as the 2026-07-23 launch-gap crash (see the Gotcha above),
+which was supposedly fixed. Never conclusively resolved. **Do not repeat these dead ends:**
 
 - **The installed `.pbw` was NOT stale.** Tempting theory, checked and false: `src/c/main.c` was last
   modified 16:43:17 and the `.pbw` built 16:43:50 — 33 s later, so it *did* contain the NULL guards.
@@ -148,7 +153,7 @@ was supposedly fixed. **Unresolved. Do not repeat these dead ends:**
 Remaining candidates, in order: **the app fault log's PC/LR** (nothing in a code audit substitutes
 for it); the watchface's own launch sequence that the emulator skips — especially `load_state()`
 reading a **v33-era persisted state with v34 code**; and firmware code touched by v34 outside the
-sender, notably the new `s_reading_ts` / Time-Offset tracking in `minimed_sake_read.c:125-149`.
+sender, notably the new Time-Offset tracking in `minimed_session.c`.
 
 Two fragile-but-correct spots found along the way, worth a comment each so nobody "fixes" them:
 `prv_ack_and_resend_cb` writes an ACK into `s_frame` and `prv_push_bg_cb` immediately overwrites the
@@ -156,7 +161,7 @@ same buffer (safe only because `comm_session_receive_router_write` copies synchr
 and `window_unload` destroys the layers but leaves the pointers non-NULL, so the NULL guards the
 2026-07-23 fix relies on are stale after an unload (currently unreachable, but NULLing them is free).
 
-**Next step requires the app crash log**, which needs a phone connection — and that costs the pump
-bond (a gateway write prunes it). Use the USB tunnel, not an IP: `adb forward tcp:9000 tcp:9000`
-then `pebble logs --phone 127.0.0.1`. This is the second time in one session that the single
-connection slot has blocked a diagnosis — more evidence for prioritising dual.
+**The next step would need the app crash log**, which needs a phone connection; since v36 that costs
+no bond, and since v62 the phone session is up in DUAL anyway, so it can be pulled without toggling.
+Use the USB tunnel, not an IP: `adb forward tcp:9000 tcp:9000`, then `pebble logs --phone
+127.0.0.1`.

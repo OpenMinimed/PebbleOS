@@ -1,9 +1,10 @@
-# Connectivity: bonds, advertising, the single slot, and dual connection
+# Connectivity: bonds, advertising, and the dual link
 
-Everything about who gets the one BLE connection and how the watch is discovered: the pump's
-first-pair/reconnect advertising, bond storage and pruning, the phone-vs-pump slot contest, and
-the dual-connection work that would dissolve it. Pump *protocol* facts belong in
-`../Documentation/`; battery effects of the link are in `BATTERY.md`.
+How the watch is discovered and who it is bonded to: the pump's first-pair/reconnect advertising,
+bond storage and pruning, and the dual link that holds the phone and the pump at the same time.
+Pump *protocol* facts belong in `../Documentation/`; battery effects of the link are in
+`BATTERY.md`. The single-connection slot this file used to be built around is gone since v59 — its
+history and the lessons from it are kept at the end, marked as such.
 
 ## Stand-By Mode takes the pump link down
 
@@ -27,16 +28,17 @@ still — so **Stand-By Mode is off** (2026-09-06). Notes for anyone reconsideri
 
 ## Gotchas
 
-- Single BLE connection (`BLE_MAX_CONNECTIONS 1`): phone or pump, never both — toggle between
-  them (SPIKE=pump, NORMAL=phone). **v59 changes this to NORMAL⇄DUAL with `BLE_MAX_CONNECTIONS 2`
-  and a swallowed pump link; NORMAL is a full BT stack restart (kill switch).** Dual was tried
-  (v21/v22) and set aside. **Do NOT repeat the old
-  "radio scheduling starves the pump link" conclusion — it was retracted**: the 0x08 supervision
-  timeout that produced it reproduced on v23 *single-connection with phone BT off*, so a second
-  link cannot have caused it (it was the FE81/FE82 bond mismatch). Dual has never been fairly
-  tested. See "Dual pump+phone" in Remaining work for what it would actually take.
-- Phone bond can loop connect/terminate(0x13) after the SM changes; repeat-pairing recovery usually
-  self-heals; else forget + re-pair on the phone (NORMAL mode).
+- **Two BLE connections since v59 (`BLE_MAX_CONNECTIONS` 2, `CONFIG_MINIMED_SAKE`), one mode toggle:
+  NORMAL⇄DUAL.** NORMAL is phone-only and a full Bluetooth stack restart (the kill switch); DUAL
+  holds the phone and the pump at the same time, with the pump link *swallowed* so the firmware
+  stack still sees a single connection. The pump has its own advert job, so the phone connecting no
+  longer takes the pump off air. Note for the SiFli boards: they raise the connection count in their
+  own syscfg.
+- **Do NOT repeat the old "radio scheduling starves the pump link" conclusion — it was retracted.**
+  The 0x08 supervision timeout that produced it reproduced on a single-connection build with phone
+  BT off, so a second link cannot have caused it; it was the FE81/FE82 bond mismatch.
+- Phone bond can loop connect/terminate(0x13) after an SM change; repeat-pairing recovery usually
+  self-heals, else forget + re-pair on the phone (NORMAL mode).
 
 - **FE81/FE82 pairing-state reconciliation.** The watch's paired flag and the pump's bond can
   disagree, and neither auto-corrects: if the watch advertises FE81 (log `adv EN FE81 …`) but the
@@ -46,24 +48,11 @@ still — so **Stand-By Mode is off** (2026-09-06). Notes for anyone reconsideri
   first-pair (DOWN on watch + remove/add on pump).** A smarter auto-fallback (try FE82 if FE81
   draws no connection for N s) is a possible future improvement.
 
-## Known papercut: phone steals the SPIKE slot (diagnosed 2026-07-28, no firmware bug)
-
-Toggling to SPIKE with the phone still connected does NOT hand the slot to the pump: nothing
-rejects the *phone* in SPIKE (the mirror image of the v32 pump-in-NORMAL reject), the phone
-re-grabs the freed slot within ~1 s, and a connected watch stops advertising — so the pump can
-never get in. **The "tap disconnect in the Pebble app before toggling to SPIKE" habit is
-load-bearing.** Second factor: the pump's reconnect scan backs off with outage length (observed
-since v41: 1m40s and 1m48s after brief drops, 6m51s after a ~7 min outage) — after an hour away,
-give it up to ~15 min with the slot actually free before suspecting anything. Diagnosis notes:
-`local_addr.c "No bondings found that require address pinning!"` at SPIKE entry is normal noise
-(fires on working toggles too). Proper fixes, both deferred: reject/deprioritise the phone in
-SPIKE (small, v32-mirror), or dual connection (item 5) which dissolves the whole slot contest.
-
-## OPEN: pump "device not found" on v34 (2026-07-26)
+## Resolved: pump "device not found" on v34 (2026-07-26, fixed in v35)
 
 After flashing v34 the pump could no longer discover the watch for first-pairing, with the watch
-provably advertising correctly. **Unresolved; v35 is the attempted fix.** Read this before touching
-`minimed_sake_build_adv`.
+provably advertising correctly. v35 fixed it; kept because the technique and the lesson still apply,
+and because it is the reason to read this before touching `minimed_sake_build_adv`.
 
 What was ruled out by scanning the watch from a laptop (`bluetoothctl`) rather than trusting the
 on-watch log — worth repeating as a technique, it settled in one minute what guessing hadn't:
@@ -81,12 +70,12 @@ correct — the watch was not the obvious culprit, and the on-watch log (`adv EN
 
 Two things came out of it:
 
-1. **Real bug, fixed in v35: the SPIKE advert never cleared the scan response.** The SPIKE branch of
-   `bt_driver_advert_set_advertising_data` set the advert data and returned early, leaving whatever
-   scan response NORMAL had installed — Pebble manufacturer data (company `0x0eea`) carrying the
-   watch's serial. So while impersonating a Medtronic peripheral the watch answered active scans by
-   identifying itself as a Pebble. Long-standing (not a v34 regression), but wrong. Fixed with
-   `ble_gap_adv_rsp_set_data(NULL, 0)` (NimBLE only rejects NULL with a nonzero length).
+1. **Real bug, fixed in v35: the pump-mode advert never cleared the scan response.** The pump-mode
+   branch of `bt_driver_advert_set_advertising_data` set the advert data and returned early, leaving
+   whatever scan response NORMAL had installed — Pebble manufacturer data (company `0x0eea`)
+   carrying the watch's serial. So while impersonating a Medtronic peripheral the watch answered
+   active scans by identifying itself as a Pebble. Long-standing (not a v34 regression), but wrong.
+   Fixed with `ble_gap_adv_rsp_set_data(NULL, 0)` (NimBLE only rejects NULL with a nonzero length).
 2. **The "Mobile Pebble" rename is reverted to "Mobile PB", and the advert bytes should now be
    treated as load-bearing.** The rename is *legal* — `Documentation/bluetooth.md` allows
    `Mobile ` + 0–7 chars, "Pebble" is 6, and the bridge's own fixture uses the equally long
@@ -96,103 +85,44 @@ Two things came out of it:
    a deliberate trade of diagnostic precision for getting a wearable watch back. If v35 pairs, the
    clean follow-up is to re-try the rename *alone* to find out.
 
-Still-unexplored candidates if v35 does not fix it: pump-side state (a stale/hidden paired-device
-entry, or the pump needing its Bluetooth or itself power-cycled), and the total advert length going
-22 → 26 bytes (the service UUID stays at bytes 3–6 either way, so a UUID filter should be
-unaffected — but that is reasoning, not evidence).
+If it ever recurs, the candidates left unexplored were: pump-side state (a stale/hidden
+paired-device entry, or the pump needing its Bluetooth or itself power-cycled), and the total advert
+length having gone 22 → 26 bytes (the service UUID stays at bytes 3–6 either way, so a UUID filter
+should be unaffected — but that is reasoning, not evidence).
 
 Process note for next time: this cost a flash because a cosmetic advert change was bundled with four
 functional ones, against this project's own one-change-per-flash rule. Cosmetic changes to the
 advert payload are not cosmetic.
 
-## → NEXT UP: dual connection (phone + pump at the same time)
+## History: the single-slot era
 
-**IMPLEMENTED (v59) and HW-VERIFIED on asterix 2026-09-03 (v62) — this section's blockers are the
-design; v59 is the first build that addresses all three, v62 the first that runs.** Phone on
-handle 1 and pump on handle 2 at once, BG/IOB flowing, phone session usable throughout
-(`../logs/watch/2026-09-03-g0-v62-dual-link-first.txt`). The toggle is now NORMAL⇄DUAL (SPIKE is
-gone); NORMAL does a full `bt_ctl_reset_bluetooth()` stack restart (the kill switch, so sideload is
-safe if dual misbehaves). What changed vs the three blockers below: `BLE_MAX_CONNECTIONS` 1→2,
-`gap_le_advert_set_allow_advert_while_connected(true)` in DUAL lifts the advertising-XOR-connected
-rule, and the pump got its own `GAPLEAdvertisingJobTagMinimed` advert job (so the phone connecting
-no longer kills the pump's discoverability — it was piggybacking the Reconnection job, which
-`kernel_le_client` unschedules on gateway connect). The pump link is swallowed (driver-private:
-connect/disconnect/enc-change never reach the fw stack; the stack's single GAPLEConnection stays
-the phone's). See the v59 entry in `VERSIONS.md` for the full list and HW checklist.
+Before v59 the watch had one BLE connection, so the phone and the pump took turns — pump mode, or
+NORMAL phone-only — with the phone winning whenever it was around. Everything above about bonds and
+advertising was worked out under that constraint. Two consequences are worth remembering:
 
-**This is the priority after v34, and it is a tooling fix, not a feature.** Decided 2026-07-26.
-Full detail in remaining-work item 5; this section exists so nobody has to infer the priority.
+- Every flash and every watchface `.pbw` install cost a pump un-pair/re-pair, and there were no live
+  logs while the pump held the slot (only the 8-line on-watch ring, read by filming the screen).
+  That tax is the whole reason dual was worth building: it is an iteration-speed fix, not a feature.
+  The old "the user is fine toggling instead" note was stale the moment the toggle started costing
+  the dev loop.
+- Rules this project learned the hard way: **one change per flash** (v34 bundled a *cosmetic* advert
+  rename with four functional changes and cost a flash plus an evening — cosmetic changes to the
+  advert payload are not cosmetic); **run an adversarial review of every HW-untestable change before
+  flashing** (it caught a watch-hard-faulting bug twice); **prefer evidence to inference** (scanning
+  the watch from a laptop with `bluetoothctl`, and running the watchface in the emulator with
+  TEST_MODE, each settled in a minute what hours of guessing had not); and **compare artifact mtime
+  to source mtime, not to the commit timestamp** (a confident wrong diagnosis of the watchface
+  crash).
 
-The single connection slot is what makes every other task on this project expensive:
+For anything involving the phone, use the USB tunnel (`adb forward tcp:9000 tcp:9000`, then
+`pebble … --phone 127.0.0.1`) — the phone's IP changes with the network.
 
-- **No live logs.** SPIKE has no real CommSession, so the only debug channel is the 8-line on-watch
-  ring buffer — which we read by *filming the screen*. The firmware already supports log dumping
-  over a comm session (`fw/debug/debug.c`, `CommSessionInfiniteLogDumping`; what `pebble logs`
-  uses), but it needs a phone session that SPIKE cannot currently have. The loopback session is not
-  a substitute: its `send_next` discards everything.
-- **Every flash and every watchface `.pbw` install costs a pump un-pair/re-pair** (see "What the
-  flash costs you in pairings"), so each iteration is minutes of fiddling plus a chance of landing
-  in the FE81/FE82 mismatch. That tax is paid on *every* future change to anything.
+## The three blockers dual had to clear (all closed in v59, HW-verified in v62)
 
-So dual pays for itself immediately in iteration speed, independently of it being nicer to use.
-The old note that "the user is fine toggling instead" is **stale** — that was true when the toggle
-only cost convenience, not when it costs the whole dev loop.
-
-Extra design point specific to dual, not yet in item 5: the loopback watchface sender is opened in
-SPIKE **only**, deliberately, because "a real phone session would compete with it"
-(`minimed_sake_sender.c prv_set_mode_cb`). Under dual both sessions exist at once, so that
-competition becomes real and must be resolved — AppMessage routing to the watchface was already
-flagged as a v21 known risk. Decide it before flashing: probably keep injecting locally and let the
-phone session carry only logs/sideload traffic.
-
-### Handoff brief (written 2026-07-26 — dual work was deliberately handed to a fresh session)
-
-Read in this order: this section → remaining-work item 5 (the three blockers, with file references)
-→ item 8 (bond coexistence, a prerequisite) → the two OPEN sections above (known-broken things, so
-you don't mistake them for something you caused).
-
-**Hardware state you are starting from:** watch is on **v35**, paired to the pump, BG + IOB correct,
-being worn with the **SAKE Spike app** on screen because the real watchface crashes on launch. The
-phone is **not** paired to the watch. Everything in the working tree is **uncommitted** (v32 through
-v35 inclusive) — consider getting Morten to commit before you start changing things, or you will not
-be able to tell your changes from four flashes' worth of his.
-
-**Do not start by writing code.** The two OPEN bugs above mean the baseline is not clean, and one of
-them (the watchface crash) is plausibly *caused by* a v34 change of ours. Decide with Morten whether
-to fix that first — it is also the thing dual would make cheap to debug, so there is a chicken-and-egg
-argument for doing dual first and accepting a broken watchface meanwhile.
-
-**Scope the first flash to the probe, nothing else** (remaining-work item 5 has the detail):
-`BLE_MAX_CONNECTIONS` 1→2, refcount `s_is_connected` / `s_is_connected_as_slave`, and give SPIKE its
-own `gap_le_advert_schedule()` job. Test one question only: *can both links be up at once, and does
-the pump still complete SAKE?* Leave the bond-store and Settings-pairability work (item 8) out of it.
-
-**Rules this project learned the hard way — all of them the expensive way:**
-- **One change per flash.** v34 bundled a *cosmetic* advert rename with four functional changes and
-  cost a flash plus an evening; the rename is still not exonerated. Cosmetic changes to the advert
-  payload are not cosmetic.
-- **Run an adversarial review of every HW-untestable change before flashing.** It has caught a
-  watch-hard-faulting bug twice now (v31, and again in v34's carried-over v32 logic).
-- **Prefer evidence to inference.** Two diagnoses this session were settled by *looking* — scanning
-  the watch from the laptop with `bluetoothctl` (which proved the advert was fine when the log
-  suggested otherwise), and running the watchface in the emulator with TEST_MODE (which proved the
-  graph rendering was fine). Both took a minute. Guessing took hours.
-- **Compare artifact mtime to source mtime, not to the commit timestamp** — that mistake produced a
-  confident wrong diagnosis of the watchface crash.
-- Flashing costs a pump re-pair every time, and pairing the phone deletes the pump bond. Budget for
-  it: see "What the flash costs you in pairings" in TESTING.md. This tax is precisely what dual is
-  meant to remove, so it is worth being slow and careful to get dual right in few flashes.
-- Use the USB tunnel for anything involving the phone (`adb forward tcp:9000 tcp:9000`, then
-  `pebble … --phone 127.0.0.1`). Do not chase the phone's IP; it changes with the network.
-
-## Dual pump+phone — the three blockers (remaining-work item 5)
-
-   claimed.** Motivation and priority: see "NEXT UP" above (live logs + no re-pair per flash). The v21/v22
-   "radio scheduling starves the link" verdict is **retracted** (the 0x08 reproduced
-   single-connection with phone BT off → it was the FE81/FE82 bond mismatch, not contention). The
-   v21/v22 source is unrecoverable (never committed; only the `.pbz` artifacts survive) — treat the
-   v21 entry below as a design description to re-implement, not code to restore. Researched
-   2026-07-26; three real blockers, in order:
+Researched 2026-07-26. Kept for the design detail, and because the v21/v22 attempt left no source to
+read (never committed; only its `.pbz` artifacts survive), so that entry is a description to
+re-implement, not code to restore. Three real blockers, in order (SPIKE was the name the pump mode
+had at the time; it is DUAL now):
    - **Advertising while connected is blocked at three layers.** (a) NimBLE refuses connectable
      advertising when the connection pool is full (`ble_gap.c` `ble_hs_conn_can_alloc`), so
      `BLE_MAX_CONNECTIONS` 1→2 is a hard prerequisite; everything else in NimBLE scales off that one
@@ -217,23 +147,61 @@ the pump still complete SAKE?* Leave the bond-store and Settings-pairability wor
    job, then test *only* "both links up at once, pump completes SAKE". Leave the bond-store and
    settings work out of that probe.
 
-## Bond coexistence (remaining-work item 8) — DONE
+## Bond coexistence (remaining-work item 8) — DONE, HW-VERIFIED 2026-07-26 (v36)
 
-   passed: pump bond survives a reboot, survives a phone re-pair, and Settings → Bluetooth no
-   longer lists it or refuses to pair a phone. A flash now costs zero pairings. Design:
-   `docs/superpowers/specs/2026-07-26-dual-connection-design.md`; plan:
-   `docs/superpowers/plans/2026-07-26-stage1-bond-coexistence.md`. All three holes researched here
-   on 2026-07-26 are now closed — the collector skip (which turned out to close the boot paths too,
-   since they all funnel through it), the unconditional `shared_prf_storage_erase_ble_pairing_data()`
-   on any delete, and the Settings pairability gate. The `is_gateway` signal the
-   `BtPersistBondingDBEachBLE` callback does not expose turned out **not** to be needed: the public
-   `bt_persistent_storage_is_ble_ancs_bonding(id)` answers it (`supports_ancs` is set equal to
-   `is_gateway` at store time), as long as it is called *after* the iteration returns and not from
-   inside the callback — see the non-recursive-mutex Gotcha. Once HW-verified this closes the item;
-   the remaining bond work for dual is per-peer `is_gateway`/SM decisions, tracked under item 5.
+The pump bond survives a reboot and a phone re-pair, and Settings → Bluetooth no longer lists it or
+refuses to pair a phone, so a flash costs zero pairings. The checks are in `TESTING.md`.
 
-## Phone-bond papercut (remaining-work item 7)
+Three holes closed together on 2026-07-26. **All three had to ship in one flash**: fixing the first
+two alone leaves the watch unable to pair a phone at all.
 
-   bond breaks on every SPIKE→NORMAL cycle. v24 attempts a fix (scope repeat-pairing recovery to
-   the pump only). If that's not enough, root-cause why the phone re-initiates pairing (diagnostic
-   build). v18's SM-reconfig is also still not independently verified.
+1. `prv_collect_other_ble_bondings_itr` collected every BLE bond but the one being kept, with no
+   `is_gateway` check, so every prune path deleted the pump. Both boot paths
+   (`prv_load_ble_pairing_from_prf`, `prv_prune_stale_ble_bondings`) and the phone pair/re-pair
+   prune funnel through that one collector, so a single guard closed the boot paths too.
+2. `bt_persistent_storage_delete_ble_pairing_by_id` erased the shared-PRF pairing slot on any
+   delete, so "forget pump" (the DOWN button, a routine step in the FE81/FE82 reconciliation) also
+   wiped the *phone's* PRF record until the next boot. `nimble_store.c` reaches the same function,
+   so a NimBLE-initiated deletion hit it too. The `is_gateway` value must be read *before* the
+   delete runs, or the record is already gone.
+3. Settings → Bluetooth offers pairability only when the bonded-device list is empty, and that list
+   held every BLE bond. With the pump bond now permanent, the menu would have shown "Forget this
+   device to pair a new device" forever and blocked phone pairing.
+
+The `is_gateway` signal the `BtPersistBondingDBEachBLE` callback does not expose turned out **not**
+to be needed: the public `bt_persistent_storage_is_ble_ancs_bonding(id)` answers it (`supports_ancs`
+is set equal to `is_gateway` at store time), as long as it is called *after* the iteration returns
+and not from inside the callback — see the non-recursive-mutex Gotcha. `nimble_store.c` clears
+`is_gateway` for any bond formed while the watch is in the pump mode, which is what marks the pump's
+bond non-gateway. The remaining bond work for dual is per-peer `is_gateway`/SM decisions, tracked
+under item 5.
+
+## Dual-link implementation notes
+
+Three findings from the 2026-07-26 design that survive as properties of the shipped dual link:
+
+- **The watchface loopback session opens as `TransportDestinationApp`.** A `Hybrid` loopback is a
+  "system" session and `comm_session_open` closes an existing system session on open ("last system
+  session to connect wins"), so it would tear down the phone's session and with it `pebble logs` and
+  sideload. App destination skips the eviction block. Known degradation, accepted: the watchface's
+  *outbound* messages now have two candidate fallback sessions and its ready-ping may reach the
+  phone instead of the loopback, which costs the immediate push on watchface launch — see
+  remaining-work item 10.
+- **The SAKE GATT server has no per-connection visibility and `prv_sake_port_access` has no peer
+  guard.** The Medtronic services are registered unconditionally, so under dual the *phone*
+  discovers them, and a write to the SAKE port char from any connection advances the handshake
+  state machine. Not observed as a problem; treat it as the known exposure of sharing one GATT
+  server between the peers.
+- **The pump-pairing window is implemented.** Stock strict LESC stays the default at all times;
+  `minimed_sake_apply_sm_config` flips to legacy Just Works only for a user-initiated pump
+  first-pair and flips back at handshake DONE, so a phone that pairs is not silently persisted as
+  non-gateway.
+
+## Phone-bond papercut — resolved (v33 + v36)
+
+The phone's bond used to break on every pump↔phone mode cycle, which cost a re-pair each time. Two
+causes, both fixed on hardware: the pump's bond pruning used to delete the phone's PRF slot (v33),
+and the pump's bond was pruned on every boot (v36, the coexistence fix above). The checks in
+`TESTING.md` confirmed the phone reconnects across cycles with no re-pair prompt. v24's
+repeat-pairing scoping and v18's runtime SM reconfig are both still in place; the LESC
+numeric-confirm prompt is the one part never independently verified (see `TESTING.md`).

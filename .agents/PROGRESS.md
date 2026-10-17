@@ -4,10 +4,12 @@ Run the MiniMed pipeline on the Pebble 2 Duo directly, no phone. Spinoff of the 
 phone-bridge project (`../minimed-pebble-bridge`). This file is the stable map: current state,
 how to build and test, the code map, and what is left. Topic detail lives in its own file.
 
-Mode naming: older entries below and the log vocabulary say **SPIKE** for the pump mode. The
-toggle is NORMAL⇄DUAL since v59: NORMAL is phone-only (a full BT stack restart, the kill switch)
-and DUAL holds the phone and the pump at once. Read every "SPIKE" here as DUAL. The current build,
-flash, emulator and log commands are in `../AGENTS.md`; this file keeps the state and the history.
+Mode naming: older entries below and the log vocabulary say **SPIKE** for the pump mode. The toggle
+is NORMAL⇄DUAL since v59: NORMAL is phone-only (a full BT stack restart, the kill switch) and DUAL
+holds the phone and the pump at once. Read every "SPIKE" here as "the pump mode" — in a pre-v59
+entry that means the pump link was up *alone* (the phone disconnected), and since v59 it is DUAL. The
+current build, flash, emulator and log commands are in `../AGENTS.md`; this file keeps the state and
+the history.
 
 | File | What is in it |
 |---|---|
@@ -29,8 +31,18 @@ flash, emulator and log commands are in `../AGENTS.md`; this file keeps the stat
   the working phone bridge. Same category as OpenAPS/Loop/xDrip (decade of precedent).
 - Pump + CGM remain the authoritative devices; this is a supplementary display.
 
-
 ## Status
+
+**Current tree: the fork rebased onto upstream `v4.41.1` (2026-10-13, branch `dev/v4.41.1`).**
+Builds are identified by their `git describe` string or commit hash. The `vNN` numbers below belong
+to the pre-rebuild line (tag `archive/pre-rebuild-v4.41.0`, branches `archive-v4.36.2` /
+`archive-v4.24.0`) and are kept as history: in those entries read `SPIKE` as "the pump mode" (the
+pump link alone before v59, DUAL after), `./waf test` as `pbl test`, and `minimed_sake_read.c` as
+`minimed_session.c`. On asterix the build turns on LTO and stubs out voice so the image fits the
+flash region (see `../AGENTS.md`).
+
+The bullets below are dated build notes, newest first, each one as it stood when written. Where a
+later bullet or `VERSIONS.md` entry supersedes one, the newer statement wins.
 
 - **2026-10-10, set-reminder MVP built, awaiting hardware test.** On calendar age day 3 after a
   detected reservoir increase, the watchface status line shows `INF SET N DAYS OLD` from 07:00–09:00
@@ -47,7 +59,7 @@ flash, emulator and log commands are in `../AGENTS.md`; this file keeps the stat
 > bands — roughly 3.5–4×. Combined with Morten's experience of good battery on older stock builds,
 > that puts the cost in **our diff**, not in the 4.24 base we forked from and not in the hardware.
 > v44 adds hourly `hb` log lines (drain at 0.01% resolution plus CPU-sleep, per-task CPU,
-> advertising and connection-interval seconds, flash writes) so the next spike night can say *what*
+> advertising and connection-interval seconds, flash writes) so the next pump-attached night can say *what*
 > costs it. Everything battery: [`BATTERY.md`](BATTERY.md).
 
 - **End-to-end PROVEN on real HW (2026-07-21):** advertise as "Mobile PB" → pump connects → SAKE
@@ -97,14 +109,14 @@ flash, emulator and log commands are in `../AGENTS.md`; this file keeps the stat
   VERSIONS.md v61 entry.
 - **v60 BUILT 2026-09-03, awaiting HW: v59's dual link ported to asterix.** v59 raised
   `BLE_MAX_CONNECTIONS` only on sf32lb52, so DUAL had no second connection slot on this watch;
-  the nrf52 syscfg now matches (spike-gated, +640 B KERNEL_RAM). Also fixes a stock-build compile
+  the nrf52 syscfg now matches (gated on `CONFIG_MINIMED_SAKE`, +640 B KERNEL_RAM). Also fixes a stock-build compile
   break in `advert.c` and restores the asterix recipe to `minimed-build.sh` as a board profile
   (default asterix, `--pt2` for obelix). Details + what to suspect first: VERSIONS.md v60 entry.
 - **v59 BUILT 2026-08-30, awaiting HW: dual link (phone + pump at once) PoC.** Toggle is now
   NORMAL⇄DUAL; NORMAL is a full `bt_ctl_reset_bluetooth()` restart (kill switch for sideload).
   `BLE_MAX_CONNECTIONS` 2, pump's own advert job, swallowed pump link, pump-identity persistence,
   pump-pairing window. Details + HW checklist: VERSIONS.md v59 entry.
-- Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄SPIKE toggle the pump reconnected by
+- Reconnect **HW-VERIFIED 2026-07-22** (v16): after a NORMAL⇄DUAL toggle the pump reconnected by
   itself, re-ran the handshake, BG resumed.
 - **Rebased onto upstream v4.36.0 (v54, HW-VERIFIED 2026-08-24).** The 4.24 base capped the
   installable-app SDK version at `0x66`, so watchfaces built with SDK 4.33.1 (stamped `0x6a`)
@@ -137,8 +149,8 @@ flash, emulator and log commands are in `../AGENTS.md`; this file keeps the stat
   records are markers, not readings — off-scale shows LO/HI (band dropped), other sensor states
   let the BG go stale instead of showing 0.0 / graphing a 0-cliff. HW checklist in the
   VERSIONS.md v45 entry (a CHANGE SENSOR state is live right now — good first test).
-- **ON THE WATCH NOW: v41 pump status — HW-VERIFIED 2026-07-28, 23 h soak**
-  (`build/sake-spike-v41-pump-status.pbz`). Full bridge mirror on the watchface: BG + IOB +
+- **v41 pump status — HW-VERIFIED 2026-07-28, 23 h soak** (pre-rebuild, carried into the v4.41.1
+  line; `build/sake-spike-v41-pump-status.pbz`). Full bridge mirror on the watchface: BG + IOB +
   status band (suspend/temp-target/warm-up countdowns, BG "---" blanking) — details in the
   version log. Carries v40 pump push (HW-verified, 10 h soak). Everything v36 verified still
   holds: pump pairs, **neither bond is ever lost** — reboot and phone re-pair both verified.
@@ -165,7 +177,7 @@ commands. Quick facts kept here:
 
 ### PT2 (obelix) port — verified build recipe
 
-The spike now builds and boots on the Pebble Time 2 (`obelix@pvt`, SiFli SF32LB52) and the Pebble
+The firmware now builds and boots on the Pebble Time 2 (`obelix@pvt`, SiFli SF32LB52) and the Pebble
 Round 2 (`getafix@dvt2`). The working recipe is exacting; see `TESTING.md` for the full failure
 table. Essentials:
 
@@ -179,21 +191,21 @@ table. Essentials:
   working slot0 flash was this slot race, not a build regression.
 - Verify band 0x01 and a version above the script's stock floor (v4.36.2) before flashing.
 
-### After-the-fact logs from a SPIKE session (`tools/dump_flash_logs.py`)
+### After-the-fact logs (`tools/dump_flash_logs.py`)
 
-**This is the debugging unblock, and it did not need dual connection.** Every `PBL_LOG` line is
-written to flash continuously (`flash_logging_set_enabled(true)` at init) and kept per boot
-*generation*, so a SPIKE session with no phone attached is still fully recorded. Reproduce a
-problem in SPIKE, toggle to NORMAL, and pull the history:
+**This is the debugging unblock.** Every `PBL_LOG` line is written to flash continuously
+(`flash_logging_set_enabled(true)` at init) and kept per boot *generation*, so a session with no
+phone attached — or a crash that never reached the phone — is still fully recorded. Reproduce a
+problem, get the phone connected (NORMAL or DUAL both work since v62), and pull the history:
 
     adb forward tcp:9000 tcp:9000
     tools/dump_flash_logs.py              # this boot
     tools/dump_flash_logs.py -g 1         # previous boot
-    tools/dump_flash_logs.py -g 2 --dict build/sake-spike-v35-….loghash.json
+    tools/dump_flash_logs.py -g 2 --dict build/minimed-asterix-<describe>-<desc>.loghash.json
 
 Verified on hardware: recovered the complete SAKE handshake (`pump WRITE conn=1 len=20 …`) from a
-SPIKE session, dehashed and readable, over the phone afterwards. That is most of what "live logs"
-was wanted for — so **Stage 2 dual connection is now a convenience, not a debugging prerequisite.**
+no-phone session, dehashed and readable, over the phone afterwards. Watchface and app `APP_LOG`
+lines are in the same log, tagged `WF:` / `APP:`.
 
 Details worth knowing:
 
@@ -209,7 +221,8 @@ Details worth knowing:
   `.pbz` as `minimed-<board>-<describe>-<desc>.loghash.json` (`<describe>` = `git describe --dirty
   --always` for that build); pass it with `--dict`. Without the right dict the lines come back as
   raw `NL:xxxx`.
-- Requires **Developer Connection** enabled in the Pebble app *and* the watch in NORMAL. Re-pairing
+- Requires **Developer Connection** enabled in the Pebble app, and a live phone session — NORMAL or
+  DUAL, no toggle needed since v62. Re-pairing
   the watch turns Developer Connection off — that cost time once; the symptom is
   "Connection to remote host was lost" while port 9000 still accepts, i.e. the server is up but has
   no watch. `pebble screenshot` working does **not** mean Developer Connection is on.
@@ -240,82 +253,90 @@ official CI image; `tools/minimed/Dockerfile` adds the Python requirements and S
 resource build dies).
 
 
-## Code map (pre-rebuild layout, 2026-07 to 2026-10)
+## Code map
 
-This is the layout the MiniMed work was developed in before the 2026-10 rebuild onto v4.41.1: the
-old waf build and the old file names. For the current layout see the code map in `../AGENTS.md`.
+Paths are relative to the repository root. `../AGENTS.md` has the one-paragraph version; the
+per-file detail is here.
 
-New files (all spike-only via wscript/ifdef):
+**Pure C, host-testable — `fw/services/minimed/core/`.** libc only: no PebbleOS, no NimBLE, so
+`tools/minimed_sake_hosttest` links the same sources. This is what a watchapp or a standalone
+library would reuse.
 
-- `minimed_sake_aes.{c,h}` + `minimed_sake_crypto.{c,h}` — SAKE server handshake + session cipher
-  in C (AES-128/CMAC/CTR, SeqCrypt, key-DB parse, 6-msg state machine). Self-contained; byte-verified
-  vs the captured 780G trace by `tools/minimed_sake_hosttest/` (same sources, 24/24).
-- `minimed_sake_service.c` — SAKE Port GATT server (svc SIG `0xFE82`, char **vendor**
-  `0000fe82-…-009132591325`) + required vendor-`0x0900` DIS (9 placeholder chars) + advert payload
-  builder (FE82/FE81 by `s_pump_paired`) + handshake driver (embedded `KEYDB_PUMP_EXTRACTED`, RNG =
-  `ble_hs_hci_rand`, re-init per subscription, deferred notify 120ms wake-up / 30ms replies) +
-  `minimed_sake_decrypt` + `pump_paired`/`forget_pump`.
-- `minimed_iob.{c,h}` — **pure** IOB decode/parse (NimBLE-free so the host harness links it):
-  `minimed_iob_decode_medfloat32_mu` (medfloat32 → milliunits, faithful/overflow-guarded, no
-  business gate) + `minimed_iob_parse_response` (SRCP `0x03FC` opcode check + medfloat32 at offset
-  3 + 0..100 IU plausibility gate). Host-tested (§Section 4, 8 checks) vs OpenMinimed vectors incl.
-  the live-confirmed 1.4 IU frame.
-- `minimed_sake_read.c` — post-handshake reads, watch as GATT client:
-  - **CGM (BG):** discover `0x181F`, chars `2AA7/2AA8/2A52`; read Feature (plaintext); subscribe
-    Measurement (notify) + RACP (indicate), CCCD = val_handle+1; poll RACP `01 06` every 60s.
-    Measurement is SAKE-encrypted → decrypt → reassemble by size byte → SFLOAT → mmol/L.
-  - **IOB (v29):** after CGM setup, discover IDD service `0x100` + SRCP char `0x105` (128-bit
-    vendor UUIDs, same base as the SAKE port char); subscribe SRCP indicate (CCCD = val+1). On
-    each CGM RACP-success, chain (via ~200 ms `s_iob_co` callout, after the CGM gattc op finishes)
-    a SAKE-**encrypted** SRCP `0xF3 0x03` write; decrypt the `0x03FC` indication → `minimed_iob_
-    parse_response` → `send_iob`. NO byte-0 length prefix (unlike CGM). All IDD-discovery failures
-    fall back to BG-only polling (`s_h_srcp==0`). Shared inbound `client_crypt` stays in sync
-    because CGM→IOB is serialized per poll.
-- `minimed_annunciation.{c,h}` — **pure** decode of IDD History Data records for pump
-  annunciations (alarms/alerts): record header + Annunciation Consolidated (0xf010) fields
-  (type/id/status/silenced) + the type→name table (from PythonPumpConnector AnnunciationType).
-  Host-tested. The BLE side lives in `minimed_sake_read.c` (v48): IDD RACP 0x2A52 + History
-  Data 0x108 subscription, per-connection "last record" baseline, 0x101-bit-3-triggered
-  catch-up reads, dedup by instance id; notifications via `fw/popups/minimed_alert_popup.{c,h}`
-  (BT task → KernelMain → `notifications_add_notification`, native popup/vibe, raise-only,
-  silenced raises skipped).
-- `minimed_sake_sender.c` — the **watchface local-sender**: loopback CommSession (QEMU-transport
-  pattern) opened in SPIKE mode only (would compete with the real phone session in NORMAL);
-  injects `[PP hdr 0x0030][CMD_PUSH][target UUID][dict: announced keys only]` via
-  `comm_session_receive_router_write` on KernelMain under `bt_lock`. Setters only store state and
-  set `s_dirty`; `minimed_sake_sender_commit()` builds one frame per completed read op
-  (`prv_op_complete`) and per pump-link transition (`advert.c`), so a frame is never assembled from
-  half-updated state. `send_bg` and
-  `send_iob` are separate setters (BG/IOB arrive from different reads); `send_iob` deliberately
-  does NOT advance the BG timestamp. `send_next` drains the watchface's outbox: an announcement
-  → ACK + immediate push, anything else → NACK + blacklist; its ACKs of our pushes are swallowed
-  (loop guard). The target UUID and the key set are learned from the announcement, not hardcoded
-  (item 10 under Remaining work). Protocol: `pebble-glucose-protocol/PROTOCOL.md`.
-- `minimed_glucose_announce.{c,h}` — pure parser for the capability announcement, which doubles as
-  the "is this watchface one of ours?" test. Host-tested (section 9).
-- `pebble_glucose_protocol.h` — verbatim copy of the spec's header (keys + capability bits).
-- `fw/popups/minimed_sake_ui.{c,h}` — MiniMed core: log ring buffer, mode flag, stage
-  reports; declares the app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`,
-  `sender_set_mode`).
-- `fw/apps/system/minimed_sake_app.{c,h}` — launcher app (viewer + buttons).
+- `minimed_sake_aes.{c,h}`, `minimed_sake_crypto.{c,h}` — AES-128, plus the SAKE server-role
+  handshake and session cipher (CMAC/CTR, SeqCrypt, key-DB parse, 6-message state machine).
+  Byte-verified against a captured 780G trace.
+- `minimed_idd_flags.{c,h}` — parse/encode the IDD Status Changed flag field (`0x101`, also the
+  operand of SRCP Reset Status `0x030C`): self-extending little-endian 16-bit blocks.
+- `minimed_iob.{c,h}` — IOB decode (medfloat32 → milliunits, overflow-guarded) and the SRCP
+  `0x03FC` response parse.
+- `minimed_status.{c,h}` — pump status: IDD Status `0x102` plus the TAS SRCP `0x03FD`/`0x03FE` →
+  the single label and optional timer the watchface shows (key 15).
+- `minimed_graph.{c,h}` — the BG history the watchface plots and its wire encoding.
+- `minimed_history.{c,h}` — IDD History Data records other than annunciations (SG measurements,
+  NGP reference times, meals) — the backfill and meal sources.
+- `minimed_annunciation.{c,h}` — IDD History Data → pump alarms/alerts (type/id/status/silenced)
+  and the type → name table (from PythonPumpConnector's `AnnunciationType`).
+- `minimed_glucose_announce.{c,h}` — parser for the Pebble Glucose Protocol capability
+  announcement, which doubles as the "is this watchface one of ours?" test.
+- `minimed_predict.{c,h}` + `minimed_predict_model.h` — the 30-minute glucose predictor
+  (sugar_predictor's `c20_h32`: 20 terms → 32 int8 units, ~1.5 KB).
+- `minimed_hypo.{c,h}` + `minimed_hypo_model.h` — treat-or-wait scoring for a falling low, reusing
+  the 4-hour window the predictor builds.
+- `minimed_set_reminder.{c,h}`, `minimed_sensor_reminder.{c,h}` — the two reminder state machines.
+- `pebble_glucose_protocol.h` — a verbatim copy of the spec's generated header; must stay
+  byte-identical to the watchface's `src/c/protocol.h`.
 
-Modified:
+**Firmware service — `fw/services/minimed/`.**
 
-- `Kconfig` (+`MINIMED_SAKE`), `wscript_build` (MiniMed sources, incl. `minimed_iob.c`),
-  `init.c` (register service), `system_app_registry_list.json` (app id `-200`).
-- `minimed_sake_service.{c,h}` — added `minimed_sake_encrypt` (server-direction wrapper, mirror of
-  `minimed_sake_decrypt`; used for the SRCP request) and `minimed_sake_addr_is_pump` (RAM-only pump
-  identity captured at handshake DONE, for the v29 conn label).
-- `advert.c` — SPIKE-mode advert hijack (Medtronic payload; mfr data `0x01F9` carries the name);
-  interval clamp 100–140ms; own-addr type by mode; `force_readvertise()` = `gap_le_advert_force_
-  data_refresh()` + drop the active link (v27 rearchitecture); NOTIFY_RX routes pump notifications
-  to the read layer first; disconnect stops polling; repeat-pairing auto-recovery re-enabled. **v29
-  diagnostics:** `advS`/`advN` byte dumps of the actual advert payload; `conn PUMP/phone m=S/N`.
-- `gap_le_advert.{c,h}` — added `gap_le_advert_force_data_refresh()` (v27; nulls `s_current_ad_data`
-  + re-airs, modeled on `bt_driver_handle_host_resynced`), so a mode toggle re-pushes the payload.
-- `third_party/nimble/port/include/nrf52/syscfg/syscfg.h` — SM config for the pump's **legacy Just
-  Works** (SC_ONLY 0, LEGACY 1, IO NO_INPUT_OUTPUT, MITM 0) + `BLE_SM_OUR_KEY_DIST 1→3` (distribute
-  IRK + identity so the pump can resolve our RPAs).
+- `minimed_task.c` — `PebbleTask_Minimed`: the event queue and timers. Deliberately **not** under
+  the task watchdog: the task must never be able to take the watch down.
+- `minimed_session.c` — the pump session, and the hub for all of the above: the exchange
+  serialiser (one op at a time, busy flag + pending mask), the setup chain, the CGM/IOB/status
+  reads, the history/backfill path, and the alarm, reminder, predictor and hypo plumbing.
+  Event-driven; never calls NimBLE.
+- `minimed_transport.h` — the GATT-client ops on named characteristics; results are posted back as
+  events. Mirrors the SDK's `ble_client_*` API on purpose.
+- `minimed_sake_sender.c` — the watchface sink: a loopback CommSession, one push per completed op
+  (BG/IOB/status/graph are separate setters, `*_commit()` emits the frame). Injects
+  `[PP hdr 0x0030][CMD_PUSH][target UUID][dict: announced keys only]` with
+  `comm_session_receive_router_write` on KernelMain under `bt_lock`. `send_next` drains the
+  watchface's outbox: an announcement → ACK + immediate push, anything else → NACK + blacklist;
+  ACKs of our own pushes are swallowed (loop guard). The target UUID and the key set are learned
+  from the announcement, not hardcoded (item 10). Protocol: `pebble-glucose-protocol/PROTOCOL.md`.
+- `minimed_settings.{c,h}` — user settings, persisted to flash and set from the watchface's Clay
+  page; see "User-facing settings" in `TESTING.md`.
+- `stubs/` — link stand-ins for upstream code a MiniMed build leaves out, each behind its own
+  `CONFIG_MINIMED_STUB_*`. Today only voice (`voice_stubs.c`), which asterix needs to fit flash.
+
+**NimBLE side — `subsys/bluetooth/`.** Only what needs NimBLE.
+
+- `minimed_transport_nimble.c` — the transport.
+- `minimed_sake_service.c` — the SAKE Port GATT server (svc SIG `0xFE82`, char **vendor**
+  `0000fe82-…-009132591325`) plus the required vendor-`0x0900` DIS, the handshake driver, the
+  FE82/FE81 advert payload builder, the pump's **own** advert job (fast-then-slow back-off), and
+  the runtime Security Manager flip (`minimed_sake_apply_sm_config`).
+- `minimed_fake_pump.c` — replaces the transport and the cipher on radio-less boards
+  (`CONFIG_BT_HCI_FAKE`, i.e. QEMU).
+- Hooks in `advert.c`, `init.c`, `nimble_store.c`, and the ordering-critical
+  `minimed_sake_bt_started()` call from `fw/services/bluetooth/bluetooth_ctl.c`.
+
+**UI.**
+
+- `fw/apps/system/minimed_sake_app.{c,h}` — the launcher app: mode toggle, on-watch log, the bond
+  inventory line.
+- `fw/popups/minimed_sake_ui.{c,h}` — the log ring buffer, the mode flag, stage reports, and the
+  app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`, `sender_set_mode`).
+- `fw/popups/minimed_alert_popup.{c,h}` — alarm and reminder notifications (BT task → KernelMain →
+  `notifications_add_notification`; native popup/vibe, raise-only, silenced raises skipped).
+
+**Enabled by `CONFIG_MINIMED_SAKE`** (`subsys/bluetooth/Kconfig`); everything above compiles out
+without it. The boot-mode/settings default is NORMAL.
+
+Two protocol details that live in the GATT layer, easy to get wrong: the SAKE port char is on the
+**vendor** UUID base (`-0000-1000-0000-009132591325`, variant `0000`, not `8000`) while the
+service is SIG (mismatches → the pump finds the service but not the char), and the watch's own
+vendor-`0x0900` DIS is served with placeholder values so the pump agrees to pair (`0x2A26` there is
+that DIS, unrelated to the pump's own firmware revision read).
 
 ## Protocol facts confirmed on HW (mirror into `../Documentation/`!)
 
@@ -354,34 +375,33 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
   This was caught by review in v36 before flashing (it would have frozen the watch on opening
   Settings → Bluetooth). Do per-bond lookups in a **second pass** after the iteration returns;
   `prv_add_ble_remotes` in `settings/bluetooth.c` is the worked example.
-- clangd floods spike files with false errors (missing NimBLE include paths). Trust `pbl build`.
+- clangd floods the MiniMed files with false errors (missing NimBLE include paths). Trust `pbl build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 
 ## Remaining work (usability order)
 
 1. ✅ **Reconnect — HW-verified 2026-07-22** (v16); `Documentation/bluetooth.md` updated. Paired
    flag persisted in v17. Later maybe: watchdog if advertising ever stalls.
-2. **Real watchface — WORKING (v20, HW-verified): live BG on the actual watchface, screen clean
-   (no "not connected").** No connection-event hack needed. Next display work is additive keys:
-   IOB/status/graph. Design: firmware injects **local AppMessages** into the existing
-   `../pebble-glucose-watchface`, unmodified — same watchface for phone-bridge and on-watch modes.
-   Seam researched (2026-07-22), plan = **copy the QEMU transport pattern**
-   (`subsys/bluetooth/qemu_transport.c`, the existing phone-less precedent):
-   - Once: `comm_session_open()` a synthetic loopback transport (`TransportDestinationHybrid`,
-     `send_next` discards — swallows the app's ACKs) under `bt_lock`.
-   - Per BG: build `[PebbleProtocolHeader len,0x0030 BE][CMD_PUSH,txn][watchface UUID][dict]`
-     (dict via `dict_serialize_tuplets_to_buffer`; construction example in
-     `launcher_app_message.c`) → `comm_session_receive_router_write(session, …)` under `bt_lock`,
-     one kernel task only (router keeps per-session reassembly state).
-   - Delivery hops to the app task via app_inbox_service; the watchface receives a 100% normal
-     AppMessage. **UUID must equal the running app's** — only inject when our watchface is
-     foreground (else clean NACK/drop, no crash). Workers can't receive AppMessages; foreground
-     only. Bonus: the watchface's *outbound* messages (e.g. a launch-time sync request) arrive in
-     our `send_next` — parse to trigger an immediate BG push on watchface launch.
-   - Speak the exact key set the bridge sends (see bridge GlucoseFormat / watchface `main.c`).
+2. ✅ **Real watchface — DONE, HW-VERIFIED** (v20 for live BG, then the additive keys: IOB, status,
+   graph, trend, forecast). The firmware injects **local AppMessages** into the stock
+   `../pebble-glucose-watchface`, unmodified — one watchface for the phone bridge and the on-watch
+   link. As built:
+   - One loopback CommSession, opened only in DUAL, as `TransportDestinationApp` — a `Hybrid`
+     destination counts as a "system" session and would evict the real phone session. See
+     `CONNECTIVITY.md`.
+   - One frame per completed read op: `[PP hdr 0x0030][CMD_PUSH][target UUID][dict of announced
+     keys]` → `comm_session_receive_router_write` under `bt_lock`, on KernelMain only (the router
+     keeps per-session reassembly state, so it must be one task).
+   - Delivery hops to the app task via the inbox service, so the watchface receives a 100%
+     ordinary AppMessage. The target UUID must equal the running app's, so the sender injects only
+     while one is foreground (otherwise a clean NACK/drop, never a crash). Workers cannot receive
+     AppMessages.
+   - The watchface's *outbound* capability announcement decides the key set (item 10), which is
+     what makes an arbitrary third-party glucose watchface work.
    Long-term: BLE peripheral APIs in the public SDK (beyond issue #853's client-only ask).
-3. **IOB — DONE, HW-VERIFIED (v30, 2026-07-24). Pump status — BUILT in v41 (2026-07-27),
-   awaiting HW.** IOB reads via IDD SRCP `0x03F3`→`0x03FC`, watchface key 14. Status reads IDD
+3. **IOB — DONE, HW-VERIFIED (v30, 2026-07-24). Pump status — DONE, HW-VERIFIED (v41,
+   2026-07-28, 23 h soak).** IOB reads via IDD SRCP `0x03F3`→`0x03FC`, watchface key 14. Status
+   reads IDD
    Status `0x102` + TAS `0x03FD` and drives watchface key 15 with the bridge's full label set +
    countdowns — see the v41 version-log entry. Reservoir IU is parsed and flash-logged but not
    displayed (bridge parity).
@@ -412,7 +432,7 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    `s_rec_len` (so two overlapping RACP exchanges truncate a record), and `s_srcp` has a single
    IOB-specific "complete at 7 bytes" rule that a Reset Status reply would break. That is a small
    explicit state machine (one busy flag + a pending-work mask) — the only genuinely new structure.
-   Also correct a stale comment while there: `minimed_sake_read.c` claims a second concurrent gattc
+   Also correct a stale comment while there: `minimed_session.c` claims a second concurrent gattc
    op returns `BLE_HS_EBUSY`. It does not in this build — ops queue FIFO at the ATT layer with
    `BLE_GATT_MAX_PROCS=8`. The real hazard is that the 30 s unresponsive timer starts when a proc is
    *queued*, not sent, so a burst can time out without ever going on air. Deferring is still right,
@@ -435,23 +455,21 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    connectivity (22) — exactly the "nothing has ever been cleared" set.
    **Stage B:** the port proper (~a few hundred lines). **Stage C:** act on more bits, which overlaps
    with pump status in item 3.
-4. **Graph — DONE in v34 (awaiting HW); BACKFILL still deferred.** The graph is now drawn from
-   readings the watch accumulates itself, so a cold start begins empty and fills over ~2 h. That
-   was the cheap 90%: no new pump protocol, no new failure mode, and it made the staleness fix
-   fall out for free. **Pump-side backfill** (filling the graph immediately on connect, and closing
-   gaps after a dropout) is the remaining piece and still deserves its own flash. Staged plan: (0, host) port SG_MEASUREMENT 0xF00C + reference-time parse + a
-   multi-record short-PDU reassembler into the host harness, vectors from the bridge's
-   HistoryReader/MedtronicHistoryParser tests; (2a, flash, log-only) IDD-scoped RACP count +
-   report-last-N, log the decoded count/points, no inject — proves the streaming/framing/decrypt on
-   HW; (2b, flash) wire history→graph, enlarge the two sender buffers in `minimed_sake_sender.c`
-   (frame[] +96, payload[] +64: a 2 h trace ~78 B, 24 h ~870 B; CommSessionAppMessage8kSupport is
-   already set), add keys 17/18/19, start with a ~2 h window. Multi-record RACP over IDD History
-   `0x108`, 184-MTU chunked streaming (`Documentation/gatt-streaming.md`). Watch the exact-multiple
-   short-PDU ambiguity the bridge itself never fully pinned (HistoryReader TODO 48.A2).
-5. **Dual pump+phone — never fairly tested, three known blockers.** Full detail, including why the
-   old "radio scheduling starves the link" verdict was retracted, in
-   [`CONNECTIVITY.md`](CONNECTIVITY.md). Demoted since the flash-log dump gave us after-the-fact
-   SPIKE logs without it.
+4. ✅ **Graph and pump-side backfill — DONE, HW-VERIFIED 2026-09-26.** The graph is drawn from
+   readings the watch accumulates itself, and on connect the pump's event log (IDD history,
+   `0x108`) fills the recent past in: `backfill N of M samples ... anchor=match` in the log, with
+   meals forwarded to the watchface too. The backfill had never actually run until then — the
+   history dispatch returned early for non-annunciation records, so the SG, NGP reference-time and
+   meal parsers only ever saw `Bad` records. The parsers now run *before* the research logging,
+   which is skipped during a backfill. Pure parts are host-tested (`core/minimed_history.c`).
+   `GRAPH_HOURS` selects the serialized window: up to 24 h retained plus a 30-minute margin, with a
+   300-point cap, so a faster-than-five-minute source is still limited by the buffer. One known
+   unknown left: the exact-multiple short-PDU ambiguity the bridge never fully pinned
+   (HistoryReader TODO 48.A2).
+5. ✅ **Dual pump+phone — DONE, HW-VERIFIED 2026-09-03 (v62, the first dual link on asterix).**
+   The three blockers (connection pool size, the two connected booleans, the pump having no advert
+   job of its own), the retracted "radio scheduling starves the link" verdict and the properties of
+   the shipped link are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
 6. **Battery — the current job.** Stock 4.31.1 drains ~3.5–4× less than our firmware over matched
    SoC bands, so the cost is in our diff. v43/v44 log the hourly metrics that can attribute it.
    Numbers, method, confounds and remaining experiments: [`BATTERY.md`](BATTERY.md).
@@ -465,24 +483,27 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    rides the 5-min pushes. Trade-off: IOB lags ≤5 min; check bolus pushes still show promptly
    (the ×27 `0x280c4` pattern suggests boluses touch bits 2/6 too). Do after the battery baseline
    (item 6) so the effect is measurable.
-7. **Phone-bond papercut** (re-pair dance between test cycles) — see
-   [`CONNECTIVITY.md`](CONNECTIVITY.md).
-9. **Retire the "spike" terminology (queued cleanup, agreed 2026-08-16).** The feasibility
-   question was answered around v20; this is the product now, and "SPIKE mode" actively misleads
-   — the toggle means "pump holds the BLE slot" vs "phone holds it", nothing about feasibility.
-   Cheap now: the SPIKE/NORMAL mode labels (→ e.g. PUMP/PHONE) and the "SAKE Spike" app title.
-   Defer the plumbing (`CONFIG_MINIMED_SAKE_SPIKE`, `spike-build.sh`, `sake-spike-vN` bundle
-   names, "spike" through the docs) to a natural boundary — the upstream-isolation cleanup or
-   the library factoring — since renaming mid-flight breaks grep-continuity with the dev log and
-   the loghash dicts are keyed to old bundle names. Do NOT touch `minimed_sake_build_adv`'s
-   advertised name bytes (load-bearing, see the v34/v35 lesson).
+7. ✅ **Phone-bond papercut — resolved.** v33 stopped the pump's bond evicting the phone's, and the
+   v36 coexistence checks (HW-verified 2026-07-26) confirmed the phone reconnects across
+   DUAL↔NORMAL without a re-pair prompt; the repeat-pairing recovery stays as a fallback. One
+   leftover, never independently verified: that the phone's pairing dialog is a numeric-confirm
+   (LESC) rather than a silent Just Works. See [`CONNECTIVITY.md`](CONNECTIVITY.md).
 8. ✅ **Full phone+pump bond coexistence — DONE, HW-VERIFIED 2026-07-26 (v36).** A flash now costs
    zero pairings. Detail in [`CONNECTIVITY.md`](CONNECTIVITY.md).
+9. **Retire the "spike" terminology (queued cleanup, agreed 2026-08-16).** The feasibility question
+   was answered around v20; this is the product now, and "spike" actively misleads. **Partly done:**
+   the mode labels are now `MODE: NORMAL` / `MODE: DUAL` (`minimed_sake_app.c`) and the launcher app
+   is "MiniMed App". Still carrying the old name: the `minimedsake` settings file, the
+   `minimed_sake_*` file names, `CONFIG_MINIMED_SAKE`, and the word in comments and docs. Defer the
+   rest to a natural boundary — the upstream-isolation cleanup or the library factoring — since
+   renaming mid-flight breaks grep-continuity with the dev log and the loghash dicts are keyed to
+   old bundle names. Do NOT touch `minimed_sake_build_adv`'s advertised name bytes (load-bearing,
+   see the v34/v35 lesson).
 
-10. **Glucose protocol: honour the announcement — DONE, v68 awaiting HW.** The sender used to push
-   to one hardcoded watchface UUID and ignore the capability announcement entirely, so installing
-   any other glucose watchface broke the link. It now claims the *foreground watchface's* UUID
-   (`prv_claimed_uuid`, gated on `ProcessTypeWatchface`), confirms it with
+10. **Glucose protocol: honour the announcement — DONE, HW-VERIFIED 2026-09-08 (v68).** The sender
+    used to push to one hardcoded watchface UUID and ignore the capability announcement entirely, so
+    installing any other glucose watchface broke the link. It now claims the *foreground watchface's*
+    UUID (`prv_claimed_uuid`, gated on `ProcessTypeWatchface`), confirms it with
    `minimed_glucose_parse_announce`, and sends only the announced fields. A watchface that fails
    the parse is NACKed and blacklisted, so it gets out of the way after a single message. The
    protocol header is now a copy of the spec's (`pebble_glucose_protocol.h`) instead of ad-hoc key
@@ -521,7 +542,7 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
    **v68 on HW (2026-09-08, log `../logs/watch/2026-09-08-g0-v68-wf-caps-fallback-ready-ping-ok.txt`):
    works — `mode -> DUAL` 08:34:15, `wf sender up`, `wf ready ping` 08:34:17, BG 100 mg/dL at
    08:34:43. Note what that does and does not prove: the *announcement* path is verified, the
-   fallback never fired. Mode is NORMAL on boot and the only way into DUAL is the spike app, so
+   fallback never fired. Mode is NORMAL on boot and the only way into DUAL is the MiniMed app, so
    every entry into DUAL is followed by exiting to the watchface, which relaunches it and
    re-announces (one app slot). The fallback is therefore near-dead code in normal use — kept as
    insurance for a watchface that doesn't announce at init, and for any future path that enters

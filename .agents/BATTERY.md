@@ -1,11 +1,19 @@
 # Battery drain on the MiniMed firmware
 
-Why this file exists: the on-watch spike burns roughly **6–8 days per charge** where stock
-PebbleOS on this same Pebble 2 Duo runs **3.5–4× longer** — measured, not remembered
-(2026-08-03). That gap is the last big open item (`PROGRESS.md` item 6), the obvious suspect (the
-pump link) has been measured and largely cleared, and the measurements are subtle enough to get
-wrong. This file holds the numbers, the method, and what is left to try. It is about **our firmware's power behaviour**; pump *protocol*
-facts still belong in `../Documentation/`.
+Why this file exists: this firmware burns roughly **6–8 days per charge** where stock PebbleOS on
+this same Pebble 2 Duo runs **3.5–4× longer** — measured, not remembered (2026-08-03). That gap is
+the last big open item (`PROGRESS.md` item 6), the obvious suspect (the pump link) has been measured
+and largely cleared, and the measurements are subtle enough to get wrong. This file holds the
+numbers, the method, and what is left to try. It is about **our firmware's power behaviour**; pump
+*protocol* facts still belong in `../Documentation/`.
+
+**Every capture below predates dual connection (v59) and is from the single-slot pump mode.** There,
+"SPIKE" meant the pump link was up **alone**, with the phone disconnected — not today's DUAL, where
+both links are up. Read the labels as "pump-only". No measurement of DUAL has been made, and the
+extra phone link should cost something (unmeasured). The method and the rankings still stand.
+
+**Status: the numbers are the 2026-07/08 baseline.** The 2026-09-11 advert back-off (see "Pump
+advert back-off" below) is shipped but has not been measured against them.
 
 ## The short version
 
@@ -14,9 +22,9 @@ facts still belong in `../Documentation/`.
   a single 33 h pump-connected window the rate climbed 0.34 → 0.64 %/h as the battery went from
   93% to 76%. Only ever compare runs over the same SoC band.
 - **The pump link is not a 5× factor.** A control night in NORMAL with no pump link came in at
-  0.65 %/h against 0.96 %/h for the previous pump night and 0.63 %/h for a day of ordinary SPIKE
-  use — i.e. within the spread of the measurement, at most a modest effect (see the confounds
-  section: this method cannot resolve anything under ~1.5×).
+  0.65 %/h against 0.96 %/h for the previous pump night and 0.63 %/h for a day of ordinary
+  pump-only use — i.e. within the spread of the measurement, at most a modest effect (see the
+  confounds section: this method cannot resolve anything under ~1.5×).
 - So the Medtronic **NOS "Observation Mode"** connection-parameter write — the lever this
   investigation was heading toward — would be optimising something that is not the problem.
   Deprioritised, not because it wouldn't work, but because there is nothing there to win.
@@ -40,16 +48,16 @@ same firmware (v41) and same battery throughout — the cleanest comparison we h
 
 | Window | Mode | Range | Duration | Rate |
 |---|---|---|---|---|
-| 07-27 22:13 → 07-28 07:35 | SPIKE, pump connected + polling all night | 63 → 54% | 9 h 22 m | **0.96 %/h** |
-| 07-28 07:35 → 23:35 | SPIKE, worn, ordinary day | 54 → 44% | 16 h 00 m | **0.63 %/h** |
+| 07-27 22:13 → 07-28 07:35 | SPIKE (pump-only), pump connected + polling all night | 63 → 54% | 9 h 22 m | **0.96 %/h** |
+| 07-28 07:35 → 23:35 | SPIKE (pump-only), worn, ordinary day | 54 → 44% | 16 h 00 m | **0.63 %/h** |
 | 07-28 23:35 → 07-29 07:14 | **NORMAL, phone only, no pump link** (control night) | 44 → 39% | 7 h 39 m | **0.65 %/h** |
 | 07-27 20:59 → 07-29 07:14 | everything above | 64 → 39% | 34 h 15 m | **0.73 %/h ≈ 5.7 days** |
 
-Earlier, separate capture (2026-07-26, also SPIKE with one 11-min pump outage in 7 h):
+Earlier, separate capture (2026-07-26, also pump-only with one 11-min pump outage in 7 h):
 80 → 76% over 5 h 33 m = **0.72 %/h**. Consistent with the table.
 
-Later capture (2026-08-02, v41, one flash-log generation, SPIKE with the pump connected throughout
-— 2688 `minimed_sake_read.c` lines), and it is the most informative one so far:
+Later capture (2026-08-02, v41, one flash-log generation, pump-only with the pump connected
+throughout — 2688 pump-read log lines), and it is the most informative one so far:
 
 | Window | Range | Duration | Rate |
 |---|---|---|---|
@@ -85,8 +93,8 @@ above.
 3.5–4× better**, far above the ~1.5× this method can resolve.
 
 Three caveats, none of which overturn it. It is **one step**, so the rate is exact for that
-interval but is a single interval. The band-matched spike numbers come from worn days, so the
-fairest single comparison is the 89→83% spike *night* at 0.57 %/h — still ~3.5×. And stock
+interval but is a single interval. The band-matched pump-only numbers come from worn days, so the
+fairest single comparison is the 89→83% pump night at 0.57 %/h — still ~3.5×. And stock
 4.31.1 differs from our build in two ways at once, base version and our diff.
 
 **The second one is settled by Morten's own experience**: he has seen similar battery life on the
@@ -103,13 +111,13 @@ read a discharge curve off any stock build.
 Protocol: SELECT into NORMAL at ~23:57, glucose watchface in front, phone left connected, pump
 left paired (`PROGRESS.md` item 6). Verified after the fact from the flash log:
 
-- Zero `minimed_sake_read.c` lines in 00:00–07:14 (the pump night had **783**), so the pump link
-  genuinely never came up and nothing was polling it.
+- Zero pump-read log lines in 00:00–07:14 (the pump night had **783**), so the pump link genuinely
+  never came up and nothing was polling it.
 - 69 log lines total across the whole window vs 822 for the same hours of the pump night — the
   watch was idle in the way we wanted.
-- The 100–140 ms forever-advertising clamp is gated on `spike_mode` (`advert.c:576`), and
-  advertising stops while connected anyway, so the night was stock advertising behaviour: phone
-  link only, at the stock 30–45 ms / latency-3 parameters.
+- The pump's advert job only runs in DUAL (it used to be a 100–140 ms clamp gated on the pump
+  mode), and advertising stops while connected anyway, so the night was stock advertising
+  behaviour: phone link only, at the stock 30–45 ms / latency-3 parameters.
 
 The accepted contamination Morten's protocol predicted (the pump retrying by bonded address all
 night, each attempt bounced by the v32 reject) **did not materialise** — no reject cycles in the
@@ -119,14 +127,15 @@ thing that can happen.
 
 ### The first v44 day with hourly attribution (2026-08-03)
 
-Worn workday, SPIKE, pump connected except for one 55-minute dropout. 08:08 78% → 16:06 72% =
+Worn workday, pump-only, pump connected except for one 55-minute dropout. 08:08 78% → 16:06 72% =
 **0.75 %/h**. What the `hb` lines say:
 
 - **CPU, tasks and flash writes are innocent.** ~98% of every hour in nRF stop-mode sleep
   (`slp1`), 0.8% running, `main`/`bg`/`tmr` all ≤ 0.01%, app ≤ 0.1%, and 2–9 KB of flash writes per
   hour. Whatever costs the 4× does not run code.
 - **Both of our radio states cost the same.** The hour containing the dropout logged
-  `advs 0/3218` — 54 min advertising at the 100–140 ms SPIKE clamp, only 381 s connected — and
+  `advs 0/3218` — 54 min advertising at the fast pump interval (100–140 ms then; it backs off after
+  30 s now), only 381 s connected — and
   drained 0.80 %/h, indistinguishable from the fully-connected hours (0.62–1.06). We are always in
   one state or the other, and neither is cheap.
 - **The pump link is 125 ms at slave latency 0**, supervision 3000 ms (`gap_le_connect.c:372`:
@@ -163,15 +172,17 @@ The state machine samples once a minute (`BATTERY_SAMPLE_RATE_MIN 1`), so each s
 accurate to ±1 min — which is why every one of those lines lands on `:00` seconds.
 
 **Do not try to capture this live.** `pebble logs` only streams what happens while you are
-attached, shows nothing for hours on an idle watch, and cannot see SPIKE mode at all (no phone
-session). Reproduce the condition, then pull the history afterwards:
+attached and shows nothing for hours on an idle watch. In the pump-only era it could not see the
+pump link at all (no phone session); since v62 the phone session stays up in DUAL, so it can — but
+the flash log is still the way to get a whole window. Reproduce the condition, then pull the history
+afterwards:
 
     adb forward tcp:9000 tcp:9000
     tools/dump_flash_logs.py -g 0 --dict build/minimed-<board>-<describe>-<desc>.loghash.json -o /tmp/gen0.log
     grep 'Percent:' /tmp/gen0.log
 
-- Needs Developer Connection on and the watch connected to the phone — toggle out of SPIKE into
-  NORMAL first, then dump.
+- Needs Developer Connection on and the phone connected — NORMAL or DUAL, no toggle needed since
+  v62.
 - `-g 0` is the current boot, `-g 1` the previous one. **A flash ends the generation**, so dump
   before reflashing or the window is split.
 - The dict must match the firmware that *wrote* the lines (`minimed-build.sh` archives one next to
@@ -201,19 +212,19 @@ interval; `host`/`ctlr` = BT host and controller task CPU; `disc` = disconnects 
 
 Why this and not the DLS decoder the earlier version of this file proposed: DLS records need a
 phone session to retrieve, and the Core app is the other consumer — it empties the session when it
-takes them. A SPIKE night's records would likely be gone before we could download. The flash log
+takes them. A pump-only night's records would likely be gone before we could download. The flash log
 has neither problem. Retrieval is exactly the `dump_flash_logs.py` recipe above, then
 `grep 'hb '`.
 
 Two caveats. `advs` counts the *time* correctly but labels it by the advertising job's nominal
-short/long interval, not SPIKE's 100–140 ms clamp. And `soc`/`drop` still come from the fuel-gauge
+short/long interval, not the pump link's fast interval. And `soc`/`drop` still come from the fuel-gauge
 model, so the nonlinearity in "How accurate is any of this?" applies unchanged — what this buys is
 hourly granularity and the causes beside the drain, not a better absolute number.
 
 v43 also fixes a gap that would have left `conns` at 0/0/0 for the pump: the connection-interval
 timers were only started by a parameter-*update* event, so a link whose master never renegotiates
 — which is exactly the pump — was never counted. They now also start at connection establishment
-(`gap_le_connect.c`, slave connections). Stock bug, not spike-specific.
+(`gap_le_connect.c`, slave connections). Stock bug, not MiniMed-specific.
 
 ### 2. The hourly analytics heartbeat — the source of the above, still undecoded on the DLS side
 
@@ -265,16 +276,16 @@ get both the SoC series and the per-task/BLE/backlight breakdown). Convenient, a
 instrument with a UI, but it is the one we cannot inspect or verify — treat its numbers as a
 pointer and confirm anything load-bearing against instrument 1 or 2.
 
-### Does it backfill a SPIKE stretch?
+### Does it backfill a pump-only stretch?
 
 **Firmware side: yes, it should.** Heartbeats keep being recorded to flash with correct timestamps
-while no phone is connected, and there is more than a month of room, so a SPIKE window is still
-sitting there when you toggle to NORMAL and gets shipped within ~5 min.
+while no phone is connected, and there is more than a month of room, so a stretch spent with the
+phone away is still sitting there when you reconnect and gets shipped within ~5 min.
 
 The unverified half is the phone: whether the app plots late-arriving records into their real hours
 or only appends "now" samples, and whether its own enable toggle discards what it receives while
-off. Cheap empirical test, no code: leave the feature on, spend a normal SPIKE stretch, toggle to
-NORMAL, and see whether the graph fills the gap or starts at the reconnect.
+off. Cheap empirical test, no code: leave the feature on, spend a normal pump-only stretch, get the
+phone connected, and see whether the graph fills the gap or starts at the reconnect.
 
 One caveat about last night specifically: the `data-logging download` run on the morning of
 2026-07-29 flipped send-enable on and requested session 164 (which returned nothing to the tool).
@@ -323,7 +334,7 @@ what the watch was doing** — so precision is not the thing to improve, experim
   good night (#2). The candidates that fit an always-on cost are: the watch never entering
   stationary/low-power mode, a timer of ours running far more often than stock's, and the flash
   writes our own logging generates. v44 prints all three hourly (`hb task`, `hb sys`), so the next
-  spike night should name the culprit rather than narrow the field.
+  pump night should name the culprit rather than narrow the field.
 - **#1 The pump link's connection parameters** (125 ms, slave latency 0, 3000 ms supervision,
   never negotiated because every param-update consumer in `bt_conn_mgr.c` is on the phone path).
   **Largely cleared as the main cost** by the control night, and both levers for it are
@@ -332,7 +343,7 @@ what the watch was doing** — so precision is not the thing to improve, experim
   `../Documentation/bluetooth.md`), and NOS Observation Mode is now not worth building for battery
   reasons alone. Still the honest explanation for the pump night's 0.96 vs the control's 0.65, if
   that difference is real at all.
-- **#2 SPIKE advertising is ~8.5× stock, forever, while the pump is away — fix shipped
+- **#2 The pump-mode advertising was ~8.5× stock, forever, while the pump was away — fix shipped
   2026-09-11, unmeasured.** Was 100 ms with `GAPLE_ADVERTISING_DURATION_INFINITE` forever
   (`minimed_sake_service.c`), vs stock 20 ms for 30 s then 1022 ms indefinitely
   (`gap_le_advert.c`). Only bit during outages, but an all-night outage was an all-night drain — a
@@ -391,10 +402,10 @@ finding which part of our diff costs the 3.5–4×.
    differ on their own; only then is a stock-vs-ours pair worth trusting to better than 1.5×.
 1. **A v44 night in NORMAL, charged to 80%, matching the stock night exactly.** Same band, same
    anchor (the 79% step), phone connected, glucose watchface in front. This is the decisive one:
-   same firmware, stock-like radio config. Near 0.165 %/h means the whole cost is SPIKE's radio
-   configuration — the advertising clamp and the 125 ms latency-0 link — and the advertising half is
-   ours to fix without the pump's cooperation. Near 0.7 %/h means the cost is in the base or in
-   something of ours that is active even in NORMAL. Also read `hb sys stat`: overnight, stationary
+   same firmware, stock-like radio config. Near 0.165 %/h means the whole cost is the pump link's
+   radio configuration — the advertising shape and the 125 ms latency-0 link — and the advertising
+   half is ours to fix without the pump's cooperation. Near 0.7 %/h means the cost is in the base or
+   in something of ours that is active even in NORMAL. Also read `hb sys stat`: overnight, stationary
    seconds near zero would be a finding in itself.
 2. **Then bisect our diff against whatever the lines implicate.** The three shapes to expect:
    never entering stationary/low-power mode (`hb sys stat`/`lowp`), a task of ours running
@@ -404,11 +415,11 @@ finding which part of our diff costs the 3.5–4×.
    now backs off from 100 ms to 500 ms after 30 s idle (see "Pump advert back-off" above). Next
    step is a before/after run with the pump absent long enough to sit in the slow term, read off
    `hb ble advs` and the `Percent:` steps.
-4. **NORMAL vs SPIKE over matched SoC ranges**, if the pump link is still implicated after the
-   above. Both ≥8 h from the same start percentage, read off the `hb` lines rather than the 1%
-   steps.
+4. **NORMAL (phone only) vs DUAL over matched SoC ranges**, if the pump link is still implicated
+   after the above. Both ≥8 h from the same start percentage, read off the `hb` lines rather than the
+   1% steps.
 5. **One zero-cost thing to do alongside whatever else runs:** leave the app's battery feature on
-   and check after the next SPIKE stretch whether its graph backfills the gap — settles the one
+   and check after the next pump-only stretch whether its graph backfills the gap — settles the one
    open question the firmware can't answer.
 
 Not on the list any more: a night on stock 4.24 (the base is exonerated — see #0), NOS Observation

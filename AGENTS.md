@@ -116,7 +116,7 @@ inside them are relative to the repository root:
 |---|---|
 | `.agents/PROGRESS.md` | Current state, code map, remaining work |
 | `.agents/TESTING.md` | The build/flash/test loop, on-hardware procedures |
-| `.agents/CONNECTIVITY.md` | Bonds and pruning, advertising, the slot, the dual link |
+| `.agents/CONNECTIVITY.md` | Bonds and pruning, advertising, the dual link, and the single-slot history |
 | `.agents/WATCHFACE.md` | Watchface integration and the launch-crash saga |
 | `.agents/BATTERY.md` | Drain measurements, method, ranked hypotheses |
 | `.agents/VERSIONS.md` | Every build, newest first, plus the chronological dev log |

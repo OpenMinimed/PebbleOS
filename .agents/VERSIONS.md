@@ -1,12 +1,28 @@
 # Version log & history
 
-Every spike build, newest first, then the chronological dev/test log. This is a reference
-archive — you rarely need it in context. Current state is in `PROGRESS.md`; the per-topic
-files are listed there.
+Every MiniMed build, newest first, then the chronological dev/test log. This is a reference archive
+— you rarely need it in context. Current state is in `PROGRESS.md`; the per-topic files are listed
+there.
 
-Entries from before the 2026-10 rebuild (`describe` strings, `vNN` bundle names, commit hashes)
-resolve against the tag `archive/pre-rebuild-v4.41.0` and the archived branches
-`archive-v4.36.2` / `archive-v4.24.0`, not against the current tree.
+The fork was rebased onto upstream `v4.41.1` on 2026-10-13 (branch `dev/v4.41.1`). Entries above that
+date describe **pre-rebuild** builds: their `describe` strings, `vNN` bundle names and commit hashes
+resolve against the tag `archive/pre-rebuild-v4.41.0` and the archived branches `archive-v4.36.2` /
+`archive-v4.24.0`, not against the current tree. In those entries also read the old tooling and
+names:
+
+| Then | Now |
+|---|---|
+| `./waf build` / `./waf test` | `pbl build` / `pbl test` |
+| `sake-spike-vN-<desc>.pbz` | `minimed-<board>-<describe>-<desc>.pbz` |
+| `CONFIG_MINIMED_SAKE_SPIKE` | `CONFIG_MINIMED_SAKE` |
+| `minimed_sake_read.c` | `minimed_session.c` (pure parts in `fw/services/minimed/core/`) |
+| `MODE: SPIKE` | `MODE: DUAL` (before v59 the mode really was pump-only, phone disconnected) |
+
+**Some fork work has no entry here at all** — the 30-minute predictor, the hypo (treat-or-wait) model
+and its alert, the forecast/RMSE logging, and total IOB were never written up as builds, and neither
+was the 2026-10 rebuild itself. For those the authoritative index is `git log v4.41.1..HEAD`, plus
+the code map in `PROGRESS.md`. The `vNN` numbering stopped at the rebuild; newer builds are
+identified by `describe` string or commit hash.
 
 ## Versioning (since 2026-09-11)
 
@@ -620,8 +636,7 @@ or its commit hash, whichever you have on hand (e.g. "build dc906629f").
   `minimed_sake_log` ring lines (`rst resp`, `fallback poll`, `op timeout`, `push mode`) do NOT
   go to flash — only `PBL_LOG` does — so a future soak that needs those in the dump must add
   `PBL_LOG_DBG` mirrors. Original design/build notes follow. (remaining-work
-  item 3b Stage B; spec `docs/superpowers/specs/2026-07-27-pump-push-design.md`, plan
-  `docs/superpowers/plans/2026-07-27-pump-push.md`). Ported from the bridge: bit 18 → CGM read,
+  item 3b Stage B). Ported from the bridge: bit 18 → CGM read,
   bit 17 → IOB read, then **Reset Status (SRCP `0x030C` + the accumulated flag union)** after
   every indication so the latches re-arm. The three exchanges (CGM, IOB, reset) are serialised
   behind a pending-mask dispatcher (one in flight; writes always issued off a callout so they
@@ -937,10 +952,12 @@ or its commit hash, whichever you have on hand (e.g. "build dc906629f").
 
 ---
 
-# On-Watch SAKE Spike — Chronological Dev/Test History
+# Chronological dev/test history (pre-rebuild)
 
-Step-by-step record of every spike build and hardware test. Reference archive — **not needed in
-context for ongoing work**; `PROGRESS.md` has the current state. Newest at the bottom.
+Step-by-step record of every build and hardware test of the fork, up to the 2026-10 rebuild.
+Reference archive — **not needed in context for ongoing work**; `PROGRESS.md` has the current state.
+Newest at the bottom. The old tooling and file names in here (`waf`, `sake-spike-vN`,
+`minimed_sake_read.c`, `MODE: SPIKE`) are decoded by the table at the top of this file.
 
 ## 2026-07-12 — Feasibility research + Spike 1 written
 
