@@ -1,9 +1,11 @@
 /* SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen */
+/* SPDX-FileCopyrightText: 2026 Pal Marci */
 /* SPDX-License-Identifier: Apache-2.0 */
 
 // Column order and arithmetic mirror sugar_predictor's features.py::build() and hypo.py's
 // extra_features() exactly; the host test (tools/minimed_sake_hosttest) checks this against
-// vectors generated from the numpy model.
+// vectors generated from the numpy model. The heads share one projection per standardization
+// group (a trunk), see sugar_predictor/firmware/hypo_trunk.c.
 
 #include "minimed_hypo.h"
 
@@ -18,6 +20,34 @@ _Static_assert(HYPO_STEP == MINIMED_PREDICT_CELL_SECS / 60,
                "hypo model cell size must match the predictor's");
 
 #define NEW (HYPO_HIST - 1) // index of the newest cell
+
+// IEEE 754 half to single: the standardization and the activity kernels are stored as fp16.
+static inline float prv_half_to_float(uint16_t h) {
+  uint32_t sign = (uint32_t)(h >> 15) & 1u;
+  uint32_t exp = (uint32_t)(h >> 10) & 0x1Fu;
+  uint32_t mant = (uint32_t)h & 0x3FFu;
+  uint32_t bits;
+  if (exp == 0) {
+    if (mant == 0) {
+      bits = sign << 31;
+    } else {
+      exp = 1;
+      while ((mant & 0x400u) == 0u) {
+        mant <<= 1;
+        exp--;
+      }
+      mant &= 0x3FFu;
+      bits = (sign << 31) | ((exp + 112u) << 23) | (mant << 13);
+    }
+  } else if (exp == 31) {
+    bits = (sign << 31) | 0x7F800000u | (mant << 13);
+  } else {
+    bits = (sign << 31) | ((exp + 112u) << 23) | (mant << 13);
+  }
+  float f;
+  memcpy(&f, &bits, 4);
+  return f;
+}
 
 // features.py _shift_past: drop the newest cell and repeat the oldest, keeping the window length.
 // Position 0 of the shifted series holds series[0] twice, and everything else moves one cell
@@ -129,20 +159,20 @@ static void prv_features(const MinimedPredictWindow *in, float out[HYPO_N_IN]) {
 
   // activity kernels over the shifted series, oldest cell first
   float iob[3] = {0.0f, 0.0f, 0.0f}, cob[3] = {0.0f, 0.0f, 0.0f};
-  const float *ik[3] = {hypo_k_ins0, hypo_k_ins1, hypo_k_ins2};
-  const float *ck[3] = {hypo_k_carb0, hypo_k_carb1, hypo_k_carb2};
+  const uint16_t *ik[3] = {hypo_k_ins0, hypo_k_ins1, hypo_k_ins2};
+  const uint16_t *ck[3] = {hypo_k_carb0, hypo_k_carb1, hypo_k_carb2};
   for (int c = 0; c < HYPO_HIST; c++) {
     const int from_new = NEW - c; // 0 = newest
     const float i_v = prv_past(in->ins, from_new);
     const float c_v = prv_past(in->carb, from_new);
     for (int j = 0; j < 3; j++) {
-      iob[j] += i_v * ik[j][c];
-      cob[j] += c_v * ck[j][c];
+      iob[j] += i_v * prv_half_to_float(ik[j][c]);
+      cob[j] += c_v * prv_half_to_float(ck[j][c]);
     }
   }
 
   // minutes since the last delivery / carb entry, capped at 240, and the largest carb entry in
-  // the window -- all on the shifted series
+  // the window, each faded by its age -- all on the shifted series
   float t_ins = (float)HYPO_HIST * HYPO_STEP, t_carb = t_ins;
   float largest_carb = 0.0f;
   for (int from_new = 0; from_new < HYPO_HIST; from_new++) {
@@ -152,8 +182,9 @@ static void prv_features(const MinimedPredictWindow *in, float out[HYPO_N_IN]) {
       t_ins = (float)from_new * HYPO_STEP;
     if (c_v > 0.0f && from_new * HYPO_STEP < t_carb)
       t_carb = (float)from_new * HYPO_STEP;
-    if (c_v > largest_carb)
-      largest_carb = c_v;
+    const float faded = c_v * prv_half_to_float(hypo_kcarbfade[NEW - from_new]);
+    if (faded > largest_carb)
+      largest_carb = faded;
   }
   if (t_ins > 240.0f)
     t_ins = 240.0f;
@@ -239,44 +270,67 @@ static void prv_features(const MinimedPredictWindow *in, float out[HYPO_N_IN]) {
   out[i++] = (now - floor12) / 10.0f;
 }
 
-// Per-head tables, indexed by hypo_head_t. Kept here so minimed_hypo_model.h stays a plain data
-// file.
+// The two trunks: one standardization plus int8 projection per group of heads, computed once per
+// evaluation and read by every head of the group. Kept here so minimed_hypo_model.h stays a plain
+// data file.
 typedef struct {
   const int8_t *w1; // [wide][HYPO_N_IN], row-major per hidden unit
-  const float *b1;
-  const int8_t *w2;
-  const float *mu;
-  const float *sd;
+  const int8_t *b1;
+  const uint16_t *mu; // fp16
+  const uint16_t *sd;
   int wide;
-  float sw1, sw2, b2, ym, ys;
+  float sw1, sb1;
+} TrunkDesc;
+
+_Static_assert(HYPO_N_TRUNKS == 2, "the hypo model is written for the two standardization groups");
+
+static const TrunkDesc TRUNKS[HYPO_N_TRUNKS] = {
+  {hypo_t0_w1, hypo_t0_b1, hypo_t0_mu, hypo_t0_sd, HYPO_T0_WIDE, HYPO_T0_SW1, HYPO_T0_SB1},
+  {hypo_t1_w1, hypo_t1_b1, hypo_t1_mu, hypo_t1_sd, HYPO_T1_WIDE, HYPO_T1_SW1, HYPO_T1_SB1},
+};
+
+#define TRUNK_MAX_WIDE (HYPO_T0_WIDE > HYPO_T1_WIDE ? HYPO_T0_WIDE : HYPO_T1_WIDE)
+
+static void prv_trunk_hidden(int trunk, const float feat[HYPO_N_IN], float hidden[TRUNK_MAX_WIDE]) {
+  const TrunkDesc *t = &TRUNKS[trunk];
+  float z[HYPO_N_IN];
+  z[0] = feat[0]; // the bias is not scaled
+  for (int k = 1; k < HYPO_N_IN; k++)
+    z[k] = (feat[k] - prv_half_to_float(t->mu[k])) / prv_half_to_float(t->sd[k]);
+
+  for (int u = 0; u < t->wide; u++) {
+    const int8_t *row = t->w1 + (size_t)u * HYPO_N_IN;
+    float acc = (float)t->b1[u] * t->sb1;
+    for (int k = 0; k < HYPO_N_IN; k++)
+      acc += z[k] * (float)row[k] * t->sw1;
+    hidden[u] = acc > 0.0f ? acc : 0.0f;
+  }
+}
+
+// Per-head tables, indexed by hypo_head_t.
+typedef struct {
+  int trunk;
+  const int8_t *w2; // [wide of that trunk]
+  float sw2, b2, ym, ys;
 } HeadDesc;
 
-#define DESC(idx, tag)                                                         \
-  {hypo_h##idx##_w1, hypo_h##idx##_b1,   hypo_h##idx##_w2,  hypo_h##idx##_mu,  \
-   hypo_h##idx##_sd, HYPO_H##idx##_WIDE, HYPO_H##idx##_SW1, HYPO_H##idx##_SW2, \
-   HYPO_H##idx##_B2, HYPO_H##idx##_YM,   HYPO_H##idx##_YS}
+#define DESC(idx, tag)                                       \
+  {HYPO_H##idx##_TRUNK, hypo_h##idx##_w2, HYPO_H##idx##_SW2, \
+   HYPO_H##idx##_B2,    HYPO_H##idx##_YM, HYPO_H##idx##_YS}
 
 static const HeadDesc HEADS[HYPO_N_HEADS] = {DESC(0, base),      DESC(1, uplift),
                                              DESC(2, base_mins), DESC(3, uplift_mins),
                                              DESC(4, base_peak), DESC(5, uplift_peak),
                                              DESC(6, risk_low),  DESC(7, risk_severe)};
 
-static float prv_head(hypo_head_t head, const float feat[HYPO_N_IN]) {
+static float prv_head(hypo_head_t head,
+                      const float hidden_by_trunk[HYPO_N_TRUNKS][TRUNK_MAX_WIDE]) {
   const HeadDesc *d = &HEADS[head];
-  float z[HYPO_N_IN];
-  z[0] = feat[0]; // the bias is not scaled
-  for (int k = 1; k < HYPO_N_IN; k++)
-    z[k] = (feat[k] - d->mu[k]) / d->sd[k];
-
+  const float *hidden = hidden_by_trunk[d->trunk];
+  const int wide = TRUNKS[d->trunk].wide;
   float acc = d->b2;
-  for (int u = 0; u < d->wide; u++) {
-    const int8_t *row = d->w1 + (size_t)u * HYPO_N_IN;
-    float h = d->b1[u];
-    for (int k = 0; k < HYPO_N_IN; k++)
-      h += z[k] * (float)row[k] * d->sw1;
-    if (h > 0.0f)
-      acc += h * (float)d->w2[u] * d->sw2;
-  }
+  for (int u = 0; u < wide; u++)
+    acc += hidden[u] * (float)d->w2[u] * d->sw2;
   return acc * d->ys + d->ym;
 }
 
@@ -285,28 +339,32 @@ void minimed_hypo_eval(const MinimedPredictWindow *in, float over_treat_weight,
   float feat[HYPO_N_IN];
   prv_features(in, feat);
 
-  const float nu = prv_head(HYPO_BASE, feat);
-  float up = prv_head(HYPO_UPLIFT, feat);
+  float hidden[HYPO_N_TRUNKS][TRUNK_MAX_WIDE];
+  for (int t = 0; t < HYPO_N_TRUNKS; t++)
+    prv_trunk_hidden(t, feat, hidden[t]);
+
+  const float nu = prv_head(HYPO_BASE, hidden);
+  float up = prv_head(HYPO_UPLIFT, hidden);
   if (up < 0.0f)
     up = 0.0f; // carbs cannot lower glucose
 
-  float mu_ = prv_head(HYPO_BASE_MINS, feat);
+  float mu_ = prv_head(HYPO_BASE_MINS, hidden);
   if (mu_ < 0.0f)
     mu_ = 0.0f;
-  float up_m = prv_head(HYPO_UPLIFT_MINS, feat);
+  float up_m = prv_head(HYPO_UPLIFT_MINS, hidden);
   if (up_m > 0.0f)
     up_m = 0.0f; // nor lengthen a low
   float mt = mu_ + up_m;
   if (mt < 0.0f)
     mt = 0.0f;
 
-  const float pu = prv_head(HYPO_BASE_PEAK, feat);
-  float up_p = prv_head(HYPO_UPLIFT_PEAK, feat);
+  const float pu = prv_head(HYPO_BASE_PEAK, hidden);
+  float up_p = prv_head(HYPO_UPLIFT_PEAK, hidden);
   if (up_p < 0.0f)
     up_p = 0.0f;
 
-  float p_low = prv_head(HYPO_RISK_LOW, feat);
-  float p_sev = prv_head(HYPO_RISK_SEVERE, feat);
+  float p_low = prv_head(HYPO_RISK_LOW, hidden);
+  float p_sev = prv_head(HYPO_RISK_SEVERE, hidden);
   if (p_low < 1e-4f)
     p_low = 1e-4f;
   if (p_low > 1.0f - 1e-4f)
