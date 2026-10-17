@@ -619,6 +619,11 @@ static int prv_handle_pairing_request_event(struct ble_gap_event *event) {
 #ifdef CONFIG_MINIMED_SAKE
   if (event->pairing_request.conn_handle == s_sake_conn_handle) {
     minimed_sake_log_evt("pump pair req");
+    // The pump pairs from its own menu, not from the phone pairing screen that makes the watch
+    // pairable, so accept it while the watch advertises for first pairing.
+    if (minimed_sake_pump_pairing_window()) {
+      return 0;
+    }
   }
 #endif
 
