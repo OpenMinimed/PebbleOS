@@ -115,14 +115,12 @@ no pairings at all. The loop is: NORMAL → sideload → reboot → **SELECT** i
 reconnects on its own (`paired (persisted): FE81` → `HANDSHAKE OK!`). The mode resets to NORMAL at
 boot (it is RAM-only), so the one SELECT press remains.
 
-Read the MiniMed app's bond inventory line to confirm, before and after:
-
-- `bond gw1 pmp1 del0` — both bonds present, nothing pruned. This is the pass.
-- `pmp0 del1` — something still pruned the pump bond.
-- `pmp0 del0` — the bond was never stored; a different bug from pruning.
-- `gw0` — the phone bond is gone.
-- `MODE: DUAL (FE81)` together with `pmp0` — the FE81/FE82 mismatch, stated outright instead of
-  having to be inferred from a `disc reason=0x08` loop half a minute later.
+The app's bond inventory line (`bond gw1 pmp1 del0` was the pass) is gone; the fixed line now
+carries the pinned forecast score, so read the bonds from behaviour: the pump reconnecting on its
+own (`paired (persisted): FE81`, then `HANDSHAKE OK!`) is the pass; `MODE: DUAL (FE81)` with no
+handshake is the FE81/FE82 mismatch, with the `disc reason=0x08` loop following half a minute
+later; a pump that never comes back points at its bond pruned or never stored; and a phone that can
+no longer reconnect has lost its bond.
 
 The three checks, all passed 2026-07-26: (1) reboot with the pump paired and confirm it reconnects
 with no re-add on the pump; (2) forget the watch on the phone and re-pair it, then confirm the pump
@@ -140,8 +138,9 @@ One rule worth repeating:
 
 - **Forget the pump with the app's DOWN button, never from the Bluetooth menu.** The menu deletes
   the SM bond but not the app's paired flag, so the watch advertises FE81 with no bond behind it
-  and the pump cannot find it. The inventory line shows that state outright: `MODE: DUAL (FE81)`
-  above `pmp0`. Note also that the watch is only pairable while you are actually standing on the
+  and the pump cannot find it. That state still reads off the mode line and the log: `MODE: DUAL
+  (FE81)` on the app while the pump never reaches a handshake. Note also that the watch is only
+  pairable while you are actually standing on the
   Settings → Bluetooth screen, and only when its bond list is empty — forgetting the watch on the
   phone is not enough, you must forget the phone on the watch too.
 

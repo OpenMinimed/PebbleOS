@@ -322,10 +322,11 @@ library would reuse.
 
 **UI.**
 
-- `fw/apps/system/minimed_sake_app.{c,h}` — the launcher app: mode toggle, on-watch log, the bond
-  inventory line.
-- `fw/popups/minimed_sake_ui.{c,h}` — the log ring buffer, the mode flag, stage reports, and the
-  app↔BT-layer seam (`force_readvertise`, `pump_paired`, `forget_pump`, `sender_set_mode`).
+- `fw/apps/system/minimed_sake_app.{c,h}` — the launcher app: mode toggle, on-watch log, and the
+  pinned forecast score line.
+- `fw/popups/minimed_sake_ui.{c,h}` — the log ring buffer, the mode flag, the published forecast
+  score, stage reports, and the app↔BT-layer seam (`force_readvertise`, `pump_paired`,
+  `forget_pump`, `sender_set_mode`).
 - `fw/popups/minimed_alert_popup.{c,h}` — alarm and reminder notifications (BT task → KernelMain →
   `notifications_add_notification`; native popup/vibe, raise-only, silenced raises skipped).
 
