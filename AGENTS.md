@@ -99,3 +99,8 @@ Others:
 
 - If fixing Linear or GitHub issues, include in the commit body a line with
   `Fixes XXX`, where XXX is the issue number.
+
+## MiniMed fork
+
+This is the OpenMinimed fork. Read `.agents/minimed.md` before working on it:
+@.agents/minimed.md
