@@ -153,8 +153,8 @@ merging the release in. Write fork code so that this stays cheap:
   `pbl test --no-images`, so that history stays bisectable.
 - Notes (`PROGRESS.md`, `VERSIONS.md` and the other top-level fork notes) change in separate
   `docs:` commits, never in code commits. Build hashes in `VERSIONS.md` from before the
-  2026-10 rebase onto v4.41.1 refer to the archived branches `origin/minimed/upstream-v4.41.0`,
-  `origin/archive-v4.36.2` and `origin/archive-v4.24.0`.
+  2026-10 rebase onto v4.41.1 refer to the archived branches `origin/archive-v4.36.2` and
+  `origin/archive-v4.24.0` and to the tag `archive/pre-rebuild-v4.41.0`.
 
 ## Emulator (QEMU)
 
