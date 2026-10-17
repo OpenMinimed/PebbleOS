@@ -27,7 +27,12 @@ bool minimed_settings_hypo_alert_enabled(void);
 //! everything else (SETTINGS_ALERT_HYPO_DND_BYPASS)? Meaningless if the alert itself is off.
 bool minimed_settings_hypo_dnd_bypass_enabled(void);
 
-//! Update the alert mask from a watchface's capability announcement (KEY_SETTINGS_ALERTS).
+//! The raw SETTINGS_ALERT_* and SETTINGS_FEATURE_* masks, for the MiniMed app's menu.
+uint8_t minimed_settings_get_alerts(void);
+uint8_t minimed_settings_get_features(void);
+
+//! Update the alert mask from a watchface's capability announcement (KEY_SETTINGS_ALERTS) or the
+//! MiniMed app's menu.
 //! Persists to flash only when the value actually changes.
 void minimed_settings_set_alerts(uint8_t mask);
 
@@ -36,7 +41,8 @@ void minimed_settings_set_alerts(uint8_t mask);
 //! CAP_HYPO, which still leaves the sender computing it every cycle for nothing.
 bool minimed_settings_hypo_enabled(void);
 
-//! Update the feature mask from a watchface's capability announcement (KEY_SETTINGS_FEATURES).
+//! Update the feature mask from a watchface's capability announcement (KEY_SETTINGS_FEATURES) or
+//! the MiniMed app's menu.
 //! Persists to flash only when the value actually changes.
 void minimed_settings_set_features(uint8_t mask);
 

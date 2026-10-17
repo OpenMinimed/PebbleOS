@@ -55,11 +55,19 @@ void minimed_settings_init(void) {
                     &s_set_last_notification_day, sizeof(s_set_last_notification_day));
   settings_file_get(&fd, s_sensor_start_key, sizeof(s_sensor_start_key), &s_sensor_start,
                     sizeof(s_sensor_start));
-  settings_file_get(&fd, s_sensor_duration_key, sizeof(s_sensor_duration_key),
-                    &s_sensor_duration, sizeof(s_sensor_duration));
-  settings_file_get(&fd, s_sensor_notified_key, sizeof(s_sensor_notified_key),
-                    &s_sensor_notified, sizeof(s_sensor_notified));
+  settings_file_get(&fd, s_sensor_duration_key, sizeof(s_sensor_duration_key), &s_sensor_duration,
+                    sizeof(s_sensor_duration));
+  settings_file_get(&fd, s_sensor_notified_key, sizeof(s_sensor_notified_key), &s_sensor_notified,
+                    sizeof(s_sensor_notified));
   settings_file_close(&fd);
+}
+
+uint8_t minimed_settings_get_alerts(void) {
+  return s_alerts_mask;
+}
+
+uint8_t minimed_settings_get_features(void) {
+  return s_features_mask;
 }
 
 bool minimed_settings_alert_enabled(bool is_low) {
