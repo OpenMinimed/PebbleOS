@@ -38,8 +38,9 @@ The streamlined loop for iterating on the MiniMed firmware. See `PROGRESS.md` fo
   already fills 97% of the 992 KB flash region (988 267 B) and the pump link adds ~59 KB, so the
   build turns the voice endpoint off (`CONFIG_SERVICE_VOICE_ENDPOINT=n`, which takes the voice
   service and speex with it) and links the stand-ins in `fw/services/minimed/stubs/`
-  (`CONFIG_MINIMED_STUB_VOICE=y`), because upstream calls into voice unconditionally. That lands
-  at 98.8% (about 12 KB left). Dictation then fails as on a watch without a microphone.
+  (`CONFIG_MINIMED_STUB_VOICE=y`), because upstream calls into voice unconditionally. With the
+  set and sensor reminders it lands at 99.1% (about 9 KB left). Dictation then fails as on a watch
+  without a microphone.
 - **obelix** (`--pt2`): two single-slot bundles, release build, release-band check. The rest of
   this section is that recipe.
 

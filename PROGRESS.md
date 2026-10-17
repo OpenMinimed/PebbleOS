@@ -27,6 +27,16 @@ how to build and test, the code map, and what is left. Topic detail lives in its
 
 ## Status
 
+- **2026-10-10, set-reminder MVP built, awaiting hardware test.** On calendar age day 3 after a
+  detected reservoir increase, the watchface status line shows `INF SET N DAYS OLD` from 07:00–09:00
+  only when the pump status is empty; a normal notification fires at 20:00 if unchanged and
+  repeats daily. The first reservoir reading establishes a baseline; reminders start after the
+  next observed increase because the prior set date is unavailable. Details: VERSIONS.md.
+- **2026-10-10, sensor-reminder MVP built, awaiting hardware test.** Sensor expiry uses the pump's
+  session start (`0x2AAA`) plus its expiration offset (`0x0202`). The status line shows the local
+  expiry countdown; one notification is scheduled without overnight vibration. A new sensor
+  session rearms it. Details: VERSIONS.md and `../Documentation/cgm-service.md`.
+
 > **Battery is the current fight, and the first decisive number is in.** A night on stock 4.31.1
 > (2026-08-02/03) drained **0.165 %/h** against **0.57–0.72 %/h** for our firmware in nearby SoC
 > bands — roughly 3.5–4×. Combined with Morten's experience of good battery on older stock builds,

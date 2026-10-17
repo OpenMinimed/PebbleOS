@@ -16,6 +16,50 @@ string ever looks ambiguous (e.g. collapsed to a bare tag with no hash, if `HEAD
 one). `vNN` entries below are legacy; new entries should refer to a build by its `describe` string
 or its commit hash, whichever you have on hand (e.g. "build dc906629f").
 
+- 2026-10-12, BUILT, **AWAITING HW**;
+  `build/minimed-asterix-v4.36.2-209-g250c831b3-set-sensor-reminders.pbz`: final set/sensor
+  reminder build without the test-seed code. Set status is `INF SET N DAYS OLD`; sensor expiry
+  uses the pump-local 0x2AAA time converted to UTC and the 0x0202 duration. Simultaneous sensor and
+  set reminders now create separate notifications. Firmware size is 986,059 bytes with LTO; 262
+  host tests pass.
+
+- 2026-10-11, BUILT, **AWAITING HW**; `build/minimed-asterix-v4.36.2-209-g586adbb19-dirty-reminders-testsd.pbz`:
+  temporary set-reminder test seed for Oct 8, plus the `INF SET N DAYS OLD` label and a sensor-timezone
+  correction. CGMS Session Start Time is pump-local wall time. The firmware had treated it as UTC,
+  making the displayed sensor countdown about two hours too long. It now converts with Pebble's
+  local-to-UTC helper. At 19:12 with 3:20 on the pump, the corrected estimate should be about
+  3:18. Firmware size is 986,123 bytes with LTO; host tests pass.
+
+- 2026-10-10, BUILT, **AWAITING HW**;
+  `build/minimed-asterix-v4.36.2-206-gfcef79917-dirty-sensor-reminder-mvp.pbz`
+  (`sensor-reminder-mvp`): **sensor-expiry reminders**. Firmware size is 985,867 bytes with LTO.
+  The reminder reads Session Start Time (0x2AAA) and Time Of Sensor Expiration (0x0202), then
+  computes the local expiry. The status line shows `SENSOR` plus a countdown, 07:00–09:00 on the
+  expiry date or 18:00–20:00 the prior evening for expiry at or before 09:00. One normal
+  notification is scheduled one hour before expiry. For expiry before 09:00, it moves to 20:00 the
+  prior evening; if it overlaps the morning status window, it moves to 09:00; if it falls at or
+  after 21:00, it moves to 20:00. It is sent once per sensor session; a new start time rearms it.
+  IDD sensor status/change flags queue a fresh session-start read. Pump status text has priority
+  over both reminders, and the sensor reminder has priority over the set reminder.
+  Host tests pass; hardware timing and display still need verification.
+
+- 2026-10-10, BUILT, **AWAITING HW**; `build/minimed-asterix-v4.36.2-205-g654b579f6-dirty-set-reminder-mvp.pbz`
+  (`set-reminder-mvp`): **set-change reminders**. Firmware size is 984,331 bytes with LTO, within
+  Asterix's limit. A reservoir increase over 1 IU marks a new set. From calendar age day 3, show
+  `INF SET N DAYS OLD` in the status line from 07:00–09:00 only when the pump status is empty, then
+  send a standard notification at 20:00 if unchanged. The day count increases until the next
+  reservoir increase. The start time and last notification date persist across reboot. The first
+  reservoir reading only establishes a baseline; because the previous set date cannot be
+  recovered, reminders begin after the next observed reservoir increase. LTO also exposed
+  mismatched BLE app event/syscall declarations; these were aligned to their callers. Host tests
+  pass; hardware timing/notification behavior is still to be verified.
+
+- 2026-10-10, BUILT, **AWAITING HW**; build `v4.36.2-205-g654b579f6-dirty` (`asterix-lto`):
+  **enable LTO for Asterix builds.** The rebased predictor/hypo firmware exceeded the Pebble 2 Duo
+  bundle limit without LTO (1,040,707 / 1,015,808 bytes). LTO builds at 983,371 bytes, leaving
+  32,437 bytes. `minimed-build.sh` now enables LTO for Asterix and reconfigures stale caches that
+  do not have it. Host tests pass; hardware testing is still needed.
+
 - 2026-09-26, **HW-VERIFIED**; build `acb488d07` (`sender-commit`): **one push per read op,
   not per setter.** The CGM read path scheduled a push from `send_trend_arrow` before `send_bg`
   updated `s_bg_str`. The push callback runs on KernelMain and could execute inside that gap (the
