@@ -30,8 +30,8 @@ typedef enum {
 //! Current BLE mode. Read by the advertising hijack (BT task) and the app UI (app task).
 MinimedSakeMode minimed_sake_get_mode(void);
 
-//! Flip Normal<->Dual, log it, and re-arm the relevant advertising. Called from the app's SELECT
-//! handler. Entering Dual opens the pump's own advert job and the loopback watchface session.
+//! Flip Normal<->Dual, log it, and re-arm the relevant advertising. Called from the app's Mode
+//! row. Entering Dual opens the pump's own advert job and the loopback watchface session.
 //! Entering Normal performs a full Bluetooth stack restart (bt_ctl_reset_bluetooth) so the watch
 //! returns to a clean, phone-only state -- the kill switch for sideloading firmware.
 void minimed_sake_toggle_mode(void);
@@ -76,7 +76,7 @@ bool minimed_sake_pump_paired(void);
 
 //! Implemented in the BT layer (minimed_sake_service.c): clear the pump-paired state and go back
 //! to FE82 (first-pair) advertising -- for when the "Mobile PB" device was removed on the pump.
-//! Called from the MiniMed app's DOWN handler.
+//! Called from the MiniMed app's Forget pump row.
 void minimed_sake_forget_pump(void);
 
 //! Implemented in the BT layer (minimed_sake_sender.c): open/close the loopback CommSession that

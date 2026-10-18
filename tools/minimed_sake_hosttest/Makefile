@@ -23,6 +23,7 @@ clean:
 
 # Replay a pump event log through the history decoding and the predictor:
 #   ./export_history_db.py <history.db> > history.hex && make replay
-replay: replay.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c
-	$(CC) $(CFLAGS) -I$(MOD) replay.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c -o replay -lm
+REPLAY_SRC := replay.c $(MOD)/minimed_history.c $(MOD)/minimed_predict.c $(MOD)/minimed_basal_iob.c
+replay: $(REPLAY_SRC)
+	$(CC) $(CFLAGS) $(REPLAY_SRC) -o replay -lm
 	./replay history.hex

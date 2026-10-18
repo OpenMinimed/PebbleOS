@@ -172,7 +172,8 @@ commands. Quick facts kept here:
   the Python requirements and SDL2; see `tools/minimed/Dockerfile`). `minimed-build.sh` wraps the
   whole invocation and takes the target: `-t asterix`, `-t obelix` or `-t getafix`.
 - Everything is behind Kconfig `CONFIG_MINIMED_SAKE`; boots NORMAL (ordinary Pebble).
-  MiniMed app: SELECT = NORMAL⇄DUAL, DOWN = forget pump, Back = exit.
+  MiniMed app: a menu with Log, Mode (NORMAL⇄DUAL and the pump link state), Pump alerts, the
+  reminders, the forecast toggles and Forget pump.
 - Crypto changes: run `tools/minimed_sake_hosttest/` (`make run`) before reflashing.
 
 ### PT2 (obelix) port — verified build recipe

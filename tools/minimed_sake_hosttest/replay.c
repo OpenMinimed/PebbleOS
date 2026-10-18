@@ -2,6 +2,7 @@
  * glucose predictor, and scores the 30-minute predictions against the readings that followed.
  * The pump clock is used as if it were local time (its Reference Times carry no zone), which is
  * also what the model was trained on. */
+#include "minimed_basal_iob.h"
 #include "minimed_history.h"
 #include "minimed_predict.h"
 
@@ -35,8 +36,10 @@ int main(int argc, char **argv) {
     return 2;
   }
   static MinimedPredictState st;
+  MinimedBasalIobState basal;
   MinimedHistClock clk = {0};
   minimed_predict_reset(&st);
+  minimed_basal_iob_reset(&basal);
   char line[512];
   long recs = 0, sgs = 0, ins = 0, carbs = 0, rates = 0;
   double insulin_total = 0;
@@ -55,7 +58,8 @@ int main(int argc, char **argv) {
       case MinimedHistEventRef:
         break;
       case MinimedHistEventMicro:
-        minimed_predict_add_micro(&st, ev.secs, ev.value);
+        minimed_predict_add_insulin(&st, ev.secs, ev.value);
+        minimed_basal_iob_add_micro(&basal, ev.secs, ev.value);
         insulin_total += ev.value;
         ins++;
         break;
@@ -66,6 +70,7 @@ int main(int argc, char **argv) {
         break;
       case MinimedHistEventBasal:
         minimed_predict_set_basal(&st, ev.secs, ev.value);
+        minimed_basal_iob_set_basal(&basal, ev.secs, ev.value);
         rates++;
         break;
       case MinimedHistEventCarbs:
@@ -77,7 +82,7 @@ int main(int argc, char **argv) {
           break;
         sgs++;
         minimed_predict_add_bg(&st, ev.secs, ev.mgdl);
-        const int32_t biob = minimed_predict_basal_iob_mu(&st, ev.secs);
+        const int32_t biob = minimed_basal_iob_mu(&basal, ev.secs);
         biob_sum += biob;
         if (biob > biob_max)
           biob_max = biob;
