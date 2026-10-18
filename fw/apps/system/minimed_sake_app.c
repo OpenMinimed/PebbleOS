@@ -25,7 +25,8 @@
 #include <stdio.h>
 #include <string.h>
 
-#define SAKE_APP_REFRESH_MS 400
+#define SAKE_APP_REFRESH_MS      400
+#define SAKE_APP_MENU_REFRESH_MS 1000
 
 //! Re-read the bond inventory every Nth refresh. Reading it opens the bonding settings file, so
 //! doing it at the full 400 ms rate would mean flash reads 2.5x a second for the whole time the
@@ -73,6 +74,7 @@ typedef struct {
   Window window;
   MenuLayer menu;
   char pump_alerts_summary[32];
+  AppTimer *refresh_timer;
   ToggleWindow toggle;
   LogWindow log;
 } MinimedSakeAppData;
@@ -262,7 +264,11 @@ static void prv_log_select(MinimedSakeAppData *data) {
 }
 
 static const char *prv_mode_subtitle(MinimedSakeAppData *data) {
-  return (minimed_sake_get_mode() == MinimedSakeModeDual) ? "Dual" : "Normal";
+  if (minimed_sake_get_mode() != MinimedSakeModeDual)
+    return "Normal";
+  if (!minimed_sake_pump_paired())
+    return "Dual (not paired)";
+  return minimed_sake_pump_connected() ? "Dual (connected)" : "Dual (searching)";
 }
 
 static void prv_mode_select(MinimedSakeAppData *data) {
@@ -361,10 +367,22 @@ static void prv_root_load(Window *window) {
                 });
 }
 
-// Back from a submenu: its subtitle may have changed.
-static void prv_root_appear(Window *window) {
-  MinimedSakeAppData *data = window_get_user_data(window);
+// Redraw once a second while the menu is showing, so the Mode row follows the pump link.
+static void prv_root_refresh_cb(void *context) {
+  MinimedSakeAppData *data = context;
   menu_layer_reload_data(&data->menu);
+  data->refresh_timer = app_timer_register(SAKE_APP_MENU_REFRESH_MS, prv_root_refresh_cb, data);
+}
+
+// Also covers coming back from a submenu, whose subtitle may have changed.
+static void prv_root_appear(Window *window) {
+  prv_root_refresh_cb(window_get_user_data(window));
+}
+
+static void prv_root_disappear(Window *window) {
+  MinimedSakeAppData *data = window_get_user_data(window);
+  app_timer_cancel(data->refresh_timer);
+  data->refresh_timer = NULL;
 }
 
 static void prv_root_unload(Window *window) {
@@ -385,6 +403,7 @@ static void prv_handle_init(void) {
                   (WindowHandlers){
                     .load = prv_root_load,
                     .appear = prv_root_appear,
+                    .disappear = prv_root_disappear,
                     .unload = prv_root_unload,
                   });
   app_window_stack_push(&data->window, true /* animated */);
