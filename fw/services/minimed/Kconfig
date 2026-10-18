@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2026 Morten Fyhn Amundsen
+# SPDX-License-Identifier: Apache-2.0
+
+config MINIMED_PREDICTOR
+    bool "MiniMed 30-minute glucose forecast"
+    depends on MINIMED_SAKE
+    default y
+    help
+      Forecast glucose 30 minutes ahead from the pump's readings, insulin and meals, and send it
+      to the watchface. Total IOB does not depend on it.
+
+config MINIMED_HYPO
+    bool "MiniMed hypo (treat-or-wait) model"
+    depends on MINIMED_PREDICTOR
+    default y
+    help
+      Score a falling low on whether to treat it, show the result on the watchface and pop up an
+      alert past the treat threshold. Reads the forecast's 4-hour window. About 20 KB of flash,
+      most of it model weights.

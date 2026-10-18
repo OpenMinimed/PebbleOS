@@ -7,6 +7,14 @@
 pbl_include_directories(. core)
 
 file(GLOB sources CONFIGURE_DEPENDS *.c core/*.c)
+if(NOT CONFIG_MINIMED_PREDICTOR)
+  list(REMOVE_ITEM sources ${CMAKE_CURRENT_SOURCE_DIR}/minimed_forecast.c
+       ${CMAKE_CURRENT_SOURCE_DIR}/core/minimed_predict.c)
+endif()
+if(NOT CONFIG_MINIMED_HYPO)
+  list(REMOVE_ITEM sources ${CMAKE_CURRENT_SOURCE_DIR}/minimed_hypo_check.c
+       ${CMAKE_CURRENT_SOURCE_DIR}/core/minimed_hypo.c)
+endif()
 pbl_library()
 pbl_library_sources(${sources})
 

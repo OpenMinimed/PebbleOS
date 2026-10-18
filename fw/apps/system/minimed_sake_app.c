@@ -41,7 +41,6 @@ typedef struct {
 } ToggleItem;
 
 typedef struct {
-  const char *title;
   const ToggleItem *items;
   uint16_t num_items;
 } ToggleList;
@@ -50,25 +49,7 @@ static const ToggleItem s_pump_alert_items[] = {
   {"Low", false, MINIMED_ALERT_LOW},
   {"Other", false, MINIMED_ALERT_OTHER},
 };
-static const ToggleList s_pump_alerts = {
-  "Pump alerts", s_pump_alert_items, ARRAY_LENGTH(s_pump_alert_items)
-};
-
-static const ToggleItem s_hypo_items[] = {
-  {"Enabled", true, MINIMED_FEATURE_HYPO},
-  {"Alert", false, MINIMED_ALERT_HYPO_MODEL},
-  {"Alert in DND", false, MINIMED_ALERT_HYPO_DND_BYPASS},
-};
-static const ToggleList s_hypo = {"Hypo model", s_hypo_items, ARRAY_LENGTH(s_hypo_items)};
-
-typedef enum {
-  RootRowLog,
-  RootRowMode,
-  RootRowPumpAlerts,
-  RootRowHypo,
-  RootRowForgetPump,
-  RootRowCount,
-} RootRow;
+static const ToggleList s_pump_alerts = {s_pump_alert_items, ARRAY_LENGTH(s_pump_alert_items)};
 
 typedef struct {
   Window window;
@@ -267,7 +248,26 @@ static void prv_forget_push(void) {
 // Root menu
 /////////////
 
-static const char *prv_pump_alerts_summary(MinimedSakeAppData *data) {
+//! A root menu row. A feature that can be compiled out keeps its row and handlers in one #ifdef.
+typedef struct {
+  const char *title;
+  const char *(*subtitle)(MinimedSakeAppData *data); //!< NULL: no subtitle
+  void (*select)(MinimedSakeAppData *data);
+} RootItem;
+
+static void prv_log_select(MinimedSakeAppData *data) {
+  app_window_stack_push(&data->log.window, true);
+}
+
+static const char *prv_mode_subtitle(MinimedSakeAppData *data) {
+  return (minimed_sake_get_mode() == MinimedSakeModeDual) ? "Dual" : "Normal";
+}
+
+static void prv_mode_select(MinimedSakeAppData *data) {
+  minimed_sake_toggle_mode();
+}
+
+static const char *prv_pump_alerts_subtitle(MinimedSakeAppData *data) {
   char *buf = data->pump_alerts_summary;
   buf[0] = '\0';
   for (uint16_t i = 0; i < s_pump_alerts.num_items; i++) {
@@ -281,61 +281,54 @@ static const char *prv_pump_alerts_summary(MinimedSakeAppData *data) {
   return buf[0] ? buf : "Off";
 }
 
+static void prv_pump_alerts_select(MinimedSakeAppData *data) {
+  prv_toggle_push(&data->toggle, &s_pump_alerts);
+}
+
+#ifdef CONFIG_MINIMED_HYPO
+static const ToggleItem s_hypo_items[] = {
+  {"Enabled", true, MINIMED_FEATURE_HYPO},
+  {"Alert", false, MINIMED_ALERT_HYPO_MODEL},
+  {"Alert in DND", false, MINIMED_ALERT_HYPO_DND_BYPASS},
+};
+static const ToggleList s_hypo = {s_hypo_items, ARRAY_LENGTH(s_hypo_items)};
+
+static const char *prv_hypo_subtitle(MinimedSakeAppData *data) {
+  return prv_item_on(&s_hypo_items[0]) ? "On" : "Off";
+}
+
+static void prv_hypo_select(MinimedSakeAppData *data) {
+  prv_toggle_push(&data->toggle, &s_hypo);
+}
+#endif
+
+static void prv_forget_select(MinimedSakeAppData *data) {
+  prv_forget_push();
+}
+
+static const RootItem s_root_items[] = {
+  {"Log", NULL, prv_log_select},
+  {"Mode", prv_mode_subtitle, prv_mode_select},
+  {"Pump alerts", prv_pump_alerts_subtitle, prv_pump_alerts_select},
+#ifdef CONFIG_MINIMED_HYPO
+  {"Hypo model", prv_hypo_subtitle, prv_hypo_select},
+#endif
+  {"Forget pump", NULL, prv_forget_select},
+};
+
 static uint16_t prv_root_num_rows(MenuLayer *menu, uint16_t section, void *context) {
-  return RootRowCount;
+  return ARRAY_LENGTH(s_root_items);
 }
 
 static void prv_root_draw_row(GContext *ctx, const Layer *cell, MenuIndex *index, void *context) {
-  MinimedSakeAppData *data = context;
-  const char *title = NULL;
-  const char *subtitle = NULL;
-  switch ((RootRow)index->row) {
-    case RootRowLog:
-      title = "Log";
-      break;
-    case RootRowMode:
-      title = "Mode";
-      subtitle = (minimed_sake_get_mode() == MinimedSakeModeDual) ? "Dual" : "Normal";
-      break;
-    case RootRowPumpAlerts:
-      title = s_pump_alerts.title;
-      subtitle = prv_pump_alerts_summary(data);
-      break;
-    case RootRowHypo:
-      title = s_hypo.title;
-      subtitle = prv_item_on(&s_hypo_items[0]) ? "On" : "Off";
-      break;
-    case RootRowForgetPump:
-      title = "Forget pump";
-      break;
-    case RootRowCount:
-      break;
-  }
-  menu_cell_basic_draw(ctx, cell, title, subtitle, NULL);
+  const RootItem *item = &s_root_items[index->row];
+  menu_cell_basic_draw(ctx, cell, item->title, item->subtitle ? item->subtitle(context) : NULL,
+                       NULL);
 }
 
 static void prv_root_select(MenuLayer *menu, MenuIndex *index, void *context) {
-  MinimedSakeAppData *data = context;
-  switch ((RootRow)index->row) {
-    case RootRowLog:
-      app_window_stack_push(&data->log.window, true);
-      break;
-    case RootRowMode:
-      minimed_sake_toggle_mode();
-      menu_layer_reload_data(menu);
-      break;
-    case RootRowPumpAlerts:
-      prv_toggle_push(&data->toggle, &s_pump_alerts);
-      break;
-    case RootRowHypo:
-      prv_toggle_push(&data->toggle, &s_hypo);
-      break;
-    case RootRowForgetPump:
-      prv_forget_push();
-      break;
-    case RootRowCount:
-      break;
-  }
+  s_root_items[index->row].select(context);
+  menu_layer_reload_data(menu);
 }
 
 static void prv_root_load(Window *window) {

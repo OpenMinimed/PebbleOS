@@ -8,4 +8,8 @@
 
 //! Run the hypo model on the predictor's window, and send the result to the watchface and, past
 //! the treat threshold, as an alert popup. `bg_str` is the BG shown in the popup.
+#ifdef CONFIG_MINIMED_HYPO
 void minimed_hypo_check(const MinimedPredictWindow *win, const char *bg_str);
+#else
+static inline void minimed_hypo_check(const MinimedPredictWindow *win, const char *bg_str) {}
+#endif

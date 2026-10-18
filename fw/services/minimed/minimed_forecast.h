@@ -13,6 +13,8 @@
 //! it readings and history events; it sends its results to the watchface itself. `bg_str` is the
 //! BG as shown on the watchface, for the hypo alert's body.
 
+#ifdef CONFIG_MINIMED_PREDICTOR
+
 //! A new live reading: score the forecast that came due, then forecast again.
 void minimed_forecast_reading(uint32_t ts, int32_t mgdl, const char *bg_str);
 
@@ -27,3 +29,14 @@ void minimed_forecast_backfill_end(bool primed, int32_t mgdl, const char *bg_str
 
 //! The pump link went down: no forecasts until the next backfill.
 void minimed_forecast_unprime(void);
+
+#else
+
+static inline void minimed_forecast_reading(uint32_t ts, int32_t mgdl, const char *bg_str) {}
+static inline void minimed_forecast_event(uint32_t ts, MinimedHistEventKind kind, float value) {}
+static inline void minimed_forecast_backfill_begin(void) {}
+static inline void minimed_forecast_backfill_bg(uint32_t ts, int32_t mgdl) {}
+static inline void minimed_forecast_backfill_end(bool primed, int32_t mgdl, const char *bg_str) {}
+static inline void minimed_forecast_unprime(void) {}
+
+#endif
