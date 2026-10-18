@@ -652,7 +652,7 @@ static int32_t prv_gmt_offset(uint32_t now) {
 // AND the cooldown has passed, so a score hovering at the threshold cannot buzz every 5 minutes.
 // The threshold is the watchface's default TREAT level (HYPO_TREAT_THRESHOLD_DEFAULT there, the
 // model's validated cut-off); the phone-set threshold only reaches the watchface. Switched on and
-// off by its own setting (SETTINGS_ALERT_HYPO_MODEL, "Alert on TREAT" on the Settings page).
+// off by its own setting (MINIMED_ALERT_HYPO_MODEL, "Alert" in the MiniMed app's Hypo model menu).
 #define HYPO_ALERT_TREAT_PCT     32
 #define HYPO_ALERT_COOLDOWN_SECS (30 * 60)
 static bool s_hypo_alert_armed = true;
@@ -1063,8 +1063,7 @@ static void prv_annunc_record_done(void) {
     return;
   if (a.silenced)
     return; // the pump raised it quietly (alert settings); mirror that choice
-  // Phone-configured (Settings page -> KEY_SETTINGS_ALERTS -> minimed_settings), not a compile
-  // flag: see minimed_settings.h.
+  // Set in the MiniMed app's menu, not a compile flag: see minimed_settings.h.
   if (!minimed_settings_alert_enabled(minimed_annunciation_is_low(a.type)))
     return;
   if (prv_annunc_already_notified(a.id))

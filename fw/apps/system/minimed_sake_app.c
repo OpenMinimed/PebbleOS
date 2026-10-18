@@ -16,7 +16,6 @@
 #include "minimed_settings.h"
 #include "pbl/services/bluetooth/bluetooth_persistent_storage.h"
 #include "pbl/util/size.h"
-#include "pebble_glucose_protocol.h"
 #include "popups/minimed_sake_ui.h"
 #include "process_state/app_state/app_state.h"
 #include "resource/resource_ids.auto.h"
@@ -48,17 +47,17 @@ typedef struct {
 } ToggleList;
 
 static const ToggleItem s_pump_alert_items[] = {
-  {"Low", false, SETTINGS_ALERT_LOW},
-  {"Other", false, SETTINGS_ALERT_OTHER},
+  {"Low", false, MINIMED_ALERT_LOW},
+  {"Other", false, MINIMED_ALERT_OTHER},
 };
 static const ToggleList s_pump_alerts = {
   "Pump alerts", s_pump_alert_items, ARRAY_LENGTH(s_pump_alert_items)
 };
 
 static const ToggleItem s_hypo_items[] = {
-  {"Enabled", true, SETTINGS_FEATURE_HYPO},
-  {"Alert", false, SETTINGS_ALERT_HYPO_MODEL},
-  {"Alert in DND", false, SETTINGS_ALERT_HYPO_DND_BYPASS},
+  {"Enabled", true, MINIMED_FEATURE_HYPO},
+  {"Alert", false, MINIMED_ALERT_HYPO_MODEL},
+  {"Alert in DND", false, MINIMED_ALERT_HYPO_DND_BYPASS},
 };
 static const ToggleList s_hypo = {"Hypo model", s_hypo_items, ARRAY_LENGTH(s_hypo_items)};
 
