@@ -7,9 +7,10 @@ profile=""
 push=0
 allow_dirty=0
 desc=""
+extra_cfg=""
 usage() {
   cat <<'EOF'
-usage: minimed-build.sh [-h] -t TARGET [--push] [--allow-dirty] [desc]
+usage: minimed-build.sh [-h] -t TARGET [--push] [--allow-dirty] [-DCONFIG_...=y|n ...] [desc]
 
 Build MiniMed Pebble firmware, archive ELF/dict, and optionally push to phone.
 
@@ -24,6 +25,8 @@ options:
                           getafix  Pebble Round 2 (SiFli SF32LB52)
   --push                Push built .pbz to phone via adb or kdeconnect
   --allow-dirty         Allow building with uncommitted changes
+  -DCONFIG_...=y|n      Extra Kconfig settings, e.g. -DCONFIG_MINIMED_PREDICTOR=n. The build's
+                        .config is saved next to the .pbz, so the build stays traceable.
 EOF
 }
 while [ $# -gt 0 ]; do
@@ -32,6 +35,7 @@ while [ $# -gt 0 ]; do
     -t|--target)        profile="$2"; shift 2 ;;
     --push)             push=1; shift ;;
     --allow-dirty)      allow_dirty=1; shift ;;
+    -DCONFIG_*)         extra_cfg+=" $1"; shift ;;
     -*)                 echo "unknown flag: $1" >&2; exit 2 ;;
     *)                  desc="$1"; shift ;;
   esac
@@ -72,6 +76,7 @@ else
   NEED_TAG=0
   VERIFY_BAND=0
 fi
+CORE_CFG+=$extra_cfg
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt, getafix_dvt2 (the bundle name has no @revision)
 RELEASE_TAG=${RELEASE_TAG:-v4.41.9}              # release-form tag stamped into the bundle
 
@@ -183,6 +188,8 @@ fi
 if [ -f "$dir/pebbleos_loghash_dict.json" ]; then
   cp "$dir/pebbleos_loghash_dict.json" "build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.loghash.json"
 fi
+# The Kconfig result, since -DCONFIG_* arguments are not in the commit.
+cp "$dir/.config" "build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.config"
 
 if [ "$push" = 1 ]; then
   if command -v adb >/dev/null 2>&1 && adb get-state 2>/dev/null | grep -q device; then
