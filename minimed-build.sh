@@ -101,7 +101,9 @@ if [ "$NEED_TAG" = 1 ]; then
 fi
 
 # Build one image. With an argument it is a slot number (obelix); without, the board's single slot.
-# Always reconfigures: it is quick, and it keeps the cache from drifting away from CORE_CFG.
+# Always reconfigures: it is quick, and it keeps the cache from drifting away from CORE_CFG. CMake
+# keeps every -DCONFIG_* it was ever given, so -U drops them first; a flag removed from CORE_CFG
+# then really goes back to its default. A failed build exits, so no older .pbz is picked up.
 build_slot() {
   local slot=${1:-}
   local dir="build-${BOARD_SHORT}${slot:+-slot$slot}"
@@ -110,8 +112,8 @@ build_slot() {
     -v "$PWD":/pebbleos -w /pebbleos "$IMAGE" bash -lc "
       mkdir -p \$HOME
       git config --global --add safe.directory /pebbleos
-      pbl configure -b $dir --board $BOARD ${slot:+-DCONFIG_FIRMWARE_SLOT=$slot} $CORE_CFG &&
-        pbl build -b $dir && pbl bundle -b $dir" >&2
+      pbl configure -b $dir --board $BOARD -U 'CONFIG_*' ${slot:+-DCONFIG_FIRMWARE_SLOT=$slot} \
+        $CORE_CFG && pbl build -b $dir && pbl bundle -b $dir" >&2 || exit 1
   echo "$dir"
 }
 
