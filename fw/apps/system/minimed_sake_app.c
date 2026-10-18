@@ -248,9 +248,11 @@ static void prv_forget_push(void) {
 // Root menu
 /////////////
 
-//! A root menu row. A feature that can be compiled out keeps its row and handlers in one #ifdef.
+//! A root menu row: an on/off row for a MINIMED_FEATURE_* bit, or one with its own handlers. A
+//! feature that can be compiled out keeps its row and handlers in one #ifdef.
 typedef struct {
   const char *title;
+  uint8_t feature;                                   //!< nonzero: toggles this feature in place
   const char *(*subtitle)(MinimedSakeAppData *data); //!< NULL: no subtitle
   void (*select)(MinimedSakeAppData *data);
 } RootItem;
@@ -293,7 +295,10 @@ static const ToggleItem s_hypo_items[] = {
 };
 static const ToggleList s_hypo = {s_hypo_items, ARRAY_LENGTH(s_hypo_items)};
 
+// The hypo model reads the forecast's window, so it cannot run without it.
 static const char *prv_hypo_subtitle(MinimedSakeAppData *data) {
+  if (!minimed_settings_feature_enabled(MINIMED_FEATURE_PREDICTOR))
+    return "Needs predictor";
   return prv_item_on(&s_hypo_items[0]) ? "On" : "Off";
 }
 
@@ -307,13 +312,18 @@ static void prv_forget_select(MinimedSakeAppData *data) {
 }
 
 static const RootItem s_root_items[] = {
-  {"Log", NULL, prv_log_select},
-  {"Mode", prv_mode_subtitle, prv_mode_select},
-  {"Pump alerts", prv_pump_alerts_subtitle, prv_pump_alerts_select},
+  {"Log", 0, NULL, prv_log_select},
+  {"Mode", 0, prv_mode_subtitle, prv_mode_select},
+  {"Pump alerts", 0, prv_pump_alerts_subtitle, prv_pump_alerts_select},
+  {"Set reminder", MINIMED_FEATURE_SET_REMINDER},
+  {"Sensor reminder", MINIMED_FEATURE_SENSOR_REMINDER},
 #ifdef CONFIG_MINIMED_HYPO
-  {"Hypo model", prv_hypo_subtitle, prv_hypo_select},
+  {"Hypo model", 0, prv_hypo_subtitle, prv_hypo_select},
 #endif
-  {"Forget pump", NULL, prv_forget_select},
+#ifdef CONFIG_MINIMED_PREDICTOR
+  {"Predictor", MINIMED_FEATURE_PREDICTOR},
+#endif
+  {"Forget pump", 0, NULL, prv_forget_select},
 };
 
 static uint16_t prv_root_num_rows(MenuLayer *menu, uint16_t section, void *context) {
@@ -322,12 +332,22 @@ static uint16_t prv_root_num_rows(MenuLayer *menu, uint16_t section, void *conte
 
 static void prv_root_draw_row(GContext *ctx, const Layer *cell, MenuIndex *index, void *context) {
   const RootItem *item = &s_root_items[index->row];
-  menu_cell_basic_draw(ctx, cell, item->title, item->subtitle ? item->subtitle(context) : NULL,
-                       NULL);
+  const char *subtitle = NULL;
+  if (item->feature) {
+    subtitle = minimed_settings_feature_enabled(item->feature) ? "On" : "Off";
+  } else if (item->subtitle) {
+    subtitle = item->subtitle(context);
+  }
+  menu_cell_basic_draw(ctx, cell, item->title, subtitle, NULL);
 }
 
 static void prv_root_select(MenuLayer *menu, MenuIndex *index, void *context) {
-  s_root_items[index->row].select(context);
+  const RootItem *item = &s_root_items[index->row];
+  if (item->feature) {
+    minimed_settings_set_features(minimed_settings_get_features() ^ item->feature);
+  } else {
+    item->select(context);
+  }
   menu_layer_reload_data(menu);
 }
 

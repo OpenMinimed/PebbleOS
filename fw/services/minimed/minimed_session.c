@@ -1202,11 +1202,13 @@ static bool prv_send_reminder_status(const char *pump_status, MinimedStatusTimer
   char set_status[20];
   uint32_t sensor_expiration;
   if (pump_status[0] == '\0' && s_sensor_session_current &&
+      minimed_settings_feature_enabled(MINIMED_FEATURE_SENSOR_REMINDER) &&
       minimed_sensor_reminder_status_window(&s_sensor_reminder, now, &sensor_expiration)) {
     display = "SENSOR";
     timers = (MinimedStatusTimers){.end = sensor_expiration};
   } else if (pump_status[0] == '\0' && s_set_reminder.have_reservoir &&
-      minimed_set_reminder_morning_window(&s_set_reminder, now)) {
+             minimed_settings_feature_enabled(MINIMED_FEATURE_SET_REMINDER) &&
+             minimed_set_reminder_morning_window(&s_set_reminder, now)) {
     const uint32_t age_days = minimed_set_reminder_age_days(&s_set_reminder, now);
     if (age_days > 99) {
       snprintf(set_status, sizeof(set_status), "INF SET 99+ DAYS");
@@ -1231,6 +1233,7 @@ static bool prv_send_reminder_status(const char *pump_status, MinimedStatusTimer
 
 static void prv_sensor_reminder_notify_if_due(uint32_t now) {
   if (!s_sensor_session_current ||
+      !minimed_settings_feature_enabled(MINIMED_FEATURE_SENSOR_REMINDER) ||
       !minimed_sensor_reminder_notification_due(&s_sensor_reminder, now)) {
     return;
   }
@@ -1258,7 +1261,9 @@ static void prv_reminder_timer(void) {
     }
   }
 
-  if (s_set_reminder.have_reservoir && minimed_set_reminder_evening_due(&s_set_reminder, now)) {
+  if (s_set_reminder.have_reservoir &&
+      minimed_settings_feature_enabled(MINIMED_FEATURE_SET_REMINDER) &&
+      minimed_set_reminder_evening_due(&s_set_reminder, now)) {
     minimed_alert_popup_push("MiniMed", "Infusion set due", false);
     minimed_set_reminder_mark_notified(&s_set_reminder, now);
     minimed_settings_set_set_reminder(s_set_reminder.set_started_at,

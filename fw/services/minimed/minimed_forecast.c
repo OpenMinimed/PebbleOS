@@ -12,6 +12,7 @@
 #include "minimed_hypo_check.h"
 #include "minimed_predict.h"
 #include "minimed_sake_sender.h"
+#include "minimed_settings.h"
 #include "popups/minimed_sake_ui.h"
 
 #include <stdio.h>
@@ -33,13 +34,21 @@ static int32_t prv_gmt_offset(uint32_t now) {
   return (int32_t)(time_utc_to_local((time_t)now) - (time_t)now);
 }
 
+// Switched off in the menu: the predictor's state is still fed, so it forecasts again as soon as
+// it is switched back on.
+static bool prv_enabled(void) {
+  return minimed_settings_feature_enabled(MINIMED_FEATURE_PREDICTOR);
+}
+
 // Predict 30 minutes ahead from the newest reading and hand the result to the watchface. A reading
-// that cannot be predicted (stale, or the predictor not primed) clears the last prediction.
+// that cannot be predicted (switched off, stale, or the predictor not primed) clears the last
+// prediction.
 static void prv_predict_and_send(int32_t mgdl, const char *bg_str) {
   MinimedPrediction p;
   const uint32_t now = (uint32_t)rtc_get_time();
   const RtcTicks predict_start = rtc_get_ticks();
-  const bool have_pred = s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p);
+  const bool have_pred =
+      prv_enabled() && s_pred_ready && minimed_predict_run(&s_pred, now, prv_gmt_offset(now), &p);
   const uint32_t predict_ms = (uint32_t)(((rtc_get_ticks() - predict_start) * 1000) / RTC_TICKS_HZ);
   if (have_pred) {
     const int32_t pred = (int32_t)(p.mgdl + 0.5f);
@@ -66,9 +75,8 @@ static void prv_predict_and_send(int32_t mgdl, const char *bg_str) {
   }
 }
 
-// A live reading (not a backfilled one): score the forecast that came due, feed the predictor
-// and refresh the prediction.
-void minimed_forecast_reading(uint32_t ts, int32_t mgdl, const char *bg_str) {
+// Score the forecast that came due with this reading.
+static void prv_score(uint32_t ts, int32_t mgdl) {
   int32_t err = 0;
   const bool scored = minimed_predict_score_actual(&s_pred_score, ts, mgdl, &err);
   const uint32_t r = minimed_predict_score_rmse_x10(&s_pred_score, false);
@@ -93,6 +101,13 @@ void minimed_forecast_reading(uint32_t ts, int32_t mgdl, const char *bg_str) {
   }
   minimed_sake_log(line);
   PBL_LOG_INFO("minimed: predict %s", line);
+}
+
+// A live reading (not a backfilled one): score the forecast that came due, feed the predictor
+// and refresh the prediction.
+void minimed_forecast_reading(uint32_t ts, int32_t mgdl, const char *bg_str) {
+  if (prv_enabled())
+    prv_score(ts, mgdl);
   minimed_predict_add_bg(&s_pred, ts, mgdl);
   prv_predict_and_send(mgdl, bg_str);
 }

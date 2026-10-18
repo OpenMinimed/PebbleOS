@@ -73,8 +73,8 @@ static void prv_hypo_alert(const MinimedHypoPrediction *h, int32_t treat_pct, bo
 }
 
 void minimed_hypo_check(const MinimedPredictWindow *win, const char *bg_str) {
-  if (!minimed_settings_hypo_enabled()) {
-    return; // phone-disabled: skip the computation entirely, not just the send/display
+  if (!minimed_settings_feature_enabled(MINIMED_FEATURE_HYPO)) {
+    return; // switched off: skip the computation entirely, not just the send/display
   }
   const bool normal = win && minimed_hypo_should_evaluate(win);
   const bool early = win && !normal && minimed_hypo_falling_fast(win);

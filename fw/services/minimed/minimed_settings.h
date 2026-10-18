@@ -16,8 +16,11 @@
 #define MINIMED_ALERT_HYPO_MODEL      0x04 //!< the hypo model's own alert when it reaches TREAT
 #define MINIMED_ALERT_HYPO_DND_BYPASS 0x08 //!< let that alert ring through Quiet Time
 
-//! Features that can be switched off at runtime (the feature mask).
-#define MINIMED_FEATURE_HYPO 0x01 //!< run the hypo (treat-or-wait) model at all
+//! Features that can be switched off at runtime (the feature mask). All default on.
+#define MINIMED_FEATURE_HYPO            0x01 //!< run the hypo (treat-or-wait) model at all
+#define MINIMED_FEATURE_PREDICTOR       0x02 //!< run the 30-minute forecast
+#define MINIMED_FEATURE_SET_REMINDER    0x04 //!< infusion set reminder (status line and popup)
+#define MINIMED_FEATURE_SENSOR_REMINDER 0x08 //!< sensor expiry reminder (status line and popup)
 
 //! Load the persisted values, if any, at boot. Call once, before the first annunciation can
 //! possibly arrive (minimed_sake_read_init is fine).
@@ -34,9 +37,9 @@ bool minimed_settings_hypo_alert_enabled(void);
 //! everything else (MINIMED_ALERT_HYPO_DND_BYPASS)? Meaningless if the alert itself is off.
 bool minimed_settings_hypo_dnd_bypass_enabled(void);
 
-//! Should the hypo model run at all? False skips the computation entirely (prv_hypo_check), not
-//! just the send/display.
-bool minimed_settings_hypo_enabled(void);
+//! Is this MINIMED_FEATURE_* switched on? An off feature skips its computation, not just its
+//! output, where that is possible.
+bool minimed_settings_feature_enabled(uint8_t feature);
 
 //! The raw masks, for the MiniMed app's menu.
 uint8_t minimed_settings_get_alerts(void);
