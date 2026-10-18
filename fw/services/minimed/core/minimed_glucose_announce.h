@@ -14,7 +14,7 @@
 //! watchface's UUID on the transport *before* we can receive anything from it, so the claim is
 //! provisional and this parse is what confirms or refutes it. The protocol has no magic number,
 //! so the check leans on value constraints: version must be exactly PROTOCOL_VERSION, and the
-//! capability word must be non-zero with no undefined bits set.
+//! capability word must have at least one bit this sender knows. Unknown bits are dropped.
 
 typedef struct {
   uint8_t version;

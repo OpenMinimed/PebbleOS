@@ -1165,8 +1165,7 @@ static void section_announce(void) {
   check("announcement without GRAPH_HOURS accepted",
         minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.graph_hours == 0);
 
-  // The capabilities the glucose watchface announces, every protocol bit it understands. A bit the
-  // parser does not know makes the watchface look foreign, and the sender then ignores it.
+  // The capabilities the glucose watchface announces, every protocol bit it understands.
   {
     const uint32_t all = CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS |
                          CAP_SENDER_BATTERY | CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION |
@@ -1190,6 +1189,13 @@ static void section_announce(void) {
   dict_put_uint(KEY_CAPABILITIES, CAP_BG, 1);
   check("uint8 capabilities accepted",
         minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.caps == CAP_BG);
+
+  // A newer watchface may ask for more than this sender knows: it still gets what can be provided.
+  dict_begin(2);
+  dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
+  dict_put_uint(KEY_CAPABILITIES, CAP_BG | CAP_IOB | 0x80000000u, 4);
+  check("unknown capability bits ignored",
+        minimed_glucose_parse_announce(g_dict, g_dict_len, &a) && a.caps == (CAP_BG | CAP_IOB));
 
   // Unknown keys must not break us, or the protocol can never grow.
   dict_begin(3);
@@ -1220,7 +1226,7 @@ static void section_announce(void) {
   dict_begin(2);
   dict_put_uint(KEY_PROTOCOL_VERSION, PROTOCOL_VERSION, 1);
   dict_put_uint(KEY_CAPABILITIES, 0x200, 4); // bit 9 is not a defined capability
-  check("undefined capability bit rejected",
+  check("only undefined capability bits rejected",
         !minimed_glucose_parse_announce(g_dict, g_dict_len, &a));
 
   // A plausible foreign watchface: low raw keys, but strings rather than our value shapes.

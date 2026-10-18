@@ -13,8 +13,8 @@
 #define TUPLE_HEADER_LEN 7
 #define TYPE_UINT        2
 
-// Every capability bit of the protocol. A bit missing here makes a watchface that announces it
-// look foreign, and it is then dropped for good: add each new CAP_ to this list.
+// Every capability bit this sender knows. A watchface may announce more (a newer protocol); those
+// bits are dropped, and it gets what this sender can provide.
 #define CAP_ALL                                                                                \
   (CAP_BG | CAP_TREND_ARROW | CAP_DELTA | CAP_IOB | CAP_STATUS | CAP_SENDER_BATTERY |          \
    CAP_PUMP_CONNECTED | CAP_MEAL | CAP_PREDICTION | CAP_IOB_TOTAL | CAP_HYPO | CAP_MEAL_LIST | \
@@ -101,11 +101,12 @@ bool minimed_glucose_parse_announce(const uint8_t *dict, uint16_t len,
   }
 
   // The identification test. A foreign watchface would have to put exactly PROTOCOL_VERSION in
-  // key 0 and a capability-shaped word in key 1 to be mistaken for one of ours.
+  // key 0 and a word with at least one known capability bit in key 1 to be taken for one of ours.
   if (!have_version || version != PROTOCOL_VERSION) {
     return false;
   }
-  if (!have_caps || caps == 0 || (caps & ~(uint32_t)CAP_ALL) != 0) {
+  caps &= CAP_ALL;
+  if (!have_caps || caps == 0) {
     return false;
   }
 
