@@ -6,6 +6,7 @@
 //              and assert msg0/msg2/msg4 are byte-identical and the handshake
 //              completes against the pump's real recorded msg1/msg3/msg5.
 #include "minimed_annunciation.h"
+#include "minimed_basal_iob.h"
 #include "minimed_glucose_announce.h"
 #include "minimed_graph.h"
 #include "minimed_history.h"
@@ -1472,49 +1473,32 @@ static void section_predict(void) {
 static void section_basal_iob(void) {
   printf("-- Basal IOB --\n");
   const uint32_t now = 1800000000u;
-  MinimedPredictState st;
-  minimed_predict_reset(&st);
-  check("empty state: 0", minimed_predict_basal_iob_mu(&st, now) == 0);
+  MinimedBasalIobState st;
+  minimed_basal_iob_reset(&st);
+  check("empty state: 0", minimed_basal_iob_mu(&st, now) == 0);
 
-  minimed_predict_add_bg(&st, now, 120);
-  minimed_predict_add_micro(&st, now, 0.5f);
-  check("a microbolus just given counts in full", minimed_predict_basal_iob_mu(&st, now) == 500);
+  minimed_basal_iob_add_micro(&st, now, 0.5f);
+  check("a microbolus just given counts in full", minimed_basal_iob_mu(&st, now) == 500);
   check("half of it is left after half of the active time",
-        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS / 2) == 250);
+        minimed_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS / 2) == 250);
   check("none is left after the active time",
-        minimed_predict_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS) == 0);
+        minimed_basal_iob_mu(&st, now + MINIMED_IOB_AIT_SECS) == 0);
 
-  minimed_predict_add_insulin(&st, now, 2.0f); // a bolus is not basal
-  check("a bolus adds nothing to the basal part", minimed_predict_basal_iob_mu(&st, now) == 500);
-
-  MinimedPredictState m;
-  minimed_predict_reset(&m);
-  minimed_predict_add_bg(&m, now, 120);
-  minimed_predict_set_basal(&m, now - 3600, 1.2f);
-  const int32_t manual = minimed_predict_basal_iob_mu(&m, now);
+  MinimedBasalIobState m;
+  minimed_basal_iob_reset(&m);
+  minimed_basal_iob_set_basal(&m, now - 3600, 1.2f);
+  const int32_t manual = minimed_basal_iob_mu(&m, now);
   check("manual 1.2 U/h for an hour leaves 0.8 to 0.95 U", manual > 800 && manual < 950);
-  minimed_predict_set_basal(&m, now - 3600, 0.0f);
-  check("a suspended pump (rate 0) adds none", minimed_predict_basal_iob_mu(&m, now) == 0);
+  minimed_basal_iob_set_basal(&m, now - 3600, 0.0f);
+  check("a suspended pump (rate 0) adds none", minimed_basal_iob_mu(&m, now) == 0);
 
-  MinimedPredictState old;
-  minimed_predict_reset(&old);
-  minimed_predict_add_micro(&old, now - 3 * 3600, 1.0f);
-  minimed_predict_add_bg(&old, now, 120);
-  check("delivery from 3 h ago is spent", minimed_predict_basal_iob_mu(&old, now) == 0);
-
-  MinimedPredictState micro, bolus;
-  minimed_predict_reset(&micro);
-  minimed_predict_reset(&bolus);
-  minimed_predict_add_bg(&micro, now - 600, 120);
-  minimed_predict_add_bg(&bolus, now - 600, 120);
-  minimed_predict_add_micro(&micro, now - 600, 0.3f);
-  minimed_predict_add_insulin(&bolus, now - 600, 0.3f);
-  minimed_predict_add_bg(&micro, now, 121);
-  minimed_predict_add_bg(&bolus, now, 121);
-  MinimedPrediction a, b;
-  check("a microbolus feeds the model like any other insulin",
-        minimed_predict_run(&micro, now, 0, &a) && minimed_predict_run(&bolus, now, 0, &b) &&
-            a.mgdl == b.mgdl && a.ins_cu == b.ins_cu && a.ins_cu == 30);
+  MinimedBasalIobState old;
+  minimed_basal_iob_reset(&old);
+  minimed_basal_iob_add_micro(&old, now - 3 * 3600, 1.0f);
+  check("delivery from 3 h ago is spent", minimed_basal_iob_mu(&old, now) == 0);
+  minimed_basal_iob_add_micro(&old, now, 0.2f);
+  minimed_basal_iob_add_micro(&old, now - 3 * 3600, 1.0f);
+  check("a microbolus older than the ring is dropped", minimed_basal_iob_mu(&old, now) == 200);
 }
 
 static void section_predict_score(void) {

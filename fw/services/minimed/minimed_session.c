@@ -12,6 +12,7 @@
 #include "drivers/rtc.h"
 #include "kernel/kernel_heap.h"
 #include "minimed_annunciation.h"
+#include "minimed_basal_iob.h"
 #include "minimed_history.h"
 #include "minimed_hypo.h"
 #include "minimed_idd_flags.h"
@@ -320,6 +321,10 @@ static MinimedPredictState s_pred;
 static MinimedPredictScore s_pred_score;
 static bool s_pred_ready;
 
+// Basal delivery of the last hours, for the basal part of total IOB. Filled and reset like s_pred.
+static MinimedBasalIobState s_basal_iob;
+static bool s_basal_iob_ready;
+
 // Latest BG as shown on the watchface ("4.2" mmol/L, "LO"/"HI"; "" while the pump has no valid
 // glucose). Alert notifications carry it as their body -- a low alert without the number is
 // half the information.
@@ -565,8 +570,8 @@ static void prv_parse_iob(void) {
 
   // Total IOB: the pump's number counts boluses only, so add the basal insulin still active. Only
   // once the backfill has loaded the last hours of delivery, or the basal part would be missing.
-  if (s_pred_ready) {
-    const int32_t basal_mu = minimed_predict_basal_iob_mu(&s_pred, (uint32_t)rtc_get_time());
+  if (s_basal_iob_ready) {
+    const int32_t basal_mu = minimed_basal_iob_mu(&s_basal_iob, (uint32_t)rtc_get_time());
     const int32_t total_tenths = (iob_mu + basal_mu + 50) / 100;
     PBL_LOG_INFO("minimed: total IOB %ld mu = pump %ld + basal %ld", (long)(iob_mu + basal_mu),
                  (long)iob_mu, (long)basal_mu);
@@ -798,11 +803,13 @@ static void prv_predict_live_event(const MinimedHistEvent *ev) {
   if (ev->kind == MinimedHistEventInsulin) {
     minimed_predict_add_insulin(&s_pred, now, ev->value);
   } else if (ev->kind == MinimedHistEventMicro) {
-    minimed_predict_add_micro(&s_pred, now, ev->value);
+    minimed_predict_add_insulin(&s_pred, now, ev->value);
+    minimed_basal_iob_add_micro(&s_basal_iob, now, ev->value);
   } else if (ev->kind == MinimedHistEventCarbs) {
     minimed_predict_add_carbs(&s_pred, now, ev->value);
   } else if (ev->kind == MinimedHistEventBasal) {
     minimed_predict_set_basal(&s_pred, now, ev->value);
+    minimed_basal_iob_set_basal(&s_basal_iob, now, ev->value);
   }
 }
 
@@ -912,6 +919,7 @@ static void prv_backfill_finish(void) {
   // The predictor starts over from the log, so nothing is counted twice, then takes back the
   // reading the watch already had.
   minimed_predict_reset(&s_pred);
+  minimed_basal_iob_reset(&s_basal_iob);
   for (uint8_t i = 0; i < kept; i++)
     minimed_predict_add_bg(&s_pred, ts[i], mgdl[i]);
   for (uint8_t i = 0; i < s_backfill_ne && anchored; i++) {
@@ -924,10 +932,12 @@ static void prv_backfill_finish(void) {
         minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]);
         break;
       case MinimedHistEventMicro:
-        minimed_predict_add_micro(&s_pred, ets, s_backfill_evalue[i]);
+        minimed_predict_add_insulin(&s_pred, ets, s_backfill_evalue[i]);
+        minimed_basal_iob_add_micro(&s_basal_iob, ets, s_backfill_evalue[i]);
         break;
       case MinimedHistEventBasal:
         minimed_predict_set_basal(&s_pred, ets, s_backfill_evalue[i]);
+        minimed_basal_iob_set_basal(&s_basal_iob, ets, s_backfill_evalue[i]);
         break;
       case MinimedHistEventCarbs:
         minimed_predict_add_carbs(&s_pred, ets, s_backfill_evalue[i]);
@@ -943,6 +953,7 @@ static void prv_backfill_finish(void) {
   if (s_have_offset)
     minimed_predict_add_bg(&s_pred, s_reading_ts, s_reading_mgdl);
   s_pred_ready = kept > 0;
+  s_basal_iob_ready = kept > 0;
   prv_predict_and_send();
   s_backfill_n = 0;
   s_backfill_ne = 0;
@@ -2379,6 +2390,7 @@ static void prv_link_up(void) {
   s_pump_clock_known = false; // re-read per connection, like everything else here
   s_pump_clock_requested = false;
   s_pred_ready = false; // primed again by this connection's backfill
+  s_basal_iob_ready = false;
   s_hist_edge = 0;
   s_pending = 0;
   s_op = 0;
