@@ -15,6 +15,7 @@
 #include "pbl/util/uuid.h"
 #include "pebble_glucose_protocol.h"
 #include "popups/minimed_sake_ui.h"
+#include "process_management/app_install_manager.h"
 #include "process_management/app_manager.h"
 
 #include <stddef.h>
@@ -41,6 +42,19 @@ static uint8_t s_graph_hours;
 // costs that watchface exactly one swallowed-then-NACKed message before we get out of its way.
 static Uuid s_not_glucose_uuid;
 static bool s_have_not_glucose;
+
+// An installed or upgraded app may be a fixed version of a rejected watchface under the same UUID,
+// so any install clears the cache. A foreign watchface then costs one more NACK.
+static void prv_app_installed_cb(const AppInstallId install_id, void *data) {
+  s_have_not_glucose = false;
+}
+
+static const AppInstallCallback s_app_install_callbacks[NUM_INSTALL_EVENT_TYPES] = {
+  [APP_AVAILABLE] = prv_app_installed_cb,
+  [APP_UPGRADED] = prv_app_installed_cb,
+};
+static struct AppInstallCallbackNode s_app_install_node = {.callbacks = s_app_install_callbacks};
+static bool s_app_install_registered;
 
 // Returned by prv_get_uuid when we do NOT want to claim the foreground app. It must be a *valid*
 // UUID that cannot match: prv_get_app_session treats a session with an invalid UUID as a
@@ -557,6 +571,10 @@ static void prv_handle_watchface_push(uint8_t txn, const Uuid *uuid, const uint8
 // connection at DUAL entry is also a discovery confound we want out of the way.
 static void prv_set_mode_cb(void *ctx) {
   const bool open = (ctx != NULL);
+  if (open && !s_app_install_registered) {
+    app_install_register_callback(&s_app_install_node);
+    s_app_install_registered = true;
+  }
   bt_lock();
   if (open && !s_session) {
     // TransportDestinationApp (not Hybrid): a Hybrid loopback is a "system" session and would
