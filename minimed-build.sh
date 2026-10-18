@@ -67,7 +67,7 @@ elif [ "$profile" = getafix ]; then
   VERIFY_BAND=1
 else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
-  CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n -DCONFIG_MINIMED_STUB_VOICE=y"
+  CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
