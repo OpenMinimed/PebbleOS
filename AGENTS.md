@@ -160,6 +160,12 @@ inside them are relative to the repository root:
 - `asterix` is the tight one: its build turns the voice endpoint off
   (`-DCONFIG_SERVICE_VOICE_ENDPOINT=n`) and links the stand-ins in `fw/services/minimed/stubs/`
   (`CONFIG_MINIMED_STUB_VOICE`, on by itself in such a build) to fit the flash region.
+- `asterix` is tight on RAM too. The kernel heap is the RAM left after all statics and fixed
+  stacks, and an incoming call needs ~17 KB of it on top of ~15 KB idle use. The build fails when
+  the heap is below `HEAP_FLOOR` (33 000 B) and prints its size on every build. Treat each new
+  static buffer, table or stack as coming out of that heap: prefer small types, one copy of a
+  buffer, and transient allocations, and say what a change costs in RAM. Don't lower the floor to
+  get a build through. Background in `.agents/PROGRESS.md` ("Kernel heap and incoming calls").
 - Extra Kconfig settings go on the build script's command line, e.g.
   `./minimed-build.sh -t asterix -DCONFIG_MINIMED_PREDICTOR=n <desc>`. The build's `.config` is
   saved next to the `.pbz`, so the build stays traceable without committing the flags.
@@ -247,6 +253,8 @@ again; a refused connection on port 9000 means that.
   dump read on the watch, so the next crash gets a fresh one. Decode with
   `tools/analyze_coredump.py <elf> <core>`, using the archived ELF whose build ID matches the core
   (`arm-none-eabi-readelf -n <elf>`); the dump can be from an older build than the running one.
+  The host has neither `construct` nor an ARM GDB, so run `tools/readcore.py` and
+  `arm-none-eabi-gdb` (`/opt/pebbleos-sdk/arm-none-eabi/bin`) inside `pebbleos-minimed:v10`.
 - The on-watch log (MiniMed app) shows the last few `minimed_sake_log` lines without a phone.
 
 ### Watchface (separate repo)
