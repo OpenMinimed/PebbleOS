@@ -27,7 +27,13 @@ PBL_LOG_MODULE_DECLARE(bt, CONFIG_BT_LOG_LEVEL);
 #define RESERVED_SLOTS (MINIMED_TIMER_COUNT + 2)
 
 // PBL_LOG is stack-hungry, and the models run here. The host task these came from had 5000.
+// Without the models the peak measured 1028 B (2026-10-19, reconnects and a backfill included).
+// Every byte here comes out of the kernel heap, which the incoming-call UI needs 13.6 KB of.
+#ifdef CONFIG_MINIMED_PREDICTOR
 #define STACK_BYTES 4096
+#else
+#define STACK_BYTES 2048
+#endif
 
 // Below apps and KernelMain: nothing here is latency-critical at the millisecond scale (the pump
 // works on seconds), and the watchface UI must never wait on a model run.
