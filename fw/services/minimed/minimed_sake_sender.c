@@ -617,7 +617,7 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl) {
 // never run concurrently with a serialize. One backfill happens per connection, so a second call
 // racing the first is not a case worth a lock.
 static uint32_t s_backfill_ts[MINIMED_BACKFILL_MAX_POINTS];
-static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
+static int16_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
 static uint8_t s_backfill_count;
 
 static void prv_backfill_cb(void *unused) {
@@ -630,7 +630,7 @@ static void prv_backfill_cb(void *unused) {
   minimed_sake_sender_commit();
 }
 
-void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
+void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int16_t *mgdl,
                                         uint8_t count) {
   if (count > MINIMED_BACKFILL_MAX_POINTS) {
     count = MINIMED_BACKFILL_MAX_POINTS;
