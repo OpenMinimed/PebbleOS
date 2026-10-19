@@ -75,6 +75,9 @@ else
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
+  # The kernel heap is the RAM left after all statics. Idle use is ~15 KB, and an incoming call
+  # needs ~17 KB more (one 13.6 KB icon block); below that the watch reboots on every call.
+  HEAP_FLOOR=33000
 fi
 CORE_CFG+=$extra_cfg
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt, getafix_dvt2 (the bundle name has no @revision)
@@ -159,11 +162,28 @@ archive_elf() {
   echo ">> archived: $elf"
 }
 
+# Fail a build whose kernel heap is below HEAP_FLOOR. Run on the ELF after linking, so new statics
+# anywhere in the firmware count.
+check_heap() {
+  local dir=$1
+  [ -n "${HEAP_FLOOR:-}" ] || return 0
+  local start end size
+  start=$(nm "$dir/pebbleos.elf" | awk '$3 == "_heap_start" {print $1}')
+  end=$(nm "$dir/pebbleos.elf" | awk '$3 == "_heap_end" {print $1}')
+  size=$(( 0x$end - 0x$start ))
+  echo ">> kernel heap: $size B (floor $HEAP_FLOOR B)"
+  if [ "$size" -lt "$HEAP_FLOOR" ]; then
+    echo ">> ERROR: kernel heap below the floor; free static RAM first (see .agents/PROGRESS.md)." >&2
+    exit 1
+  fi
+}
+
 mkdir -p build
 outs=()
 if [ ${#SLOTS[@]} -eq 0 ]; then
   dir=$(build_slot)
   archive_elf "$dir"
+  check_heap "$dir"
   fresh=$(ls -t "$dir"/normal_"${BOARD_NORM}"_*.pbz | head -1)
   out="build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.pbz"
   cp "$fresh" "$out"
