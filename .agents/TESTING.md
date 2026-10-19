@@ -60,8 +60,10 @@ bit (features default on, since the stored mask is the switched-off ones), check
 
 Features too large for asterix's flash also get a Kconfig symbol in `fw/services/minimed/Kconfig`
 (today `CONFIG_MINIMED_PREDICTOR` and `CONFIG_MINIMED_HYPO`, both default on). Turn one off for
-a build by passing it to the build script, e.g. `./minimed-build.sh -t asterix
--DCONFIG_MINIMED_PREDICTOR=n <desc>`; the build's `.config` is saved next to the `.pbz`.
+a build by passing it to the build script, e.g. `./minimed-build.sh -t obelix
+-DCONFIG_MINIMED_PREDICTOR=n <desc>`; the build's `.config` is saved next to the `.pbz`. The
+asterix build passes `-DCONFIG_MINIMED_PREDICTOR=n` itself, for RAM (`-DCONFIG_MINIMED_PREDICTOR=y`
+overrides it, and then fails the kernel heap floor).
 
 Some behaviour is still gated behind a plain `#define` rather than Kconfig, for things that are
 genuinely a developer/debug knob rather than a user preference. To flip one of those on a personal

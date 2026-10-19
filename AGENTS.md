@@ -165,9 +165,10 @@ inside them are relative to the repository root:
   the heap is below `HEAP_FLOOR` (33 000 B) and prints its size on every build. Treat each new
   static buffer, table or stack as coming out of that heap: prefer small types, one copy of a
   buffer, and transient allocations, and say what a change costs in RAM. Don't lower the floor to
-  get a build through. Background in `.agents/PROGRESS.md` ("Kernel heap and incoming calls").
+  get a build through. The asterix build turns the predictor off by default for this reason
+  (~3.7 KB). Background in `.agents/PROGRESS.md` ("Kernel heap and incoming calls").
 - Extra Kconfig settings go on the build script's command line, e.g.
-  `./minimed-build.sh -t asterix -DCONFIG_MINIMED_PREDICTOR=n <desc>`. The build's `.config` is
+  `./minimed-build.sh -t obelix -DCONFIG_MINIMED_PREDICTOR=n <desc>`. The build's `.config` is
   saved next to the `.pbz`, so the build stays traceable without committing the flags.
 - Quick compile check without bundling: `just build [build-asterix|build-pt2-slot0]` runs
   `pbl build` in the same image against a directory `minimed-build.sh` already configured.
