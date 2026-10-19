@@ -20,11 +20,11 @@
 #define SAKE_LOG_WIDTH  40
 #define SAKE_LOG_TS_LEN 9 // "HH:MM:SS "
 
-// Log state is mutated only on KernelMain (via prv_append_cb); the app task only reads s_joined,
-// where a torn read is at worst a few garbage chars in a debug line -- acceptable, so no lock.
-static char s_lines[SAKE_LOG_LINES][SAKE_LOG_WIDTH];
+// The screen's text: up to SAKE_LOG_LINES lines, each ending in '\n', oldest first. Mutated only on
+// KernelMain (via prv_append_cb); the app task only reads it, where a torn read is at worst a few
+// garbage chars in a debug line -- acceptable, so no lock.
+static char s_joined[SAKE_LOG_LINES * SAKE_LOG_WIDTH + 1];
 static int s_line_count;
-static char s_joined[SAKE_LOG_LINES * SAKE_LOG_WIDTH];
 
 static MinimedSakeMode s_mode = MinimedSakeModeNormal;
 
@@ -34,36 +34,23 @@ static uint32_t s_pred_rmse_x10;
 static uint32_t s_pred_cf_x10;
 static uint32_t s_pred_count;
 
-static void prv_rebuild_joined(void) {
-  size_t off = 0;
-  s_joined[0] = '\0';
-  for (int i = 0; i < s_line_count && off < sizeof(s_joined); i++) {
-    int n = snprintf(s_joined + off, sizeof(s_joined) - off, "%s\n", s_lines[i]);
-    if (n < 0) {
-      break;
-    }
-    off += n;
-  }
-}
-
 static void prv_append_cb(void *data) {
   char *msg = (char *)data;
-  char *slot;
-  if (s_line_count < SAKE_LOG_LINES) {
-    slot = s_lines[s_line_count++];
-  } else {
-    for (int i = 1; i < SAKE_LOG_LINES; i++) {
-      memcpy(s_lines[i - 1], s_lines[i], SAKE_LOG_WIDTH);
-    }
-    slot = s_lines[SAKE_LOG_LINES - 1];
+  if (s_line_count == SAKE_LOG_LINES) {
+    char *second = strchr(s_joined, '\n') + 1;
+    memmove(s_joined, second, strlen(second) + 1);
+    s_line_count--;
   }
   // Prefix the wall-clock time so a line's recency is readable on the watch without a phone.
   time_t now = rtc_get_time();
   struct tm t;
   localtime_r(&now, &t);
-  snprintf(slot, SAKE_LOG_WIDTH, "%02d:%02d:%02d %s", t.tm_hour, t.tm_min, t.tm_sec, msg);
-  slot[SAKE_LOG_WIDTH - 1] = '\0';
-  prv_rebuild_joined();
+  char line[SAKE_LOG_WIDTH];
+  snprintf(line, sizeof(line), "%02d:%02d:%02d %s", t.tm_hour, t.tm_min, t.tm_sec, msg);
+  // A line is at most SAKE_LOG_WIDTH - 1 chars plus the newline, so SAKE_LOG_LINES always fit.
+  const size_t off = strlen(s_joined);
+  snprintf(s_joined + off, sizeof(s_joined) - off, "%s\n", line);
+  s_line_count++;
   kernel_free(msg);
 }
 
