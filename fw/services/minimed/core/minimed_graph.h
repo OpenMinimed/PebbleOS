@@ -11,9 +11,14 @@
 //! Readings arrive live as the pump reports them; on connect the recent past is filled in from the
 //! pump's event log (minimed_graph_insert_past).
 
-//! The protocol permits requests for up to 24 hours. At five-minute intervals, the derived point
+//! The protocol permits requests for up to 24 hours. A build can keep less (asterix keeps 3, for
+//! RAM); a longer request then gets what is kept. At five-minute intervals, the derived point
 //! count covers that history plus the 30-minute margin needed to draw the entering left edge.
-#define MINIMED_GRAPH_MAX_HOURS      24
+#ifdef CONFIG_MINIMED_GRAPH_MAX_HOURS
+#define MINIMED_GRAPH_MAX_HOURS CONFIG_MINIMED_GRAPH_MAX_HOURS
+#else
+#define MINIMED_GRAPH_MAX_HOURS 24
+#endif
 #define MINIMED_GRAPH_MARGIN_SECS    (30 * 60)
 #define MINIMED_GRAPH_INTERVAL_SECS  (5 * 60)
 #define MINIMED_GRAPH_RETENTION_SECS (MINIMED_GRAPH_MAX_HOURS * 60 * 60 + MINIMED_GRAPH_MARGIN_SECS)

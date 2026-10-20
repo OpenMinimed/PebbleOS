@@ -72,8 +72,9 @@ elif [ "$profile" = getafix ]; then
 else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
   # The predictor costs ~3.7 KB of kernel heap, enough to fail HEAP_FLOOR. Pass
-  # -DCONFIG_MINIMED_PREDICTOR=y to build it anyway.
+  # -DCONFIG_MINIMED_PREDICTOR=y to build it anyway. A 3 h graph instead of 24 h saves ~2 KB.
   CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n -DCONFIG_MINIMED_PREDICTOR=n"
+  CORE_CFG+=" -DCONFIG_MINIMED_GRAPH_MAX_HOURS=3"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
