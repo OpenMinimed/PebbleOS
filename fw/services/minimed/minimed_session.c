@@ -304,7 +304,7 @@ static uint8_t s_hist_edge;
 static uint16_t s_backfill_raw[MINIMED_BACKFILL_MAX_POINTS];
 static uint8_t s_backfill_n; // the newest MINIMED_BACKFILL_MAX_POINTS samples, oldest first
 static uint32_t s_backfill_secs[MINIMED_BACKFILL_MAX_POINTS]; // pump clock
-static int32_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
+static int16_t s_backfill_mgdl[MINIMED_BACKFILL_MAX_POINTS];
 // The insulin, meal and basal-rate events of the same read, for the predictor, oldest first.
 #define BACKFILL_MAX_EVENTS 64
 static uint8_t s_backfill_ne;
@@ -602,7 +602,7 @@ static void prv_backfill_record(uint8_t rec_len) {
       s_backfill_n--;
     }
     s_backfill_secs[s_backfill_n] = ev.secs;
-    s_backfill_mgdl[s_backfill_n] = ev.mgdl;
+    s_backfill_mgdl[s_backfill_n] = (int16_t)ev.mgdl;
     s_backfill_raw[s_backfill_n] = ev.sg;
     s_backfill_n++;
     return;
@@ -709,7 +709,7 @@ static void prv_backfill_finish(void) {
   const uint32_t window_secs = BACKFILL_WINDOW_MIN * 60u;
 
   uint32_t ts[MINIMED_BACKFILL_MAX_POINTS];
-  int32_t mgdl[MINIMED_BACKFILL_MAX_POINTS];
+  int16_t mgdl[MINIMED_BACKFILL_MAX_POINTS];
   uint8_t kept = 0;
   for (uint8_t i = 0; i < s_backfill_n && anchored; i++) {
     if (s_backfill_secs[i] > window_end || window_end - s_backfill_secs[i] > window_secs)
@@ -1623,10 +1623,17 @@ static void prv_battery_read_done(const MinimedEvent *e) {
 // report free/max-free every 30 min so a slow leak shows in the flash log before it kills the
 // watch, without flooding the log.
 #define HEAP_LOG_INTERVAL_SECS (30 * 60)
+// An incoming call needs this much in one block: a 13.6 KB icon after ~3 KB of other allocations.
+// Below it the next call reboots the watch. Expected while a call is on screen.
+#define HEAP_CALL_MIN_FREE 16800
 static void prv_heap_timer(void) {
   unsigned int used = 0, free_bytes = 0, max_free = 0;
   heap_calc_totals(kernel_heap_get(), &used, &free_bytes, &max_free);
-  PBL_LOG_INFO("minimed: heap free=%u max_free=%u", free_bytes, max_free);
+  if (max_free < HEAP_CALL_MIN_FREE) {
+    PBL_LOG_WRN("minimed: heap free=%u max_free=%u, too little for a call", free_bytes, max_free);
+  } else {
+    PBL_LOG_INFO("minimed: heap free=%u max_free=%u", free_bytes, max_free);
+  }
   minimed_task_timer_start(TimerHeap, HEAP_LOG_INTERVAL_SECS * 1000);
 }
 

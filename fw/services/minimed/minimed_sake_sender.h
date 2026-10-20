@@ -40,7 +40,7 @@ void minimed_sake_sender_add_graph_point(uint32_t timestamp, int32_t mgdl);
 //! updated graph to the watchface. Safe to call from the BT host task; the insert runs on
 //! KernelMain.
 #define MINIMED_BACKFILL_MAX_POINTS 56
-void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int32_t *mgdl,
+void minimed_sake_sender_backfill_graph(const uint32_t *timestamps, const int16_t *mgdl,
                                         uint8_t count);
 
 //! The predicted glucose 30 minutes after the current reading, mg/dL (KEY_PREDICTED_BG). `valid`

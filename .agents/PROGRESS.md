@@ -377,6 +377,17 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
   This was caught by review in v36 before flashing (it would have frozen the watch on opening
   Settings → Bluetooth). Do per-bond lookups in a **second pass** after the iteration returns;
   `prv_add_ble_remotes` in `settings/bluetooth.c` is the worked example.
+- **Kernel heap and incoming calls (asterix).** The kernel heap gets the RAM left after all
+  statics (`fw/linker/sections/kernel-ram.ld`). The incoming-call UI loads its animated icon
+  (`TIMELINE_RESOURCE_INCOMING_PHONE_CALL`, 13 617 B) in one block, after ~3 KB of other call
+  allocations, so it needs a largest free block of ~16.8 KB. Idle use is ~15 KB. On 2026-10-18/19
+  every call rebooted the watch (`CROAK OOM: Failed to alloc 13617 bytes`); the phone re-sent the
+  ringing call after each reboot, and three in a row dropped the watch to recovery. Fixed on
+  `minimed/ram-trim` (MiniMed task stack 2 KB when the predictor is off, one SAKE log buffer,
+  int16 backfill mg/dL): heap 31 424 -> 34 272 B, `max_free` 18 852 B after a call. Guards: the
+  build's `HEAP_FLOOR` (33 000 B) and a heap-log warning when `max_free` is below 16 800 B.
+  Measured stack peaks (25 min with reconnects and a backfill, predictor off): MiniMed task 1028 B,
+  NimBLE host 1312 B of 5000.
 - clangd floods the MiniMed files with false errors (missing NimBLE include paths). Trust `pbl build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 
