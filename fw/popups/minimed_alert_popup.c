@@ -16,7 +16,12 @@
 // discipline as minimed_sake_sender). Sized for a worst-case indication burst; overflow drops
 // the oldest -- the pump itself still alarms, the watch is a mirror.
 #define SLOT_TITLE_MAX 32
-#define SLOT_BODY_MAX  160 // "<alert name> (<bg>)", or the hypo model's four lines
+// "<alert name> (<bg>)" and the sensor reminder fit in 48; the hypo model's four lines need 160.
+#ifdef CONFIG_MINIMED_HYPO
+#define SLOT_BODY_MAX 160
+#else
+#define SLOT_BODY_MAX 48
+#endif
 #define SLOT_COUNT     4
 typedef struct {
   char title[SLOT_TITLE_MAX];
