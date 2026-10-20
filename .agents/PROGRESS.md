@@ -388,6 +388,11 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
   build's `HEAP_FLOOR` (33 000 B) and a heap-log warning when `max_free` is below 16 800 B.
   Measured stack peaks (25 min with reconnects and a backfill, predictor off): MiniMed task 1028 B,
   NimBLE host 1312 B of 5000.
+  Phone reconnects fragment the heap by 1-2.6 KB (instrumented coredump, 2026-10-20): the stock
+  GATT discovery keeps the phone's services in long-lived blocks (`gatt_client_discovery.c:130`)
+  placed above transient send buffers (`default_kernel_sender.c`), which leave holes when freed.
+  Not MiniMed code. `minimed/ram-trim-2` added margin for it: 3 h of graph on asterix
+  (`CONFIG_MINIMED_GRAPH_MAX_HOURS`) and 48 B alert bodies without the hypo model, heap 36 736 B.
 - clangd floods the MiniMed files with false errors (missing NimBLE include paths). Trust `pbl build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 
