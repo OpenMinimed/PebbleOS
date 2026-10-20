@@ -72,15 +72,15 @@ elif [ "$profile" = getafix ]; then
 else
   BOARD=asterix                                 # Pebble 2 Duo (nRF52840)
   # The predictor costs ~3.7 KB of kernel heap, enough to fail HEAP_FLOOR. Pass
-  # -DCONFIG_MINIMED_PREDICTOR=y to build it anyway. A 3 h graph instead of 24 h saves ~2 KB.
+  # -DCONFIG_MINIMED_PREDICTOR=y to build it anyway.
   CORE_CFG="-DCONFIG_MINIMED_SAKE=y -DCONFIG_SERVICE_VOICE_ENDPOINT=n -DCONFIG_MINIMED_PREDICTOR=n"
-  CORE_CFG+=" -DCONFIG_MINIMED_GRAPH_MAX_HOURS=3"
   SLOTS=()                                      # one slot: no -DCONFIG_FIRMWARE_SLOT
   NEED_TAG=0
   VERIFY_BAND=0
   # The kernel heap is the RAM left after all statics. Idle use is ~15 KB, and an incoming call
-  # needs ~17 KB more (one 13.6 KB icon block); below that the watch reboots on every call.
-  HEAP_FLOOR=33000
+  # needs ~17 KB more (one 13.6 KB icon block); below that the watch reboots on every call. Phone
+  # reconnects fragment the heap by up to 2.6 KB, so the floor keeps margin for that too.
+  HEAP_FLOOR=35000
 fi
 CORE_CFG+=$extra_cfg
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt, getafix_dvt2 (the bundle name has no @revision)

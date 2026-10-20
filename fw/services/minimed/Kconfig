@@ -17,13 +17,3 @@ config MINIMED_HYPO
       Score a falling low on whether to treat it, show the result on the watchface and pop up an
       alert past the treat threshold. Reads the forecast's 4-hour window. About 20 KB of flash,
       most of it model weights.
-
-config MINIMED_GRAPH_MAX_HOURS
-    int "MiniMed graph history kept, in hours"
-    depends on MINIMED_SAKE
-    range 1 24
-    default 24
-    help
-      Hours of BG history kept for the watchface graph. A watchface may ask for up to 24; one that
-      asks for more than this gets this much. The graph and the outgoing message buffer together
-      take about 100 B of RAM per hour.
