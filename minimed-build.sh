@@ -214,15 +214,35 @@ fi
 # The Kconfig result, since -DCONFIG_* arguments are not in the commit.
 cp "$dir/.config" "build/minimed-${BOARD_SHORT}-${DESCRIBE}${DESC_SUFFIX}.config"
 
+# The phone's file picker shows only the first ~25 characters. Copies sent to it go in a folder
+# per board, minimed-<board>/, and drop that prefix from the name: <describe>[-desc][_slotN].pbz.
+PHONE_DIR="minimed-${BOARD_SHORT}"
+phone_copy() {
+  local name
+  name=$(basename "$1")
+  name=${name#"${PHONE_DIR}"-}
+  mkdir -p "build/phone/$PHONE_DIR"
+  cp "$1" "build/phone/$PHONE_DIR/$name"
+  echo "build/phone/$PHONE_DIR/$name"
+}
+
 if [ "$push" = 1 ]; then
+  for i in "${!outs[@]}"; do
+    outs[i]=$(phone_copy "${outs[i]}")
+  done
   if command -v adb >/dev/null 2>&1 && adb get-state 2>/dev/null | grep -q device; then
     # adb first: over USB or `adb connect IP:port` (also the tunnel to the phone's 9000 port for
     # pebble logs / dump_flash_logs). Lands in the phone's Downloads so the Pebble app's file
     # picker can find it.
+    adb shell mkdir -p "/sdcard/Download/$PHONE_DIR" >/dev/null 2>&1
     for out in "${outs[@]}"; do
-      adb push "$out" /sdcard/Download/ >/dev/null 2>&1 && \
-        echo ">> pushed to phone: $(basename "$out")"
+      adb push "$out" "/sdcard/Download/$PHONE_DIR/" >/dev/null 2>&1 && \
+        echo ">> pushed to phone: Download/$PHONE_DIR/$(basename "$out")"
     done
+    # Files pushed over adb are not in the media index, and the phone's file picker reads that, so
+    # it would show the folder as empty. Needs Android 11 or later.
+    adb shell content call --uri content://media --method scan_volume --arg external_primary \
+      >/dev/null 2>&1 || echo ">> media rescan failed; the file picker may not show the build yet"
     if [ ${#outs[@]} -gt 1 ]; then
       echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
     fi
