@@ -238,6 +238,10 @@ if [ "$push" = 1 ]; then
       adb push "$out" "/sdcard/Download/$PHONE_DIR/" >/dev/null 2>&1 && \
         echo ">> pushed to phone: Download/$PHONE_DIR/$(basename "$out")"
     done
+    # Files pushed over adb are not in the media index, and the phone's file picker reads that, so
+    # it would show the folder as empty. Needs Android 11 or later.
+    adb shell content call --uri content://media --method scan_volume --arg external_primary \
+      >/dev/null 2>&1 || echo ">> media rescan failed; the file picker may not show the build yet"
     if [ ${#outs[@]} -gt 1 ]; then
       echo ">> Flash the one whose slot the app wants (watch runs <n> -> app wants 1-<n>)."
     fi
