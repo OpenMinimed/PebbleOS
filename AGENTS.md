@@ -224,7 +224,9 @@ watchdog, and its init degrades to "pump link off" instead of asserting.
 
 ### Flash
 
-- `minimed-build.sh --push` sends the `.pbz` files to the phone over adb, else KDE Connect. If KDE
+- `minimed-build.sh --push` sends the `.pbz` files to the phone over adb, else KDE Connect. The
+  phone copy is named `<desc>-<board>-<git describe>[_slotN].pbz` (staged in `build/phone/`), so
+  the phone's truncated file list shows the description first. If KDE
   Connect says "no reachable device" while the phone is on the LAN, add its IP as a custom device:
   `busctl --user set-property org.kde.kdeconnect /modules/kdeconnect org.kde.kdeconnect.daemon
   customDevices as 1 <phone-ip>`, then call `forceOnNetworkChange` on the same interface.
