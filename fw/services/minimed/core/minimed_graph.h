@@ -13,7 +13,14 @@
 
 //! The protocol permits requests for up to 24 hours. At five-minute intervals, the derived point
 //! count covers that history plus the 30-minute margin needed to draw the entering left edge.
-#define MINIMED_GRAPH_MAX_HOURS      24
+//! Asterix keeps only 3 hours because its RAM is limited: the graph and the outgoing message
+//! buffer sized for 24 hours take ~2 KB more, and that comes out of the kernel heap an incoming
+//! call needs. A watchface asking for more than is kept gets what is kept.
+#ifdef CONFIG_BOARD_ASTERIX
+#define MINIMED_GRAPH_MAX_HOURS 3
+#else
+#define MINIMED_GRAPH_MAX_HOURS 24
+#endif
 #define MINIMED_GRAPH_MARGIN_SECS    (30 * 60)
 #define MINIMED_GRAPH_INTERVAL_SECS  (5 * 60)
 #define MINIMED_GRAPH_RETENTION_SECS (MINIMED_GRAPH_MAX_HOURS * 60 * 60 + MINIMED_GRAPH_MARGIN_SECS)

@@ -385,9 +385,14 @@ and the phone-bond loop are in [`CONNECTIVITY.md`](CONNECTIVITY.md).
   ringing call after each reboot, and three in a row dropped the watch to recovery. Fixed on
   `minimed/ram-trim` (MiniMed task stack 2 KB when the predictor is off, one SAKE log buffer,
   int16 backfill mg/dL): heap 31 424 -> 34 272 B, `max_free` 18 852 B after a call. Guards: the
-  build's `HEAP_FLOOR` (33 000 B) and a heap-log warning when `max_free` is below 16 800 B.
+  build's `HEAP_FLOOR` (35 000 B, raised from 33 000 B with ram-trim-2) and a heap-log warning when `max_free` is below 16 800 B.
   Measured stack peaks (25 min with reconnects and a backfill, predictor off): MiniMed task 1028 B,
   NimBLE host 1312 B of 5000.
+  Phone reconnects fragment the heap by 1-2.6 KB (instrumented coredump, 2026-10-20): the stock
+  GATT discovery keeps the phone's services in long-lived blocks (`gatt_client_discovery.c:130`)
+  placed above transient send buffers (`default_kernel_sender.c`), which leave holes when freed.
+  Not MiniMed code. `minimed/ram-trim-2` added margin for it: 3 h of graph on asterix
+  (`MINIMED_GRAPH_MAX_HOURS`) and 48 B alert bodies without the hypo model, heap 36 736 B.
 - clangd floods the MiniMed files with false errors (missing NimBLE include paths). Trust `pbl build`.
 - Don't `docker system prune` without asking (~100GB of other images on this machine).
 

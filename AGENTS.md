@@ -162,7 +162,7 @@ inside them are relative to the repository root:
   (`CONFIG_MINIMED_STUB_VOICE`, on by itself in such a build) to fit the flash region.
 - `asterix` is tight on RAM too. The kernel heap is the RAM left after all statics and fixed
   stacks, and an incoming call needs ~17 KB of it on top of ~15 KB idle use. The build fails when
-  the heap is below `HEAP_FLOOR` (33 000 B) and prints its size on every build. Treat each new
+  the heap is below `HEAP_FLOOR` (35 000 B) and prints its size on every build. Treat each new
   static buffer, table or stack as coming out of that heap: prefer small types, one copy of a
   buffer, and transient allocations, and say what a change costs in RAM. Don't lower the floor to
   get a build through. The asterix build turns the predictor off by default for this reason

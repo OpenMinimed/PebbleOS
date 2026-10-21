@@ -78,8 +78,9 @@ else
   NEED_TAG=0
   VERIFY_BAND=0
   # The kernel heap is the RAM left after all statics. Idle use is ~15 KB, and an incoming call
-  # needs ~17 KB more (one 13.6 KB icon block); below that the watch reboots on every call.
-  HEAP_FLOOR=33000
+  # needs ~17 KB more (one 13.6 KB icon block); below that the watch reboots on every call. Phone
+  # reconnects fragment the heap by up to 2.6 KB, so the floor keeps margin for that too.
+  HEAP_FLOOR=35000
 fi
 CORE_CFG+=$extra_cfg
 BOARD_NORM=${BOARD//@/_}                        # obelix_pvt, getafix_dvt2 (the bundle name has no @revision)
